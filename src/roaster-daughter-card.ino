@@ -5,7 +5,10 @@
 #include <PWMrelay.h>
 #include <SPI.h>
 #include <WiFi.h>
-#include "ArduinoJson.h"
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <ArduinoJson.h>
+#include "Settings.h"
 
 #define DEBUG
 
@@ -26,12 +29,18 @@
 #define HEATER A0
 #define FAN A1
 
+// Create AsyncWebServer object on port 80
+AsyncWebServer server(80);
+AsyncWebSocket ws("/WebSocket");
+
+// Use timers for simple multitasking
 SimpleTimer checkTempTimer(500);
 SimpleTimer tickTimer(5);
 SimpleTimer stateMachineTimer(500);
-SimpleTimer testTimer(2000);
 
+// PWM is used to control fan and heater outputs
 PWMrelay heaterRelay(HEATER, HIGH);
+// PWMrelay heaterRelay(FAN, HIGH);
 
 byte roasterState = 0; // 1- idle 2- roasting 3- cooling 4- error
 
@@ -43,9 +52,9 @@ struct SetPoints
 };
 
 SetPoints setpoints = {
-    {370, 405, 444},          // in deg F
+    {300, 380, 444},          // in deg F
     {150000, 300000, 480000}, // in ms
-    {90, 90, 100}             // in %
+    {80, 90, 100}             // in %
 };
 
 byte setpointIndex = 0;
@@ -66,8 +75,78 @@ MAX6675 thermocouple(SCK, TC1_CS, MISO);
 #endif
 
 EasyNex myNex(HW_SERIAL);
-JsonDocument doc;
+JsonDocument wsRequestDoc;
 String json;
+
+void handleWebSocketMessage(void *arg, uint8_t *data, size_t len)
+{
+  AwsFrameInfo *info = (AwsFrameInfo *)arg;
+  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT)
+  {
+    data[len] = 0;
+    Serial.printf("%s\n", (char *)data);
+    deserializeJson(wsRequestDoc, data);
+
+    if (wsRequestDoc["command"] == "getData")
+    {
+      JsonDocument wsResponseDoc;
+      wsResponseDoc["id"] = wsRequestDoc["id"];
+      JsonObject temp_data = wsResponseDoc["data"].to<JsonObject>();
+      temp_data["bt"] = currentTemp;
+      String jsonResponse;
+      serializeJson(wsResponseDoc, jsonResponse);
+      ws.textAll(jsonResponse);
+    }
+  }
+}
+
+void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
+             void *arg, uint8_t *data, size_t len)
+{
+  switch (type)
+  {
+  case WS_EVT_CONNECT:
+    // Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+    break;
+  case WS_EVT_DISCONNECT:
+    // Serial.printf("WebSocket client #%u disconnected\n", client->id());
+    break;
+  case WS_EVT_DATA:
+    handleWebSocketMessage(arg, data, len);
+    break;
+  case WS_EVT_PONG:
+  case WS_EVT_ERROR:
+    break;
+  }
+}
+
+void initWebSocket()
+{
+  ws.onEvent(onEvent);
+  server.addHandler(&ws);
+}
+
+void initializeWifi() {
+    // Connect to Wi-Fi
+  WiFi.begin(SSID, PASSWORD);
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(1000);
+    Serial.println("Connecting to WiFi..");
+  }
+
+  // Print ESP Local IP Address
+  Serial.println(WiFi.localIP());
+
+  initWebSocket();
+
+    // Route for root / web page
+  // server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
+  //           { request->send_P(200, "text/html", index_html, processor); });
+
+  // Start server
+  server.begin();
+}
 
 
 void setup()
@@ -96,6 +175,8 @@ void setup()
 
   myNex.writeStr("page Start");
 
+  initializeWifi();
+
   DEBUG_PRINTLN("Setup complete");
 }
 
@@ -106,16 +187,15 @@ void loop()
     myNex.NextionListen();
     heaterRelay.tick();
     tickTimer.reset();
+    ws.cleanupClients();
   }
 
   if (checkTempTimer.isReady())
   {
     currentTemp = thermocouple.readFarenheit();
-    // currentRoastTemp = currentTemp;
     DEBUG_PRINT("Temp: ");
     DEBUG_PRINTLN(currentTemp);
     checkTempTimer.reset();
-    // digitalWrite(14, !digitalRead(14));
   }
 
   if (stateMachineTimer.isReady())
@@ -143,6 +223,7 @@ void loop()
       digitalWrite(FAN, HIGH);
       delay(500);
       heaterRelay.setPWM(120);
+      ws.textAll("{ \"pushMessage\": \"startRoasting\" }");
 
       EEPROM.put(0, setpoints);
       break;
@@ -202,6 +283,7 @@ void loop()
         DEBUG_PRINTLN("Cooling - stopped");
         digitalWrite(FAN, LOW);
         roasterState = 0; // idle
+        ws.textAll("{ \"pushMessage\": \"endRoasting\" }");
         myNex.writeStr("page Start");
       }
       break;
