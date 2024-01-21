@@ -1,6 +1,5 @@
 #include <EasyNextionLibrary.h>
 #include <max6675.h>
-#include <EEPROM.h>
 #include <SimpleTimer.h>
 #include <PWMrelay.h>
 #include <SPI.h>
@@ -8,7 +7,8 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
-#include "Settings.h"
+#include <Settings.h>
+#include <Profiles.h>
 
 #define DEBUG
 
@@ -23,15 +23,17 @@
 #define DEBUG_PRINTLN(x)     // blank line
 #endif
 
+#ifdef ARDUINO_ARCH_ESP32
+#define HW_SERIAL Serial0
+#else
+#define HW_SERIAL Serial
+#endif
+
 #define TC1_CS 10
 // #define SCK 13
 // #define MISO 12
 #define HEATER A0
 #define FAN A1
-
-// Create AsyncWebServer object on port 80
-AsyncWebServer server(80);
-AsyncWebSocket ws("/WebSocket");
 
 // Use timers for simple multitasking
 SimpleTimer checkTempTimer(500);
@@ -42,25 +44,14 @@ SimpleTimer stateMachineTimer(500);
 PWMrelay heaterRelay(HEATER, HIGH);
 // PWMrelay heaterRelay(FAN, HIGH);
 
-byte roasterState = 0; // 1- idle 2- roasting 3- cooling 4- error
+Profiles profile;
 
-struct SetPoints
-{
-  uint32_t temps[3];  // in deg F
-  uint32_t times[3];  // in ms
-  uint32_t powers[3]; // in %
-};
-
-SetPoints setpoints = {
-    {300, 380, 444},          // in deg F
-    {150000, 300000, 480000}, // in ms
-    {80, 90, 100}             // in %
-};
-
-byte setpointIndex = 0;
+byte setpointIndex = 1;
 int setpointTemp = 0, lastSetpointTemp = 0;
 uint32_t setpointTime = 0;
-byte setpointPower = 0;
+byte setpointFanSpeed = 0;
+
+byte roasterState = 0; // 1- idle 2- roasting 3- cooling 4- error
 
 float currentTemp = 0;
 uint32_t roastStartTime = 0, setpointStartTime = 0;
@@ -68,15 +59,26 @@ int setpointProgress = 0;
 
 MAX6675 thermocouple(SCK, TC1_CS, MISO);
 
-#ifdef ARDUINO_ARCH_ESP32
-#define HW_SERIAL Serial0
-#else
-#define HW_SERIAL Serial
-#endif
-
 EasyNex myNex(HW_SERIAL);
 JsonDocument wsRequestDoc;
 String json;
+
+float numerator;
+float denominator;
+float slope;
+int roastTime;
+
+// Create AsyncWebServer object on port 80
+AsyncWebServer server(80);
+AsyncWebSocket ws("/WebSocket");
+
+void initializeProfile()
+{
+  profile.clearSetpoints();
+  profile.addSetpoint(180000, 300, 100);
+  profile.addSetpoint(300000, 380, 100);
+  profile.addSetpoint(480000, 440, 90);
+}
 
 void handleWebSocketMessage(void *arg, uint8_t *data, size_t len)
 {
@@ -93,6 +95,7 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len)
       wsResponseDoc["id"] = wsRequestDoc["id"];
       JsonObject temp_data = wsResponseDoc["data"].to<JsonObject>();
       temp_data["bt"] = currentTemp;
+      temp_data["st"] = setpointTemp;
       String jsonResponse;
       serializeJson(wsResponseDoc, jsonResponse);
       ws.textAll(jsonResponse);
@@ -126,8 +129,9 @@ void initWebSocket()
   server.addHandler(&ws);
 }
 
-void initializeWifi() {
-    // Connect to Wi-Fi
+void initializeWifi()
+{
+  // Connect to Wi-Fi
   WiFi.begin(SSID, PASSWORD);
   while (WiFi.status() != WL_CONNECTED)
   {
@@ -140,7 +144,7 @@ void initializeWifi() {
 
   initWebSocket();
 
-    // Route for root / web page
+  // Route for root / web page
   // server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
   //           { request->send_P(200, "text/html", index_html, processor); });
 
@@ -148,10 +152,10 @@ void initializeWifi() {
   server.begin();
 }
 
-
 void setup()
 {
-  DEBUG_SERIALBEGIN(115200);
+
+  // DEBUG_SERIALBEGIN(115200);
   myNex.begin(115200);
 
   pinMode(HEATER, OUTPUT);
@@ -165,19 +169,32 @@ void setup()
   digitalWrite(HEATER, LOW);
   digitalWrite(FAN, LOW);
 
-  EEPROM.get(0, setpoints);
-  myNex.writeNum("ConfigSetpoint.spTemp1.val", setpoints.temps[0]);
-  myNex.writeNum("ConfigSetpoint.spTemp2.val", setpoints.temps[1]);
-  myNex.writeNum("ConfigSetpoint.spTemp3.val", setpoints.temps[2]);
-  myNex.writeNum("ConfigSetpoint.spTime1.val", setpoints.times[0] / 1000);
-  myNex.writeNum("ConfigSetpoint.spTime2.val", setpoints.times[1] / 1000);
-  myNex.writeNum("ConfigSetpoint.spTime3.val", setpoints.times[2] / 1000);
+  initializeWifi();
+  initializeProfile();
+
+  profile.loadProfileFromEEPROM();
+
+  myNex.writeNum("ConfigSetpoint.spTemp1.val", profile.getSetpoint(1).temp);
+  myNex.writeNum("ConfigSetpoint.spTemp1.val", profile.getSetpoint(1).temp);
+  myNex.writeNum("ConfigSetpoint.spTemp2.val", profile.getSetpoint(2).temp);
+  myNex.writeNum("ConfigSetpoint.spTemp3.val", profile.getSetpoint(3).temp);
+  myNex.writeNum("ConfigSetpoint.spTime1.val", profile.getSetpoint(1).time / 1000);
+  myNex.writeNum("ConfigSetpoint.spTime2.val", profile.getSetpoint(2).time / 1000);
+  myNex.writeNum("ConfigSetpoint.spTime3.val", profile.getSetpoint(3).time / 1000);
+  myNex.writeNum("ConfigSetpoint.spPower1.val", 100);
+  myNex.writeNum("ConfigSetpoint.spPower2.val", 100);
+  myNex.writeNum("ConfigSetpoint.spPower3.val", 100);
 
   myNex.writeStr("page Start");
 
-  initializeWifi();
+  Serial.printf("Profile setpoints: %d\n", profile.getSetpointCount());
+  for (int i = 0; i < profile.getSetpointCount(); i++)
+  {
+    Serial.printf("Setpoint %d: %d, %d, %d\n", i, profile.getSetpoint(i).time, profile.getSetpoint(i).temp, profile.getSetpoint(i).fanSpeed);
+  }
 
   DEBUG_PRINTLN("Setup complete");
+  // roasterState = 1;
 }
 
 void loop()
@@ -213,8 +230,7 @@ void loop()
       roasterState = 2;
 
       roastStartTime = millis();
-      setpointStartTime = roastStartTime;
-      setpointIndex = 0;
+      profile.startProfile((int)currentTemp);
 
       DEBUG_PRINT("Roast start time: ");
       DEBUG_PRINTLN(roastStartTime);
@@ -225,56 +241,51 @@ void loop()
       heaterRelay.setPWM(120);
       ws.textAll("{ \"pushMessage\": \"startRoasting\" }");
 
-      EEPROM.put(0, setpoints);
+      // EEPROM.put(0, setpoints);
+      profile.saveProfileToEEPROM();
       break;
 
     case 2: // roasting
       myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
       myNex.writeNum("globals.nextSetTempNum.val", setpointTemp);
-      myNex.writeNum("globals.setpointPower.val", round(setpointPower * 100));
+      // myNex.writeNum("globals.setpointFanSpeed.val", round(setpointFanSpeed * 100)); //TODO change to globals.setpointFanSpeed.val in Nextion
 
-      if (setpointIndex == 0)
+      setpointProgress = profile.getProfileProgress();
+
+      myNex.writeNum("globals.setpointProg.val", setpointProgress);
+
+      setpointTemp = profile.getTargetTemp();
+
+      DEBUG_PRINT("setpointTemp: ");
+      DEBUG_PRINTLN(setpointTemp);
+
+      if (setpointTemp > currentTemp - 10)
       {
-        setpointProgress = (millis() - roastStartTime) * 100 / setpoints.times[0];
+        heaterRelay.setPWM(255);
+      }
+      else if (setpointTemp > currentTemp - 5)
+      {
+        heaterRelay.setPWM(230);
+      }
+      else if (setpointTemp > currentTemp - 2)
+      {
+        heaterRelay.setPWM(210);
       }
       else
       {
-        setpointProgress = (millis() - roastStartTime - setpoints.times[setpointIndex - 1]) * 100 / (setpoints.times[setpointIndex] - setpoints.times[setpointIndex - 1]);
-      }
-      myNex.writeNum("globals.setpointProg.val", setpointProgress);
-
-      if ((millis() >= (setpointTime + roastStartTime)) && setpointIndex < 2)
-      {
-        setpointIndex++;
-        setpointTime = setpoints.times[setpointIndex];
-        setpointTemp = setpoints.temps[setpointIndex];
-        setpointPower = setpoints.powers[setpointIndex] / 100;
+        heaterRelay.setPWM(150);
       }
 
-      if ((currentTemp >= setpoints.temps[2]) && millis() >= (setpointTime + roastStartTime))
+      if (currentTemp >= profile.getFinalTargetTemp())
       {
-        // digitalWrite(HEATER, LOW);
         heaterRelay.setPWM(0);
         roasterState = 3; // cooling
         myNex.writeStr("page Cooling");
         DEBUG_PRINTLN("Roast complete -> cooling");
       }
-      else if ((currentTemp >= setpointTemp) && millis() <= (setpointTime + roastStartTime))
-      {
-        // digitalWrite(HEATER, LOW);
-        heaterRelay.setPWM(setpointPower / 2);
-        DEBUG_PRINTLN("Temp setpoint before time setpoint");
-      }
-      else if ((currentTemp < setpointTemp) && heaterRelay.getPWM() != setpointPower)
-      {
-        // digitalWrite(HEATER, HIGH);
-        heaterRelay.setPWM(setpointPower);
-        DEBUG_PRINTLN("Re-enable heat");
-      }
       break;
 
     case 3:
-      // digitalWrite(HEATER, LOW);
       heaterRelay.setPWM(0);
       myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
       DEBUG_PRINTLN("Cooling");
@@ -299,81 +310,46 @@ void loop()
 void trigger0()
 { // Start roast command received
 
-  setpoints.temps[0] = myNex.readNumber("ConfigSetpoint.spTemp1.val");
-  if (setpoints.temps[0] == 777777)
+  // setpoints.temps[1] = myNex.readNumber("ConfigSetpoint.spTemp1.val");
+  // if (setpoints.temps[1] == 777777)
+  // {
+  //   setpoints.temps[1] = myNex.readNumber("ConfigSetpoint.spTemp1.val");
+  // }
+  int temp1 = myNex.readNumber("ConfigSetpoint.spTemp1.val");
+  if (temp1 == 777777)
   {
-    setpoints.temps[0] = myNex.readNumber("ConfigSetpoint.spTemp1.val");
+    temp1 = myNex.readNumber("ConfigSetpoint.spTemp1.val");
   }
-  setpoints.temps[1] = myNex.readNumber("ConfigSetpoint.spTemp2.val");
-  if (setpoints.temps[1] == 777777)
+  int temp2 = myNex.readNumber("ConfigSetpoint.spTemp2.val");
+  if (temp2 == 777777)
   {
-    setpoints.temps[1] = myNex.readNumber("ConfigSetpoint.spTemp2.val");
+    temp2 = myNex.readNumber("ConfigSetpoint.spTemp2.val");
   }
-  setpoints.temps[2] = myNex.readNumber("ConfigSetpoint.spTemp3.val");
-  if (setpoints.temps[2] == 777777)
+  int temp3 = myNex.readNumber("ConfigSetpoint.spTemp3.val");
+  if (temp3 == 777777)
   {
-    setpoints.temps[2] = myNex.readNumber("ConfigSetpoint.spTemp3.val");
+    temp3 = myNex.readNumber("ConfigSetpoint.spTemp3.val");
   }
-
-  DEBUG_PRINTLN("setpoints.temps: ");
-  DEBUG_PRINTLN(setpoints.temps[0]);
-  DEBUG_PRINTLN(setpoints.temps[1]);
-  DEBUG_PRINTLN(setpoints.temps[2]);
-
-  setpoints.times[0] = myNex.readNumber("ConfigSetpoint.spTime1.val");
-  if (setpoints.times[0] == 777777)
+  int time1 = myNex.readNumber("ConfigSetpoint.spTime1.val");
+  if (time1 == 777777)
   {
-    setpoints.times[0] = myNex.readNumber("ConfigSetpoint.spTime1.val");
+    time1 = myNex.readNumber("ConfigSetpoint.spTime1.val");
   }
-  setpoints.times[1] = myNex.readNumber("ConfigSetpoint.spTime2.val");
-  if (setpoints.times[1] == 777777)
+  int time2 = myNex.readNumber("ConfigSetpoint.spTime2.val");
+  if (time2 == 777777)
   {
-    setpoints.times[1] = myNex.readNumber("ConfigSetpoint.spTime2.val");
+    time2 = myNex.readNumber("ConfigSetpoint.spTime2.val");
   }
-  setpoints.times[2] = myNex.readNumber("ConfigSetpoint.spTime3.val");
-  if (setpoints.times[2] == 777777)
+  int time3 = myNex.readNumber("ConfigSetpoint.spTime3.val");
+  if (time3 == 777777)
   {
-    setpoints.times[2] = myNex.readNumber("ConfigSetpoint.spTime3.val");
-  }
-  for (int i = 0; i <= 2; i++)
-  {
-    setpoints.times[i] = setpoints.times[i] * 1000;
+    time3 = myNex.readNumber("ConfigSetpoint.spTime3.val");
   }
 
-  DEBUG_PRINTLN("setpoints.times: ");
-  DEBUG_PRINTLN(setpoints.times[0]);
-  DEBUG_PRINTLN(setpoints.times[1]);
-  DEBUG_PRINTLN(setpoints.times[2]);
-
-  setpoints.powers[0] = myNex.readNumber("ConfigSetpoint.spPower1.val");
-  if (setpoints.powers[0] == 777777)
-  {
-    setpoints.powers[0] = myNex.readNumber("ConfigSetpoint.spPower1.val");
-  }
-  setpoints.powers[1] = myNex.readNumber("ConfigSetpoint.spPower2.val");
-  if (setpoints.powers[1] == 777777)
-  {
-    setpoints.powers[1] = myNex.readNumber("ConfigSetpoint.spPower2.val");
-  }
-  setpoints.powers[2] = myNex.readNumber("ConfigSetpoint.spPower3.val");
-  if (setpoints.powers[2] == 777777)
-  {
-    setpoints.powers[2] = myNex.readNumber("ConfigSetpoint.spPower3.val");
-  }
-
-  for (int i = 0; i <= 2; i++)
-  {
-    setpoints.powers[i] = setpoints.powers[i] * 255;
-  }
-
-  DEBUG_PRINTLN("setpoints.powers: ");
-  DEBUG_PRINTLN(setpoints.powers[0]);
-  DEBUG_PRINTLN(setpoints.powers[1]);
-  DEBUG_PRINTLN(setpoints.powers[2]);
-
-  setpointTemp = setpoints.temps[0];
-  setpointTime = setpoints.times[0];
-  setpointPower = setpoints.powers[0] / 100;
+  profile.clearSetpoints();
+  profile.addSetpoint(time1 * 1000, temp1, 100);
+  profile.addSetpoint(time2 * 1000, temp2, 100);
+  profile.addSetpoint(time3 * 1000, temp3, 100);
 
   roasterState = 1;
   myNex.writeStr("page Roasting");
