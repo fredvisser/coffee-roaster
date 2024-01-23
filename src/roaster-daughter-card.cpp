@@ -2,6 +2,7 @@
 #include <max6675.h>
 #include <SimpleTimer.h>
 #include <PWMrelay.h>
+#include <AutoPID.h>
 #include <SPI.h>
 #include <WiFi.h>
 #include <AsyncTCP.h>
@@ -35,8 +36,15 @@
 #define HEATER A0
 #define FAN A1
 
+// pid settings and gains
+#define OUTPUT_MIN 0
+#define OUTPUT_MAX 255
+#define KP 8.0
+#define KI 0.46
+#define KD 0
+
 // Use timers for simple multitasking
-SimpleTimer checkTempTimer(500);
+SimpleTimer checkTempTimer(250);
 SimpleTimer tickTimer(5);
 SimpleTimer stateMachineTimer(500);
 
@@ -47,17 +55,19 @@ PWMrelay heaterRelay(HEATER, HIGH);
 Profiles profile;
 
 byte setpointIndex = 1;
-int setpointTemp = 0, lastSetpointTemp = 0;
+double setpointTemp = 0, lastSetpointTemp = 0;
 uint32_t setpointTime = 0;
 byte setpointFanSpeed = 0;
+double heaterOutputVal = 0, fanOutputVal = 0;
 
 byte roasterState = 0; // 1- idle 2- roasting 3- cooling 4- error
 
-float currentTemp = 0;
+double currentTemp = 0;
 uint32_t roastStartTime = 0, setpointStartTime = 0;
 int setpointProgress = 0;
 
 MAX6675 thermocouple(SCK, TC1_CS, MISO);
+AutoPID heaterPID(&currentTemp, &setpointTemp, &heaterOutputVal, 0, 255, KP, KI, KD);
 
 EasyNex myNex(HW_SERIAL);
 JsonDocument wsRequestDoc;
@@ -75,7 +85,7 @@ AsyncWebSocket ws("/WebSocket");
 void initializeProfile()
 {
   profile.clearSetpoints();
-  profile.addSetpoint(180000, 300, 100);
+  profile.addSetpoint(150000, 300, 100);
   profile.addSetpoint(300000, 380, 100);
   profile.addSetpoint(480000, 440, 90);
 }
@@ -167,6 +177,7 @@ void setup()
   pinMode(MISO, INPUT);
 
   digitalWrite(HEATER, LOW);
+  heaterPID.setTimeStep(500);
   digitalWrite(FAN, LOW);
 
   initializeWifi();
@@ -194,7 +205,6 @@ void setup()
   }
 
   DEBUG_PRINTLN("Setup complete");
-  // roasterState = 1;
 }
 
 void loop()
@@ -203,8 +213,9 @@ void loop()
   {
     myNex.NextionListen();
     heaterRelay.tick();
-    tickTimer.reset();
     ws.cleanupClients();
+    heaterPID.run();
+    tickTimer.reset();
   }
 
   if (checkTempTimer.isReady())
@@ -238,7 +249,8 @@ void loop()
       // digitalWrite(HEATER, HIGH);
       digitalWrite(FAN, HIGH);
       delay(500);
-      heaterRelay.setPWM(120);
+      heaterPID.run();
+      heaterRelay.setPWM(heaterOutputVal);
       ws.textAll("{ \"pushMessage\": \"startRoasting\" }");
 
       // EEPROM.put(0, setpoints);
@@ -259,26 +271,13 @@ void loop()
       DEBUG_PRINT("setpointTemp: ");
       DEBUG_PRINTLN(setpointTemp);
 
-      if (setpointTemp > currentTemp - 10)
-      {
-        heaterRelay.setPWM(255);
-      }
-      else if (setpointTemp > currentTemp - 5)
-      {
-        heaterRelay.setPWM(230);
-      }
-      else if (setpointTemp > currentTemp - 2)
-      {
-        heaterRelay.setPWM(210);
-      }
-      else
-      {
-        heaterRelay.setPWM(150);
-      }
-
+      heaterRelay.setPWM(heaterOutputVal);
       if (currentTemp >= profile.getFinalTargetTemp())
       {
         heaterRelay.setPWM(0);
+        heaterPID.stop();
+        digitalWrite(HEATER, LOW);
+        setpointTemp = 145;
         roasterState = 3; // cooling
         myNex.writeStr("page Cooling");
         DEBUG_PRINTLN("Roast complete -> cooling");
@@ -286,7 +285,7 @@ void loop()
       break;
 
     case 3:
-      heaterRelay.setPWM(0);
+      digitalWrite(HEATER, LOW);
       myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
       DEBUG_PRINTLN("Cooling");
       if (currentTemp <= 145)
@@ -298,7 +297,6 @@ void loop()
         myNex.writeStr("page Start");
       }
       break;
-
     default:
       DEBUG_PRINTLN("Hit default case!!");
       break;
