@@ -22,11 +22,14 @@ You can use the [Artisan Roaster Scope](https://artisan-scope.org) to view and r
 
 1. Download and install [Artisan](https://artisan-scope.org)
 2. Configure the Artisan to connect to the Roaster via WebSockets.
+    1. Configure Port settings (**Config»Port…**)
     ![Artisan Port configuration dialog](./images/Artisan%20-%20Port%20Config.png)
+    ![Artisan Port configuration dialog 2](./images/Artisan%20-%20Port%20Config2.png)
+    2. Configure Device settings (**Config»Device…**)
     ![Artisan Device configuration dialog](./images/Artisan%20-%20Device%20Config.png)
 
 ### Run
 
-1. Press the **ON** button to enable the Roaster connection. You should `WebSocket connected` along with the current roaster temperature.
+1. Press the **ON** button to enable the Roaster connection. You should `WebSocket connected` along with the current roaster and setpoint temperatures.
     ![Artisan start roast screen](./images/Artisan%20-%20Start%20roast%20screen.png)
 2. Press **Start Roast** on the Roaster and the recording should automatically start within Artisan.
