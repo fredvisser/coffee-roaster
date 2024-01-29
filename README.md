@@ -2,31 +2,37 @@
 
 I've been building controllers for modified hot air popcorn poppers for many years. This repository is my latest attempt to make home coffee roasting simple, reliable, scientific, and affordable.
 
-## Configuration
+## Features
 
-1. This project uses PlatformIO. Download the recommended VSCode extension to build and deploy the project.
-2. Create a `include/settings.h` file with the following to configure your WiFi information.
+- Control both temperature and fan level during roast with user defined setpoints.
+- PID for precise temperature control.
+- Send roast data wirelessly to [Artisan](https://artisan-scope.org) to visualize and record roasts.
+- Uses commercial-off-the-shelf components.
+- Project includes 3D printed enclosure designs, custom PCB, and build instructions (coming soon).
 
-```h
-#define SSID "<SSID>"
-#define PASSWORD "<WIFI_PASSWORD>"
-```
+## Firmware Installation
 
-3. The Roaster's IP address is recorded in the Serial console when the device boots. Make note of this value.
+1. This project uses PlatformIO. Download the recommended VSCode extension to build and deploy the project to the Arduino Nano ESP32.
+2. Copy the `Nextion/roaster1.tft` file to a microSD card and insert into the Nextion display before powering to install the display firmware.
 
-## Artisan Roaster Scope
+## Software Configuration
+3. (Optional) Configure WiFi
+     1. Navigate to **Settings»WiFi** and enter your WiFi credentials. 
+     2. Make note of the roaster IP address that appears.
 
-You can use the [Artisan Roaster Scope](https://artisan-scope.org) to view and record roast profiles.
+## Artisan
 
-### Configure
+Send roast data wirelessly to [Artisan](https://artisan-scope.org) to visualize and record roasts.
+
+### Configure Artisan
 
 1. Download and install [Artisan](https://artisan-scope.org)
-2. Configure the Artisan to connect to the Roaster via WebSockets.
+2. Configure the Artisan to connect to the Roaster via WebSockets. Apply the `Artisan/astisan-settings.aset` file (**Help»Load Settings…**) or manually configure the settings as documented below.
     1. Configure Port settings (**Config»Port…**)
     ![Artisan Port configuration dialog](./images/Artisan%20-%20Port%20Config.png)
-    ![Artisan Port configuration dialog 2](./images/Artisan%20-%20Port%20Config2.png)
     2. Configure Device settings (**Config»Device…**)
     ![Artisan Device configuration dialog](./images/Artisan%20-%20Device%20Config.png)
+    ![Artisan Device configuration dialog 2](./images/Artisan%20-%20Device%20Config2.png)
 
 ### Run
 
