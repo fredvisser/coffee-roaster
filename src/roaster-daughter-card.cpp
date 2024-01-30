@@ -16,11 +16,9 @@ int main(int argc, char **argv)
 #include <AutoPID.h>
 #include <SPI.h>
 #include <EEPROM.h>
-#include <Settings.h>
 #include <Profiles.hpp>
 #ifdef ARDUINO_ARCH_ESP32
 #include <Network.hpp>
-#include "settings.h"
 #include <Preferences.h>
 Preferences preferences;
 #endif
@@ -130,7 +128,7 @@ void setup()
 #endif
 
 #ifdef ARDUINO_ARCH_ESP32
-  WifiCredentials wifiCredentials = {SSID_VALUE, PASSWORD_VALUE};
+WifiCredentials wifiCredentials;
   preferences.begin("roaster", false);
   wifiCredentials.ssid = preferences.getString("ssid", "");
   wifiCredentials.password = preferences.getString("password", "");
