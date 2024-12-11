@@ -2,7 +2,7 @@
 
 This repository is my latest attempt to make home coffee roasting simple, reliable, scientific, and affordable.
 
-![roaster overview video](./images/Roaster%20overview.mp4)
+![roaster overview video](./images/roaster-overview.mp4)
 
 ## Features
 
