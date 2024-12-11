@@ -1,13 +1,3 @@
-#ifdef NATIVE
-
-int main(int argc, char **argv)
-{
-  int i = 0;
-  return 0;
-}
-
-#else
-
 #include "Arduino.h"
 #include <EasyNextionLibrary.h>
 #include <max6675.h>
@@ -15,13 +5,12 @@ int main(int argc, char **argv)
 #include <PWMrelay.h>
 #include <AutoPID.h>
 #include <SPI.h>
-#include <EEPROM.h>
-#include <Profiles.hpp>
-#ifdef ARDUINO_ARCH_ESP32
-#include <Network.hpp>
+#include "Profiles.hpp"
+#include "Network.hpp"
 #include <Preferences.h>
+#include <ElegantOTA.h>
+
 Preferences preferences;
-#endif
 
 // #define DEBUG
 
@@ -31,16 +20,12 @@ Preferences preferences;
 #define DEBUG_PRINTLN(x) Serial.println(x)
 
 #else
-#define DEBUG_SERIALBEGIN(x) // blank line
-#define DEBUG_PRINT(x)       // blank line
-#define DEBUG_PRINTLN(x)     // blank line
+#define DEBUG_SERIALBEGIN(x)  // blank line
+#define DEBUG_PRINT(x)        // blank line
+#define DEBUG_PRINTLN(x)      // blank line
 #endif
 
-#ifdef ARDUINO_ARCH_ESP32
 #define HW_SERIAL Serial0
-#else
-#define HW_SERIAL Serial
-#endif
 
 // Pin definitions
 #define TC1_CS 10
@@ -54,7 +39,7 @@ Preferences preferences;
 #define KI 0.46
 #define KD 0
 
-#define VERSION "2024-01-28"
+#define VERSION "2024-11-20"
 
 // Use timers for simple multitasking
 SimpleTimer checkTempTimer(250);
@@ -75,8 +60,7 @@ double heaterOutputVal = 0;
 byte setpointFanSpeed = 0;
 int setpointProgress = 0;
 
-enum RoasterState
-{
+enum RoasterState {
   IDLE = 0,
   START_ROAST = 1,
   ROASTING = 2,
@@ -93,8 +77,7 @@ AutoPID heaterPID(&currentTemp, &setpointTemp, &heaterOutputVal, 0, 255, KP, KI,
 EasyNex myNex(HW_SERIAL);
 
 // Default roast profile. Any changes stored in EEPROM will override these values.
-void setDefaultRoastProfile()
-{
+void setDefaultRoastProfile() {
   profile.clearSetpoints();
   profile.addSetpoint(150000, 300, 100);
   profile.addSetpoint(300000, 380, 90);
@@ -102,8 +85,7 @@ void setDefaultRoastProfile()
 }
 uint8_t profileBuffer[200];
 
-void setup()
-{
+void setup() {
   myNex.begin(115200);
 
   // Set heater and fan control pins to output
@@ -122,25 +104,18 @@ void setup()
   fanRelay.setPeriod(10);
 
   setDefaultRoastProfile();
-#ifdef ARDUINO_ARCH_ESP32
-#elif ARDUINO_ARCH_AVR
-  EEPROM.begin();
-#endif
 
-#ifdef ARDUINO_ARCH_ESP32
-WifiCredentials wifiCredentials;
+  WifiCredentials wifiCredentials;
   preferences.begin("roaster", false);
   wifiCredentials.ssid = preferences.getString("ssid", "");
   wifiCredentials.password = preferences.getString("password", "");
+  
   String ipAddress = initializeWifi(wifiCredentials);
-  if (ipAddress != "Failed to connect to WiFi")
-  {
+  if (ipAddress != "Failed to connect to WiFi") {
     preferences.putString("ssid", wifiCredentials.ssid);
     preferences.putString("password", wifiCredentials.password);
   }
-#endif
 
-  // EEPROM.get(0, profileBuffer);
   preferences.getBytes("profile", profileBuffer, 200);
   profile.unflattenProfile(profileBuffer);
 
@@ -162,20 +137,18 @@ WifiCredentials wifiCredentials;
   DEBUG_PRINTLN("Setup complete");
 }
 
-void loop()
-{
-  if (tickTimer.isReady())
-  {
+void loop() {
+  if (tickTimer.isReady()) {
     myNex.NextionListen();
     heaterRelay.tick();
     fanRelay.tick();
     heaterPID.run();
     wsCleanup();
     tickTimer.reset();
+    OTATick();
   }
 
-  if (checkTempTimer.isReady())
-  {
+  if (checkTempTimer.isReady()) {
     currentTemp = thermocouple.readFarenheit();
     DEBUG_PRINT("Temp: ");
     DEBUG_PRINTLN(currentTemp);
@@ -191,136 +164,119 @@ void loop()
     checkTempTimer.reset();
   }
 
-  if (stateMachineTimer.isReady())
-  {
-    switch (roasterState)
-    {
-    case IDLE:
-      // heaterRelay.setPWM(0);
-      // fanRelay.setPWM(0);
-      digitalWrite(HEATER, LOW);
-      digitalWrite(FAN, LOW);
-      heaterPID.stop();
-      heaterOutputVal = 0;
-      break;
-
-    case START_ROAST:
-      DEBUG_PRINTLN("Start roast");
-      roasterState = ROASTING;
-
-      fanRelay.setPWM(profile.getTargetFanSpeed(millis()));
-      delay(500);
-      profile.startProfile((int)currentTemp, millis());
-      heaterPID.run();
-      heaterRelay.setPWM(heaterOutputVal);
-
-      sendWsMessage("{ \"pushMessage\": \"startRoasting\" }");
-
-      profile.flattenProfile(profileBuffer);
-      preferences.putBytes("profile", profileBuffer, 200);
-      // EEPROM.put(0, profileBuffer);
-      break;
-
-    case ROASTING:
-      setpointTemp = profile.getTargetTemp(millis());
-      setpointFanSpeed = profile.getTargetFanSpeed(millis());
-      setpointProgress = profile.getProfileProgress(millis());
-
-      fanRelay.setPWM(setpointFanSpeed);
-      heaterRelay.setPWM(heaterOutputVal);
-
-      if (currentTemp >= profile.getFinalTargetTemp())
-      {
+  if (stateMachineTimer.isReady()) {
+    switch (roasterState) {
+      case IDLE:
+        digitalWrite(HEATER, LOW);
+        digitalWrite(FAN, LOW);
         heaterPID.stop();
         heaterOutputVal = 0;
+        break;
+
+      case START_ROAST:
+        DEBUG_PRINTLN("Start roast");
+        roasterState = ROASTING;
+
+        fanRelay.setPWM(profile.getTargetFanSpeed(millis()));
+        delay(500);
+        profile.startProfile((int)currentTemp, millis());
+        heaterPID.run();
         heaterRelay.setPWM(heaterOutputVal);
-        // digitalWrite(HEATER, LOW);
 
-        setpointTemp = 145;
-        roasterState = COOLING;
+        sendWsMessage("{ \"pushMessage\": \"startRoasting\" }");
 
-        setpointFanSpeed = 255;
+        profile.flattenProfile(profileBuffer);
+        preferences.putBytes("profile", profileBuffer, 200);
+        // EEPROM.put(0, profileBuffer);
+        break;
+
+      case ROASTING:
+        setpointTemp = profile.getTargetTemp(millis());
+        setpointFanSpeed = profile.getTargetFanSpeed(millis());
+        setpointProgress = profile.getProfileProgress(millis());
+
         fanRelay.setPWM(setpointFanSpeed);
+        heaterRelay.setPWM(heaterOutputVal);
 
-        setpointProgress = 0;
-        myNex.writeStr("page Cooling");
-        DEBUG_PRINTLN("Roast complete -> cooling");
-      }
-      myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
-      myNex.writeNum("globals.nextSetTempNum.val", setpointTemp);
-      myNex.writeNum("globals.setpointFan.val", round(setpointFanSpeed * 100 / 255));
-      myNex.writeNum("globals.setpointProg.val", setpointProgress);
-      break;
+        if (currentTemp >= profile.getFinalTargetTemp()) {
+          heaterPID.stop();
+          heaterOutputVal = 0;
+          heaterRelay.setPWM(heaterOutputVal);
 
-    case COOLING:
-      digitalWrite(HEATER, LOW);
-      myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
-      DEBUG_PRINTLN("Cooling");
+          setpointTemp = 145;
+          roasterState = COOLING;
 
-      if (currentTemp <= 145)
-      {
-        fanRelay.setPWM(0);
-        digitalWrite(FAN, LOW);
-        roasterState = IDLE;
+          setpointFanSpeed = 255;
+          fanRelay.setPWM(setpointFanSpeed);
 
-        sendWsMessage("{ \"pushMessage\": \"endRoasting\" }");
-        myNex.writeStr("page Start");
-        DEBUG_PRINTLN("Cooling - stopped");
-      }
-      break;
-    default:
-      DEBUG_PRINTLN("Hit default case!!");
-      break;
+          setpointProgress = 0;
+          myNex.writeStr("page Cooling");
+          DEBUG_PRINTLN("Roast complete -> cooling");
+        }
+        myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
+        myNex.writeNum("globals.nextSetTempNum.val", setpointTemp);
+        myNex.writeNum("globals.setpointFan.val", round(setpointFanSpeed * 100 / 255));
+        myNex.writeNum("globals.setpointProg.val", setpointProgress);
+        break;
+
+      case COOLING:
+        digitalWrite(HEATER, LOW);
+        myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
+        DEBUG_PRINTLN("Cooling");
+
+        if (currentTemp <= 145) {
+          fanRelay.setPWM(0);
+          digitalWrite(FAN, LOW);
+          roasterState = IDLE;
+
+          sendWsMessage("{ \"pushMessage\": \"endRoasting\" }");
+          myNex.writeStr("page Start");
+          DEBUG_PRINTLN("Cooling - stopped");
+        }
+        break;
+      default:
+        DEBUG_PRINTLN("Hit default case!!");
+        break;
     }
     stateMachineTimer.reset();
   }
 }
 
-void trigger0()
-{ // Start roast command received
+void trigger0() {  // Start roast command received
   int temp1 = myNex.readNumber("ConfigSetpoint.spTemp1.val");
-  if (temp1 == 777777)
-  {
+  if (temp1 == 777777) {
     temp1 = myNex.readNumber("ConfigSetpoint.spTemp1.val");
   }
   int temp2 = myNex.readNumber("ConfigSetpoint.spTemp2.val");
-  if (temp2 == 777777)
-  {
+  if (temp2 == 777777) {
     temp2 = myNex.readNumber("ConfigSetpoint.spTemp2.val");
   }
   int temp3 = myNex.readNumber("ConfigSetpoint.spTemp3.val");
-  if (temp3 == 777777)
-  {
+  if (temp3 == 777777) {
     temp3 = myNex.readNumber("ConfigSetpoint.spTemp3.val");
   }
   int time1 = myNex.readNumber("ConfigSetpoint.spTime1.val");
-  if (time1 == 777777)
-  {
+  if (time1 == 777777) {
     time1 = myNex.readNumber("ConfigSetpoint.spTime1.val");
   }
   int time2 = myNex.readNumber("ConfigSetpoint.spTime2.val");
-  if (time2 == 777777)
-  {
+  if (time2 == 777777) {
     time2 = myNex.readNumber("ConfigSetpoint.spTime2.val");
   }
   int time3 = myNex.readNumber("ConfigSetpoint.spTime3.val");
-  if (time3 == 777777)
-  {
+  if (time3 == 777777) {
     time3 = myNex.readNumber("ConfigSetpoint.spTime3.val");
   }
   int power1 = myNex.readNumber("ConfigSetpoint.spPower1.val");
-  if (power1 == 777777)
-  {
+  if (power1 == 777777) {
     power1 = myNex.readNumber("ConfigSetpoint.spFan1.val");
   }
   int power2 = myNex.readNumber("ConfigSetpoint.spFan2.val");
-  if (power2 == 777777)
-  {
+  if (power2 == 777777) {
     power2 = myNex.readNumber("ConfigSetpoint.spFan2.val");
   }
   int power3 = myNex.readNumber("ConfigSetpoint.spFan3.val");
-  if (power3 == 777777)
-  {
+  if (power3 == 777777) {
     power3 = myNex.readNumber("ConfigSetpoint.spFan3.val");
   }
 
@@ -334,8 +290,7 @@ void trigger0()
   myNex.writeNum("globals.nextSetTempNum.val", setpointTemp);
 }
 
-void trigger1()
-{ // Stop roast command received
+void trigger1() {  // Stop roast command received
   roasterState = COOLING;
 
   heaterPID.stop();
@@ -350,27 +305,20 @@ void trigger1()
   myNex.writeNum("globals.nextSetTempNum.val", 145);
 }
 
-void trigger2()
-{ // Stop cooling command received
+void trigger2() {  // Stop cooling command received
   roasterState = IDLE;
   myNex.writeStr("page Start");
 }
 
-void trigger3()
-{ // Apply WiFi credentials
-#ifdef ARDUINO_ARCH_ESP32
+void trigger3() {  // Apply WiFi credentials
   WifiCredentials wifiCredentials;
   wifiCredentials.ssid = myNex.readStr("ConfigWifi.ssid.txt");
   wifiCredentials.password = myNex.readStr("ConfigWifi.password.txt");
   myNex.writeStr("ConfigWifi.ip.txt", "Connecting...");
   String ip = initializeWifi(wifiCredentials);
   myNex.writeStr("ConfigWifi.ip.txt", ip);
-  if (ip != "Failed to connect to WiFi")
-  {
+  if (ip != "Failed to connect to WiFi") {
     preferences.putString("ssid", wifiCredentials.ssid);
     preferences.putString("password", wifiCredentials.password);
   }
-#endif
 }
-
-#endif
