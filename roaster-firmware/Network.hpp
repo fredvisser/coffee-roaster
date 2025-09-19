@@ -3,7 +3,7 @@
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
-#include <ElegantOTA.h>
+// #include <ElegantOTA.h>
 
 JsonDocument wsRequestDoc;
 String json;
@@ -48,9 +48,9 @@ void onOTAEnd(bool success) {
   // <Add your own code here>
 }
 
-void OTATick() {
-  ElegantOTA.loop();
-}
+// void OTATick() {
+//   ElegantOTA.loop();
+// }
 
 void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
   AwsFrameInfo *info = (AwsFrameInfo *)arg;
@@ -129,11 +129,11 @@ String initializeWifi(WifiCredentials wifiCredentials) {
     request->send(200, "text/plain", "Hi! You've reached roaster.local.");
   });
 
-  ElegantOTA.begin(&server);  // Start ElegantOTA
-  // ElegantOTA callbacks
-  ElegantOTA.onStart(onOTAStart);
-  ElegantOTA.onProgress(onOTAProgress);
-  ElegantOTA.onEnd(onOTAEnd);
+  // ElegantOTA.begin(&server);  // Start ElegantOTA
+  // // ElegantOTA callbacks
+  // ElegantOTA.onStart(onOTAStart);
+  // ElegantOTA.onProgress(onOTAProgress);
+  // ElegantOTA.onEnd(onOTAEnd);
 
   // Start server
   server.begin();

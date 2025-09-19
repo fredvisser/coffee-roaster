@@ -8,11 +8,12 @@
 #include "Profiles.hpp"
 #include "Network.hpp"
 #include <Preferences.h>
-#include <ElegantOTA.h>
+// #include <ElegantOTA.h>
+#include <ESP32Servo.h>
 
 Preferences preferences;
 
-// #define DEBUG
+#define DEBUG
 
 #ifdef DEBUG
 #define DEBUG_SERIALBEGIN(x) Serial.begin(x)
@@ -31,6 +32,7 @@ Preferences preferences;
 #define TC1_CS 10
 #define HEATER A0
 #define FAN A1
+#define BDCFAN D5
 
 // PID settings and gains
 #define OUTPUT_MIN 0
@@ -50,6 +52,8 @@ SimpleTimer stateMachineTimer(500);
 PWMrelay heaterRelay(HEATER, HIGH);
 PWMrelay fanRelay(FAN, HIGH);
 
+Servo bdcFan;
+
 // Create a roast profile object
 Profiles profile;
 
@@ -59,6 +63,7 @@ double setpointTemp = 0;
 double heaterOutputVal = 0;
 byte setpointFanSpeed = 0;
 int setpointProgress = 0;
+int bdcFanMs = 800;
 
 enum RoasterState {
   IDLE = 0,
@@ -92,6 +97,8 @@ void setup() {
   pinMode(HEATER, OUTPUT);
   pinMode(FAN, OUTPUT);
 
+  bdcFan.attach(BDCFAN);
+
   // Explicitly enable the pinMode for the SPI pins because the library doesn't appear to do this correctly when running on an ESP32
   pinMode(TC1_CS, OUTPUT);
   pinMode(SCK, OUTPUT);
@@ -102,6 +109,8 @@ void setup() {
   heaterPID.setTimeStep(250);
   digitalWrite(FAN, LOW);
   fanRelay.setPeriod(10);
+
+  bdcFan.writeMicroseconds(800); //Expect this is low
 
   setDefaultRoastProfile();
 
@@ -145,11 +154,13 @@ void loop() {
     heaterPID.run();
     wsCleanup();
     tickTimer.reset();
-    OTATick();
+    // OTATick();
   }
 
   if (checkTempTimer.isReady()) {
-    currentTemp = thermocouple.readFarenheit();
+    if (thermocouple.readFarenheit() < 500) { // Ignore anomalous high readings
+      currentTemp = thermocouple.readFarenheit();
+    }
     DEBUG_PRINT("Temp: ");
     DEBUG_PRINTLN(currentTemp);
     DEBUG_PRINT("Fan speed: ");
@@ -178,6 +189,13 @@ void loop() {
         roasterState = ROASTING;
 
         fanRelay.setPWM(profile.getTargetFanSpeed(millis()));
+
+        for (int i = 800; i < 2000; i += 100) {
+          bdcFan.writeMicroseconds(i);
+          delay(500);
+          DEBUG_PRINTLN(i);
+        }
+        
         delay(500);
         profile.startProfile((int)currentTemp, millis());
         heaterPID.run();
@@ -196,6 +214,7 @@ void loop() {
         setpointProgress = profile.getProfileProgress(millis());
 
         fanRelay.setPWM(setpointFanSpeed);
+        bdcFan.writeMicroseconds(5 * setpointFanSpeed + 700);
         heaterRelay.setPWM(heaterOutputVal);
 
         if (currentTemp >= profile.getFinalTargetTemp()) {
@@ -208,6 +227,7 @@ void loop() {
 
           setpointFanSpeed = 255;
           fanRelay.setPWM(setpointFanSpeed);
+          bdcFan.writeMicroseconds(2000);
 
           setpointProgress = 0;
           myNex.writeStr("page Cooling");
@@ -226,6 +246,7 @@ void loop() {
 
         if (currentTemp <= 145) {
           fanRelay.setPWM(0);
+          bdcFan.writeMicroseconds(800);
           digitalWrite(FAN, LOW);
           roasterState = IDLE;
 
@@ -300,6 +321,7 @@ void trigger1() {  // Stop roast command received
 
   setpointFanSpeed = 255;
   fanRelay.setPWM(setpointFanSpeed);
+  bdcFan.writeMicroseconds(2000);
 
   myNex.writeStr("page Cooling");
   myNex.writeNum("globals.nextSetTempNum.val", 145);
