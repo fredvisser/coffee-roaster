@@ -32,6 +32,24 @@ jobs:
         arduino-cli lib install "AutoPID"
         arduino-cli lib install "ESP32Servo"
         arduino-cli lib install "AUnit"
+        arduino-cli lib install "PWMrelay"
+        arduino-cli lib install "ArduinoJson"
+        arduino-cli lib install "ElegantOTA@3.1.7"
+        
+    - name: Install async libraries from GitHub
+      run: |
+        cd $HOME
+        mkdir -p Arduino/libraries
+        cd Arduino/libraries
+        git clone https://github.com/ESP32Async/AsyncTCP.git Async_TCP || true
+        git clone https://github.com/ESP32Async/ESPAsyncWebServer.git ESP_Async_WebServer || true
+        
+    - name: Configure ElegantOTA for async mode
+      run: |
+        ELEGANTOTA_H="$HOME/Arduino/libraries/ElegantOTA/src/ElegantOTA.h"
+        if [ -f "$ELEGANTOTA_H" ]; then
+          sed -i 's/#define ELEGANTOTA_USE_ASYNC_WEBSERVER 0/#define ELEGANTOTA_USE_ASYNC_WEBSERVER 1/' "$ELEGANTOTA_H"
+        fi
         
     - name: Compile main firmware
       run: |
@@ -139,6 +157,24 @@ jobs:
         arduino-cli lib install "SimpleTimer"
         arduino-cli lib install "AutoPID"
         arduino-cli lib install "ESP32Servo"
+        arduino-cli lib install "PWMrelay"
+        arduino-cli lib install "ArduinoJson"
+        arduino-cli lib install "ElegantOTA@3.1.7"
+        
+    - name: Install async libraries from GitHub
+      run: |
+        cd $HOME
+        mkdir -p Arduino/libraries
+        cd Arduino/libraries
+        git clone https://github.com/ESP32Async/AsyncTCP.git Async_TCP || true
+        git clone https://github.com/ESP32Async/ESPAsyncWebServer.git ESP_Async_WebServer || true
+        
+    - name: Configure ElegantOTA for async mode
+      run: |
+        ELEGANTOTA_H="$HOME/Arduino/libraries/ElegantOTA/src/ElegantOTA.h"
+        if [ -f "$ELEGANTOTA_H" ]; then
+          sed -i 's/#define ELEGANTOTA_USE_ASYNC_WEBSERVER 0/#define ELEGANTOTA_USE_ASYNC_WEBSERVER 1/' "$ELEGANTOTA_H"
+        fi
         
     - name: Generate size report
       run: |
