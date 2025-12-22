@@ -26,7 +26,7 @@ jobs:
         
     - name: Install required libraries
       run: |
-        arduino-cli lib install "EasyNextionLibrary"
+        arduino-cli lib install "Easy Nextion Library"
         arduino-cli lib install "MAX6675 library"
         arduino-cli lib install "SimpleTimer"
         arduino-cli lib install "AutoPID"
@@ -134,7 +134,7 @@ jobs:
         
     - name: Install libraries
       run: |
-        arduino-cli lib install "EasyNextionLibrary"
+        arduino-cli lib install "Easy Nextion Library"
         arduino-cli lib install "MAX6675 library"
         arduino-cli lib install "SimpleTimer"
         arduino-cli lib install "AutoPID"
