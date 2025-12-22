@@ -83,7 +83,7 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
     }
     
     // Validate command exists and is a string
-    if (!wsRequestDoc.containsKey("command") || !wsRequestDoc["command"].is<const char*>()) {
+    if (!wsRequestDoc["command"].is<const char*>()) {
       DEBUG_PRINTLN("WebSocket: Missing or invalid 'command' field");
       return;
     }
@@ -122,6 +122,9 @@ void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType 
       handleWebSocketMessage(arg, data, len);
       break;
     case WS_EVT_PONG:
+    case WS_EVT_PING:
+      // Ping/Pong - connection keepalive
+      break;
     case WS_EVT_ERROR:
       break;
   }

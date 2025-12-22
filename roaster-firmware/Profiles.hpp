@@ -170,9 +170,9 @@ void Profiles::addSetpoint(uint32_t time, uint32_t temp, uint32_t fanSpeed)
 {
     if (_setpointCount < 10)
     {
-        // Clamp values to safe ranges
-        temp = constrain(temp, 0, 500);      // 0-500°F
-        fanSpeed = constrain(fanSpeed, 0, 100); // 0-100%
+        // Clamp values to safe ranges (uint32_t is always >= 0)
+        temp = min(temp, (uint32_t)500);      // 0-500°F
+        fanSpeed = min(fanSpeed, (uint32_t)100); // 0-100%
         
         _setpoints[_setpointCount].time = time;
         _setpoints[_setpointCount].temp = temp;
@@ -184,7 +184,8 @@ void Profiles::addSetpoint(uint32_t time, uint32_t temp, uint32_t fanSpeed)
 bool Profiles::validateSetpoint(uint32_t temp, uint32_t fanSpeed) const
 {
     // Validate temperature (0-500°F) and fan speed (0-100%)
-    return (temp >= 0 && temp <= 500 && fanSpeed >= 0 && fanSpeed <= 100);
+    // Note: uint32_t is always >= 0, so only check upper bounds
+    return (temp <= 500 && fanSpeed <= 100);
 }
 
 Profiles::Setpoint Profiles::getSetpoint(int index) const
