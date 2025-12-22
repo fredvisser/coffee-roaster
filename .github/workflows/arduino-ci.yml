@@ -68,7 +68,7 @@ jobs:
         arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/tests/hardware_validation/hardware_validation.ino
         
     - name: Archive build artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: firmware-builds
         path: |
@@ -94,7 +94,7 @@ jobs:
         cat build-report.md
         
     - name: Upload build report
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: build-report
         path: build-report.md
@@ -110,6 +110,7 @@ jobs:
     - name: Arduino Lint
       uses: arduino/arduino-lint-action@v1
       with:
+        path: roaster-firmware
         library-manager: update
         compliance: specification
         
@@ -152,7 +153,7 @@ jobs:
         cat size-report.md
         
     - name: Upload size report
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: size-report
         path: size-report.md
