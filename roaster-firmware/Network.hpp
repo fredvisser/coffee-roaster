@@ -1,11 +1,15 @@
+#ifndef NETWORK_HPP
+#define NETWORK_HPP
+
 #include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
-// #include <ElegantOTA.h>
+#include <ElegantOTA.h>  // v3.1.7+ with async mode enabled for ESPAsyncWebServer compatibility
 
-JsonDocument wsRequestDoc;
+// Removed global JsonDocument to prevent heap fragmentation
+// Using local allocation in functions instead
 String json;
 
 // Create AsyncWebServer object on port 80
@@ -15,6 +19,7 @@ AsyncWebSocket ws("/WebSocket");
 extern double currentTemp;
 extern double setpointTemp;
 extern byte setpointFanSpeed;
+extern double fanTemp;
 
 // Wifi credentials struct
 struct WifiCredentials {
@@ -55,20 +60,51 @@ void onOTAEnd(bool success) {
 void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
   AwsFrameInfo *info = (AwsFrameInfo *)arg;
   if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
-    data[len] = 0;
-    Serial.printf("%s\n", (char *)data);
-    deserializeJson(wsRequestDoc, data);
-
-    if (wsRequestDoc["command"] == "getData") {
+    // Allocate buffer with space for null terminator (prevent buffer overflow)
+    char* buffer = (char*)malloc(len + 1);
+    if (buffer == NULL) {
+      Serial.println("WebSocket: Failed to allocate memory");
+      return;
+    }
+    
+    memcpy(buffer, data, len);
+    buffer[len] = '\0';
+    Serial.printf("%s\n", buffer);
+    
+    // Use local JsonDocument to prevent heap fragmentation
+    JsonDocument wsRequestDoc;
+    DeserializationError error = deserializeJson(wsRequestDoc, buffer);
+    free(buffer);  // Clean up buffer
+    
+    // Validate JSON parsing
+    if (error) {
+      DEBUG_PRINTF("WebSocket: Invalid JSON - %s\n", error.c_str());
+      return;
+    }
+    
+    // Validate command exists and is a string
+    if (!wsRequestDoc.containsKey("command") || !wsRequestDoc["command"].is<const char*>()) {
+      DEBUG_PRINTLN("WebSocket: Missing or invalid 'command' field");
+      return;
+    }
+    
+    // Whitelist of valid commands
+    const char* command = wsRequestDoc["command"];
+    if (strcmp(command, "getData") == 0) {
+      // Local allocation for response as well
       JsonDocument wsResponseDoc;
       wsResponseDoc["id"] = wsRequestDoc["id"];
       JsonObject temp_data = wsResponseDoc["data"].to<JsonObject>();
       temp_data["bt"] = currentTemp;
       temp_data["st"] = setpointTemp;
       temp_data["fs"] = setpointFanSpeed * 100 / 255;
+      temp_data["ft"] = fanTemp;
       String jsonResponse;
       serializeJson(wsResponseDoc, jsonResponse);
       ws.textAll(jsonResponse);
+    } else {
+      // Unknown command - log and ignore
+      DEBUG_PRINTF("WebSocket: Unknown command '%s' - ignoring\n", command);
     }
   }
 }
@@ -77,10 +113,10 @@ void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType 
              void *arg, uint8_t *data, size_t len) {
   switch (type) {
     case WS_EVT_CONNECT:
-      // Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+      DEBUG_PRINTF("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
       break;
     case WS_EVT_DISCONNECT:
-      // Serial.printf("WebSocket client #%u disconnected\n", client->id());
+      DEBUG_PRINTF("WebSocket client #%u disconnected\n", client->id());
       break;
     case WS_EVT_DATA:
       handleWebSocketMessage(arg, data, len);
@@ -96,7 +132,7 @@ void initWebSocket() {
   server.addHandler(&ws);
 }
 
-String initializeWifi(WifiCredentials wifiCredentials) {
+String initializeWifi(const WifiCredentials& wifiCredentials) {
   // Connect to Wi-Fi
   WiFi.begin(wifiCredentials.ssid, wifiCredentials.password);
   int attempts = 0;
@@ -111,12 +147,11 @@ String initializeWifi(WifiCredentials wifiCredentials) {
   } else {
     // Initialize mDNS
     if (!MDNS.begin("roaster")) {  // Set the hostname to "roaster.local"
-      Serial.println("Error setting up MDNS responder!");
-      while (1) {
-        delay(1000);
-      }
+      Serial.println("Error setting up MDNS responder! Continuing without mDNS...");
+      // Graceful degradation - device works without mDNS, user must use IP address
+    } else {
+      Serial.println("mDNS responder started - device accessible at roaster.local");
     }
-    Serial.println("mDNS responder started");
   }
 
   // Print ESP Local IP Address
@@ -129,11 +164,12 @@ String initializeWifi(WifiCredentials wifiCredentials) {
     request->send(200, "text/plain", "Hi! You've reached roaster.local.");
   });
 
-  // ElegantOTA.begin(&server);  // Start ElegantOTA
-  // // ElegantOTA callbacks
-  // ElegantOTA.onStart(onOTAStart);
-  // ElegantOTA.onProgress(onOTAProgress);
-  // ElegantOTA.onEnd(onOTAEnd);
+  // Start ElegantOTA for over-the-air updates
+  ElegantOTA.begin(&server);  // Start ElegantOTA in async mode
+  // ElegantOTA callbacks
+  ElegantOTA.onStart(onOTAStart);
+  ElegantOTA.onProgress(onOTAProgress);
+  ElegantOTA.onEnd(onOTAEnd);
 
   // Start server
   server.begin();
@@ -158,5 +194,52 @@ void wsCleanup() {
   }
 #endif
 }
+
+// WiFi connection monitoring and auto-reconnection
+// Call this periodically (e.g., every 5-10 seconds) from main loop
+void checkWiFiConnection(const WifiCredentials& wifiCredentials) {
+#ifdef ARDUINO_ARCH_ESP32
+  static unsigned long lastCheck = 0;
+  static int reconnectAttempts = 0;
+  const unsigned long CHECK_INTERVAL = 10000;  // Check every 10 seconds
+  const int MAX_RECONNECT_ATTEMPTS = 3;        // Try 3 times before giving up
+  
+  if (millis() - lastCheck < CHECK_INTERVAL) {
+    return;  // Not time to check yet
+  }
+  
+  lastCheck = millis();
+  
+  if (WiFi.status() != WL_CONNECTED) {
+    DEBUG_PRINTF("WiFi disconnected! Status: %d, Attempt %d/%d\n", WiFi.status(), reconnectAttempts + 1, MAX_RECONNECT_ATTEMPTS);
+    
+    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      reconnectAttempts++;
+      WiFi.disconnect();
+      delay(1000);
+      WiFi.begin(wifiCredentials.ssid, wifiCredentials.password);
+      
+      // Give it 5 seconds to connect
+      int attempts = 0;
+      while (WiFi.status() != WL_CONNECTED && attempts < 5) {
+        delay(1000);
+        attempts++;
+      }
+      
+      if (WiFi.status() == WL_CONNECTED) {
+        DEBUG_PRINTF("WiFi reconnected! IP: %s\n", WiFi.localIP().toString().c_str());
+        reconnectAttempts = 0;  // Reset counter on successful reconnect
+      }
+    } else {
+      // Max attempts reached, will retry after CHECK_INTERVAL
+      reconnectAttempts = 0;
+    }
+  } else {
+    reconnectAttempts = 0;  // Reset counter when connected
+  }
+#endif
+}
+
+#endif // NETWORK_HPP
 
 

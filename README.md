@@ -57,7 +57,97 @@ Part list:
 
 ## Firmware Installation
 
-1. This project uses the Arduino IDE to intially program the Arduino Nano ESP32. Open `roaster-firmware/` directory in Arduino and upload to your Arduino Nano ESP32. The firmware supports over-the-air updates, so subsequent updates can be made by uploading a new `roaster-firmware.ino.bin` file to [http://roaster.local/update](http://roaster.local/update).
+### Quick Setup (Automated)
+
+```bash
+# 1. Clone this repository
+git clone https://github.com/fredvisser/coffee-roaster.git
+cd coffee-roaster
+
+# 2. Run the automated setup script
+./setup_libraries.sh
+
+# 3. Compile and upload firmware
+arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/roaster-firmware.ino
+arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora roaster-firmware/roaster-firmware.ino
+```
+
+### Manual Setup
+
+1. **Install Arduino CLI** (or Arduino IDE)
+   ```bash
+   brew install arduino-cli  # macOS
+   # or download from https://arduino.github.io/arduino-cli/
+   ```
+
+2. **Install ESP32 Core**
+   ```bash
+   arduino-cli config init
+   arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+   arduino-cli core update-index
+   arduino-cli core install esp32:esp32@3.3.3
+   ```
+
+3. **Install Required Libraries**
+   ```bash
+   arduino-cli lib install "EasyNextionLibrary"
+   arduino-cli lib install "MAX6675 library"
+   arduino-cli lib install "SimpleTimer"
+   arduino-cli lib install "AutoPID"
+   arduino-cli lib install "ESP32Servo"
+   arduino-cli lib install "ElegantOTA@3.1.7"
+   arduino-cli lib install "ArduinoJson"
+   ```
+
+4. **Install AsyncWebServer Libraries** (manual installation required)
+   ```bash
+   cd ~/Documents/Arduino/libraries
+   git clone https://github.com/ESP32Async/AsyncTCP.git Async_TCP
+   git clone https://github.com/ESP32Async/ESPAsyncWebServer.git ESP_Async_WebServer
+   ```
+
+5. **⚠️ Configure ElegantOTA for Async Mode** (IMPORTANT)
+   ```bash
+   # Edit ~/Documents/Arduino/libraries/ElegantOTA/src/ElegantOTA.h
+   # Change: #define ELEGANTOTA_USE_ASYNC_WEBSERVER 0
+   # To:     #define ELEGANTOTA_USE_ASYNC_WEBSERVER 1
+   
+   # Or use this command:
+   sed -i '' 's/#define ELEGANTOTA_USE_ASYNC_WEBSERVER 0/#define ELEGANTOTA_USE_ASYNC_WEBSERVER 1/' ~/Documents/Arduino/libraries/ElegantOTA/src/ElegantOTA.h
+   ```
+
+6. **Compile and Upload**
+   ```bash
+   arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/roaster-firmware.ino
+   arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora roaster-firmware/roaster-firmware.ino
+   ```
+
+### Alternative: PlatformIO (Recommended for Teams)
+
+PlatformIO handles all dependencies and configuration automatically (no manual library modification needed!):
+
+```bash
+# 1. Install PlatformIO
+pip install platformio
+
+# 2. Copy example configuration
+cp platformio.ini.example platformio.ini
+
+# 3. Build and upload
+pio run --target upload
+```
+
+### Over-The-Air (OTA) Updates
+
+After initial flash, subsequent firmware updates can be uploaded wirelessly:
+1. Navigate to `http://roaster.local/update` (or use device IP address)
+2. Upload the compiled `.bin` file from `roaster-firmware/build/arduino.esp32.nano_nora/roaster-firmware.ino.bin`
+3. Device will automatically update and reboot
+
+See [`OTA_SETUP.md`](OTA_SETUP.md) for complete OTA documentation.
+
+### Nextion Display Firmware
+
 1. Copy the `Nextion/roaster1.tft` file to a microSD card and insert into the Nextion display before powering on to install the display firmware.
 
 ## Roaster modification
