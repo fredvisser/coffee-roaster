@@ -9,6 +9,9 @@ echo "Coffee Roaster - Library Setup"
 echo "=========================================="
 echo ""
 
+RECOMMENDED_ESP32_CORE="${ESP32_CORE_VERSION:-3.3.5}"
+ESP32_BOARD_URL="https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json"
+
 # Check if arduino-cli is installed
 if ! command -v arduino-cli &> /dev/null; then
     echo "❌ Error: arduino-cli is not installed"
@@ -20,28 +23,49 @@ fi
 echo "✓ arduino-cli found: $(arduino-cli version)"
 echo ""
 
+echo "🔧 Ensuring ESP32 board manager URL..."
+if ! arduino-cli config dump | grep -q "$ESP32_BOARD_URL"; then
+    arduino-cli config init || true
+    arduino-cli config add board_manager.additional_urls "$ESP32_BOARD_URL"
+else
+    echo "✓ Board manager URL already configured"
+fi
+
+echo "🔄 Updating core index..."
+arduino-cli core update-index
+echo ""
+
 # Ensure ESP32 core is installed
 echo "📦 Checking ESP32 core..."
 if arduino-cli core list | grep -q "esp32:esp32"; then
     INSTALLED_VERSION=$(arduino-cli core list | grep "esp32:esp32" | awk '{print $2}')
     echo "✓ ESP32 core installed: $INSTALLED_VERSION"
-    if [ "$INSTALLED_VERSION" != "3.3.3" ]; then
-        echo "⚠️  Warning: Recommended version is 3.3.3, you have $INSTALLED_VERSION"
-        read -p "Update to 3.3.3? (y/n) " -n 1 -r
+    if [ "$INSTALLED_VERSION" != "$RECOMMENDED_ESP32_CORE" ]; then
+        echo "⚠️  Warning: Recommended version is $RECOMMENDED_ESP32_CORE, you have $INSTALLED_VERSION"
+        read -p "Update to $RECOMMENDED_ESP32_CORE? (y/n) " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            arduino-cli core install esp32:esp32@3.3.3
+            arduino-cli core install esp32:esp32@"$RECOMMENDED_ESP32_CORE"
         fi
     fi
 else
-    echo "Installing ESP32 core 3.3.3..."
-    arduino-cli core install esp32:esp32@3.3.3
+    echo "Installing ESP32 core $RECOMMENDED_ESP32_CORE..."
+    arduino-cli core install esp32:esp32@"$RECOMMENDED_ESP32_CORE"
 fi
 echo ""
 
 # Install required libraries
 echo "📚 Installing required libraries..."
 echo ""
+
+echo "🔄 Updating library index..."
+arduino-cli lib update-index
+echo ""
+
+ARDUINO_LIB_DIR="$HOME/Documents/Arduino/libraries"
+if [ ! -d "$ARDUINO_LIB_DIR" ]; then
+    mkdir -p "$ARDUINO_LIB_DIR"
+fi
 
 LIBRARIES=(
     "EasyNextionLibrary"
@@ -50,6 +74,7 @@ LIBRARIES=(
     "AutoPID"
     "ESP32Servo"
     "ElegantOTA@3.1.7"
+    "PWMrelay"
     "ArduinoJson"
 )
 
@@ -58,15 +83,22 @@ for lib in "${LIBRARIES[@]}"; do
     arduino-cli lib install "$lib" || echo "⚠️  $lib may already be installed"
 done
 
+# Fallback manual install for EasyNextionLibrary if not present in index
+if ! arduino-cli lib list | grep -q "EasyNextionLibrary"; then
+    echo "EasyNextionLibrary not found via arduino-cli; cloning from GitHub..."
+    if [ ! -d "$ARDUINO_LIB_DIR/EasyNextionLibrary" ]; then
+        git -C "$ARDUINO_LIB_DIR" clone https://github.com/Seithan/EasyNextionLibrary.git
+        echo "✓ EasyNextionLibrary installed from GitHub"
+    else
+        echo "✓ EasyNextionLibrary already present at $ARDUINO_LIB_DIR/EasyNextionLibrary"
+    fi
+else
+    echo "✓ EasyNextionLibrary present"
+fi
+
 echo ""
 echo "📥 Installing ESPAsyncWebServer and AsyncTCP..."
 echo "Note: These libraries must be installed manually from GitHub"
-
-# Check if libraries directory exists
-ARDUINO_LIB_DIR="$HOME/Documents/Arduino/libraries"
-if [ ! -d "$ARDUINO_LIB_DIR" ]; then
-    mkdir -p "$ARDUINO_LIB_DIR"
-fi
 
 # Install AsyncTCP if not present
 if [ ! -d "$ARDUINO_LIB_DIR/Async_TCP" ] && [ ! -d "$ARDUINO_LIB_DIR/AsyncTCP" ]; then

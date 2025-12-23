@@ -6,12 +6,12 @@
 #include <AutoPID.h>
 #include <SPI.h>
 #include <Preferences.h>
-#include <ElegantOTA.h>  // v3.1.7+ with async mode enabled for ESPAsyncWebServer compatibility
+#include <ElegantOTA.h> // v3.1.7+ with async mode enabled for ESPAsyncWebServer compatibility
 #include <ESP32Servo.h>
-#include <esp_task_wdt.h>  // Hardware watchdog timer
+#include <esp_task_wdt.h> // Hardware watchdog timer
 
 // Debug macros (must be defined before including Network.hpp)
-// #define DEBUG
+#define DEBUG
 
 #ifdef DEBUG
 #define DEBUG_SERIALBEGIN(x) Serial.begin(x)
@@ -20,10 +20,10 @@
 #define DEBUG_PRINTF(...) Serial.printf(__VA_ARGS__)
 
 #else
-#define DEBUG_SERIALBEGIN(x)  // blank line
-#define DEBUG_PRINT(x)        // blank line
-#define DEBUG_PRINTLN(x)      // blank line
-#define DEBUG_PRINTF(...)     // blank line
+#define DEBUG_SERIALBEGIN(x) // blank line
+#define DEBUG_PRINT(x)       // blank line
+#define DEBUG_PRINTLN(x)     // blank line
+#define DEBUG_PRINTF(...)    // blank line
 #endif
 
 #include "Profiles.hpp"
@@ -48,16 +48,16 @@ Preferences preferences;
 #define KD 0
 
 // Safety limits
-#define MAX_SAFE_TEMP 500.0      // Absolute maximum safe temperature (°F)
-#define MAX_ROAST_TEMP 460.0     // Maximum temperature during roast (°F)
-#define COOLING_TARGET_TEMP 145  // Target temperature for cooling (°F)
-#define MAX_BAD_READINGS 5       // Consecutive bad readings before sensor failure
+#define MAX_SAFE_TEMP 500.0       // Absolute maximum safe temperature (°F)
+#define MAX_ROAST_TEMP 460.0      // Maximum temperature during roast (°F)
+#define COOLING_TARGET_TEMP 145   // Target temperature for cooling (°F)
+#define MAX_BAD_READINGS 5        // Consecutive bad readings before sensor failure
 #define NEXTION_READ_ERROR 777777 // Error value returned by Nextion
 
 // Preferences namespace
 #define PREFS_NAMESPACE "roaster"
 
-#define VERSION "2024-12-21"
+#define VERSION "2025-12-22"
 
 // Use timers for simple multitasking
 SimpleTimer checkTempTimer(250);
@@ -75,27 +75,28 @@ Profiles profile;
 
 // Roaster state variables
 // NOTE: All temperature values throughout this codebase are in Fahrenheit (°F)
-double currentTemp = 0;          // Current bean temperature (°F)
-double setpointTemp = 0;         // Target temperature from profile (°F)
-double heaterOutputVal = 0;      // PID output (0-255)
-byte setpointFanSpeed = 0;       // Target fan speed (0-255)
-int setpointProgress = 0;        // Roast time in seconds
-int bdcFanMs = 800;              // BDC fan servo pulse width (800-2000 µs)
-double fanTemp = 0;              // Alternate temperature sensor (°F)
-int badReadingCount = 0;         // Track consecutive bad thermocouple readings
+double currentTemp = 0;     // Current bean temperature (°F)
+double setpointTemp = 0;    // Target temperature from profile (°F)
+double heaterOutputVal = 0; // PID output (0-255)
+byte setpointFanSpeed = 0;  // Target fan speed (0-255)
+int setpointProgress = 0;   // Roast time in seconds
+int bdcFanMs = 800;         // BDC fan servo pulse width (800-2000 µs)
+double fanTemp = 0;         // Alternate temperature sensor (°F)
+int badReadingCount = 0;    // Track consecutive bad thermocouple readings
 
 // Fan ramp state variables (for non-blocking START_ROAST)
 unsigned long fanRampStartTime = 0;
 int fanRampStep = 0;
 
 // Cooling state variables
-unsigned long coolingStartTime = 0;  // Track cooling duration
-#define MAX_COOLING_TIME 1800000  // 30 minutes in milliseconds
+unsigned long coolingStartTime = 0; // Track cooling duration
+#define MAX_COOLING_TIME 1800000    // 30 minutes in milliseconds
 
 // WiFi credentials (loaded from preferences in setup())
 WifiCredentials wifiCredentials;
 
-enum RoasterState {
+enum RoasterState
+{
   IDLE = 0,
   START_ROAST = 1,
   ROASTING = 2,
@@ -113,7 +114,8 @@ AutoPID heaterPID(&currentTemp, &setpointTemp, &heaterOutputVal, 0, 255, KP, KI,
 EasyNex myNex(HW_SERIAL);
 
 // Default roast profile. Any changes stored in EEPROM will override these values.
-void setDefaultRoastProfile() {
+void setDefaultRoastProfile()
+{
   profile.clearSetpoints();
   profile.addSetpoint(150000, 300, 100);
   profile.addSetpoint(300000, 380, 90);
@@ -122,27 +124,45 @@ void setDefaultRoastProfile() {
 uint8_t profileBuffer[200];
 
 // Helper function for reliable Nextion reads with retry logic
-int readNextionWithRetry(const char* component, int retries = 2) {
-  for (int i = 0; i < retries; i++) {
+int readNextionWithRetry(const char *component, int retries = 2)
+{
+  for (int i = 0; i < retries; i++)
+  {
     int value = myNex.readNumber(component);
-    if (value != NEXTION_READ_ERROR) {
+    if (value != NEXTION_READ_ERROR)
+    {
       return value;
     }
-    delay(10);  // Small delay before retry
+    delay(10); // Small delay before retry
   }
   DEBUG_PRINT("Nextion read failed: ");
   DEBUG_PRINTLN(component);
   return NEXTION_READ_ERROR;
 }
 
-void setup() {
+void setup()
+{
+  DEBUG_SERIALBEGIN(115200);
   myNex.begin(115200);
 
   // Set heater and fan control pins to output
   pinMode(HEATER, OUTPUT);
   pinMode(FAN, OUTPUT);
 
-  bdcFan.attach(BDCFAN);
+  // Allocate timer 2 for servo to avoid conflict with PWMrelay
+  ESP32PWM::allocateTimer(2);
+
+  // Attach and initialize BDC fan controller
+  int channel = bdcFan.attach(BDCFAN);
+  if (channel == -1)
+  {
+    DEBUG_PRINTLN("ERROR: BDC fan attach FAILED!");
+  }
+  else
+  {
+    bdcFan.setPeriodHertz(50);
+    bdcFan.writeMicroseconds(800);
+  }
 
   // Explicitly enable the pinMode for the SPI pins because the library doesn't appear to do this correctly when running on an ESP32
   pinMode(TC1_CS, OUTPUT);
@@ -155,33 +175,33 @@ void setup() {
   digitalWrite(FAN, LOW);
   fanRelay.setPeriod(10);
 
-  bdcFan.writeMicroseconds(800); //Expect this is low
+  bdcFan.writeMicroseconds(800);
 
   setDefaultRoastProfile();
-  
+
   // Initialize hardware watchdog timer (10 seconds timeout)
   // If loop() stops running, watchdog will reset the system
   esp_task_wdt_config_t wdt_config = {
-    .timeout_ms = 10000,  // 10 second timeout
-    .idle_core_mask = 0,  // Don't watch idle tasks
-    .trigger_panic = true // Reboot on timeout
+      .timeout_ms = 10000,  // 10 second timeout
+      .idle_core_mask = 0,  // Don't watch idle tasks
+      .trigger_panic = true // Reboot on timeout
   };
   esp_task_wdt_init(&wdt_config);
-  esp_task_wdt_add(NULL);  // Add current task to watchdog
-  Serial.println("Watchdog timer initialized (10s timeout)");
-
+  esp_task_wdt_add(NULL);
   // Load WiFi credentials from preferences
   // Initialize preferences with error checking
-  if (!preferences.begin(PREFS_NAMESPACE, false)) {
-    Serial.println("ERROR: Failed to initialize preferences!");
+  if (!preferences.begin(PREFS_NAMESPACE, false))
+  {
+    DEBUG_PRINTLN("ERROR: Failed to initialize preferences!");
     // Continue with defaults - don't halt system
   }
-  
+
   wifiCredentials.ssid = preferences.getString("ssid", "");
   wifiCredentials.password = preferences.getString("password", "");
-  
+
   String ipAddress = initializeWifi(wifiCredentials);
-  if (ipAddress != "Failed to connect to WiFi") {
+  if (ipAddress != "Failed to connect to WiFi")
+  {
     preferences.putString("ssid", wifiCredentials.ssid);
     preferences.putString("password", wifiCredentials.password);
   }
@@ -202,68 +222,74 @@ void setup() {
   myNex.writeStr("ConfigNav.rev.txt", VERSION);
 
   myNex.writeStr("page Start");
-
-  DEBUG_PRINTLN("Setup complete");
 }
 
-void loop() {
+void loop()
+{
   // Reset watchdog timer every loop iteration
   // If loop hangs for >10 seconds, system will reset
   esp_task_wdt_reset();
-  
+
   // Check WiFi connection and auto-reconnect if needed
   checkWiFiConnection(wifiCredentials);
-  
-  if (tickTimer.isReady()) {
+
+  if (tickTimer.isReady())
+  {
     myNex.NextionListen();
     heaterRelay.tick();
     fanRelay.tick();
     heaterPID.run();
     wsCleanup();
-    ElegantOTA.loop();  // Handle OTA updates
+    ElegantOTA.loop(); // Handle OTA updates
     tickTimer.reset();
   }
 
-  if (checkTempTimer.isReady()) {
+  if (checkTempTimer.isReady())
+  {
     // Read thermocouple with failure detection
     double reading = thermocouple.readFarenheit();
-    
+
     // MAX6675 returns ~2048°F when disconnected, also check for unreasonable values
-    if (reading < 0 || reading > 600) {
+    if (reading < 0 || reading > 600)
+    {
       badReadingCount++;
-      if (badReadingCount >= MAX_BAD_READINGS) {
+      if (badReadingCount >= MAX_BAD_READINGS)
+      {
         // SENSOR FAILURE - EMERGENCY STOP
         roasterState = ERROR;
         digitalWrite(HEATER, LOW);
         heaterPID.stop();
         heaterOutputVal = 0;
         heaterRelay.setPWM(0);
-        fanRelay.setPWM(255);  // Full fan for safety
+        fanRelay.setPWM(255); // Full fan for safety
         bdcFan.writeMicroseconds(2000);
-        Serial.println("EMERGENCY: Thermocouple failure detected!");
+        DEBUG_PRINTLN("EMERGENCY: Thermocouple failure detected!");
         myNex.writeStr("page Error");
         myNex.writeStr("Error.message.txt", "Sensor Failed");
       }
-    } else {
+    }
+    else
+    {
       currentTemp = reading;
-      badReadingCount = 0;  // Reset counter on good reading
-      
+      badReadingCount = 0; // Reset counter on good reading
+
       // THERMAL RUNAWAY PROTECTION
-      if (currentTemp > MAX_SAFE_TEMP) {
+      if (currentTemp > MAX_SAFE_TEMP)
+      {
         // EMERGENCY SHUTDOWN
         roasterState = ERROR;
         digitalWrite(HEATER, LOW);
         heaterPID.stop();
         heaterOutputVal = 0;
         heaterRelay.setPWM(0);
-        fanRelay.setPWM(255);  // Full fan to cool down
+        fanRelay.setPWM(255); // Full fan to cool down
         bdcFan.writeMicroseconds(2000);
-        Serial.println("EMERGENCY: Thermal runaway detected!");
+        DEBUG_PRINTLN("EMERGENCY: Thermal runaway detected!");
         myNex.writeStr("page Error");
         myNex.writeStr("Error.message.txt", "Over Temp");
       }
     }
-    
+
     fanTemp = thermocoupleFan.readFarenheit();
     DEBUG_PRINT("Temp: ");
     DEBUG_PRINTLN(currentTemp);
@@ -280,160 +306,167 @@ void loop() {
     checkTempTimer.reset();
   }
 
-  if (stateMachineTimer.isReady()) {
-    switch (roasterState) {
-      case IDLE:
-        digitalWrite(HEATER, LOW);
-        digitalWrite(FAN, LOW);
+  if (stateMachineTimer.isReady())
+  {
+    switch (roasterState)
+    {
+    case IDLE:
+      digitalWrite(HEATER, LOW);
+      digitalWrite(FAN, LOW);
+      bdcFan.writeMicroseconds(800); // Ensure BDC stays at low speed
+      heaterPID.stop();
+      heaterOutputVal = 0;
+      break;
+
+    case START_ROAST:
+    {
+      // Non-blocking fan ramp-up
+      if (fanRampStep == 0)
+      {
+        fanRampStartTime = millis();
+        fanRampStep = 800;
+      }
+
+      unsigned long elapsed = millis() - fanRampStartTime;
+      int targetStep = 800 + (elapsed / 500) * 100;
+
+      // Update fan speed every 500ms
+      if (targetStep <= 2000 && targetStep > fanRampStep)
+      {
+        bdcFan.writeMicroseconds(targetStep);
+        fanRampStep = targetStep;
+      }
+
+      // Fan ramp complete after reaching 2000 and waiting additional 500ms
+      if (fanRampStep >= 2000 && elapsed >= 6500)
+      {
+        // Reset for next roast
+        fanRampStep = 0;
+
+        // Save profile BEFORE starting
+        profile.flattenProfile(profileBuffer);
+        preferences.putBytes("profile", profileBuffer, 200);
+
+        // Start roasting
+        roasterState = ROASTING;
+        profile.startProfile((int)currentTemp, millis());
+        heaterPID.run();
+        heaterRelay.setPWM(heaterOutputVal);
+        sendWsMessage("{ \"pushMessage\": \"startRoasting\" }");
+      }
+
+      // Set initial PWM fan speed
+      fanRelay.setPWM(profile.getTargetFanSpeed(millis()));
+      break;
+    }
+
+    case ROASTING:
+    {
+      // Ensure PID is actively running every loop iteration
+      heaterPID.run();
+
+      setpointTemp = profile.getTargetTemp(millis());
+      setpointFanSpeed = profile.getTargetFanSpeed(millis());
+      setpointProgress = profile.getProfileProgress(millis());
+
+      fanRelay.setPWM(setpointFanSpeed);
+
+      // Clamp BDC fan to safe range (800-2000 microseconds)
+      int bdcValue = 5 * setpointFanSpeed + 700;
+      bdcValue = constrain(bdcValue, 800, 2000);
+      bdcFan.writeMicroseconds(bdcValue);
+
+      heaterRelay.setPWM(heaterOutputVal);
+
+      if (currentTemp >= profile.getFinalTargetTemp())
+      {
         heaterPID.stop();
         heaterOutputVal = 0;
-        break;
-
-      case START_ROAST: {
-        // Non-blocking fan ramp-up
-        if (fanRampStep == 0) {
-          // Initialize fan ramp
-          fanRampStartTime = millis();
-          fanRampStep = 800;
-          DEBUG_PRINTLN("Start roast - beginning fan ramp");
-        }
-        
-        unsigned long elapsed = millis() - fanRampStartTime;
-        int targetStep = 800 + (elapsed / 500) * 100;
-        
-        // Update fan speed every 500ms
-        if (targetStep <= 2000 && targetStep > fanRampStep) {
-          bdcFan.writeMicroseconds(targetStep);
-          fanRampStep = targetStep;
-          DEBUG_PRINT("Fan ramp: ");
-          DEBUG_PRINTLN(targetStep);
-        }
-        
-        // Fan ramp complete after reaching 2000 and waiting additional 500ms
-        if (fanRampStep >= 2000 && elapsed >= 6500) {
-          // Reset for next roast
-          fanRampStep = 0;
-          
-          // Save profile BEFORE starting (fix race condition #7)
-          profile.flattenProfile(profileBuffer);
-          preferences.putBytes("profile", profileBuffer, 200);
-          
-          // Now start roasting
-          roasterState = ROASTING;
-          profile.startProfile((int)currentTemp, millis());
-          heaterPID.run();
-          heaterRelay.setPWM(heaterOutputVal);
-          sendWsMessage("{ \"pushMessage\": \"startRoasting\" }");
-          
-          DEBUG_PRINTLN("Fan ramp complete - starting roast");
-        }
-        
-        // Set initial PWM fan speed
-        fanRelay.setPWM(profile.getTargetFanSpeed(millis()));
-        break;
-      }
-
-      case ROASTING: {
-        // Ensure PID is actively running every loop iteration
-        heaterPID.run();
-        
-        setpointTemp = profile.getTargetTemp(millis());
-        setpointFanSpeed = profile.getTargetFanSpeed(millis());
-        setpointProgress = profile.getProfileProgress(millis());
-
-        fanRelay.setPWM(setpointFanSpeed);
-        
-        // Clamp BDC fan to safe range (800-2000 microseconds)
-        int bdcValue = 5 * setpointFanSpeed + 700;
-        bdcValue = constrain(bdcValue, 800, 2000);
-        bdcFan.writeMicroseconds(bdcValue);
-        
         heaterRelay.setPWM(heaterOutputVal);
 
-        if (currentTemp >= profile.getFinalTargetTemp()) {
-          heaterPID.stop();
-          heaterOutputVal = 0;
-          heaterRelay.setPWM(heaterOutputVal);
+        setpointTemp = 145;
+        roasterState = COOLING;
+        coolingStartTime = millis(); // Start cooling timer
 
-          setpointTemp = 145;
-          roasterState = COOLING;
-          coolingStartTime = millis();  // Start cooling timer
+        setpointFanSpeed = 255;
+        fanRelay.setPWM(setpointFanSpeed);
+        bdcFan.writeMicroseconds(2000);
 
-          setpointFanSpeed = 255;
-          fanRelay.setPWM(setpointFanSpeed);
-          bdcFan.writeMicroseconds(2000);
+        setpointProgress = 0;
+        myNex.writeStr("page Cooling");
+        DEBUG_PRINTLN("Roast complete -> cooling");
+      }
+      myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
+      myNex.writeNum("globals.nextSetTempNum.val", setpointTemp);
+      myNex.writeNum("globals.setpointFan.val", round(setpointFanSpeed * 100 / 255));
+      myNex.writeNum("globals.setpointProg.val", setpointProgress);
+      break;
+    }
 
-          setpointProgress = 0;
-          myNex.writeStr("page Cooling");
-          DEBUG_PRINTLN("Roast complete -> cooling");
-        }
-        myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
-        myNex.writeNum("globals.nextSetTempNum.val", setpointTemp);
-        myNex.writeNum("globals.setpointFan.val", round(setpointFanSpeed * 100 / 255));
-        myNex.writeNum("globals.setpointProg.val", setpointProgress);
+    case COOLING:
+    {
+      digitalWrite(HEATER, LOW);
+      myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
+      DEBUG_PRINTLN("Cooling");
+
+      // Check for cooling timeout (30 minutes max)
+      unsigned long coolingDuration = millis() - coolingStartTime;
+      if (coolingDuration > MAX_COOLING_TIME)
+      {
+        DEBUG_PRINTLN("Cooling timeout - forcing IDLE");
+        fanRelay.setPWM(0);
+        bdcFan.writeMicroseconds(800);
+        digitalWrite(FAN, LOW);
+        roasterState = IDLE;
+        sendWsMessage("{ \"pushMessage\": \"endRoasting\" }");
+        myNex.writeStr("page Start");
         break;
       }
 
-      case COOLING: {
-        digitalWrite(HEATER, LOW);
-        myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
-        DEBUG_PRINTLN("Cooling");
+      if (currentTemp <= 145)
+      {
+        fanRelay.setPWM(0);
+        bdcFan.writeMicroseconds(800);
+        digitalWrite(FAN, LOW);
+        roasterState = IDLE;
 
-        // Check for cooling timeout (30 minutes max)
-        unsigned long coolingDuration = millis() - coolingStartTime;
-        if (coolingDuration > MAX_COOLING_TIME) {
-          DEBUG_PRINTLN("Cooling timeout - forcing IDLE");
-          fanRelay.setPWM(0);
-          bdcFan.writeMicroseconds(800);
-          digitalWrite(FAN, LOW);
-          roasterState = IDLE;
-          sendWsMessage("{ \"pushMessage\": \"endRoasting\" }");
-          myNex.writeStr("page Start");
-          break;
-        }
-
-        if (currentTemp <= 145) {
-          fanRelay.setPWM(0);
-          bdcFan.writeMicroseconds(800);
-          digitalWrite(FAN, LOW);
-          roasterState = IDLE;
-
-          sendWsMessage("{ \"pushMessage\": \"endRoasting\" }");
-          myNex.writeStr("page Start");
-          DEBUG_PRINTLN("Cooling - stopped");
-        }
-        break;
+        sendWsMessage("{ \"pushMessage\": \"endRoasting\" }");
+        myNex.writeStr("page Start");
+        DEBUG_PRINTLN("Cooling - stopped");
       }
-      
-      case ERROR:
-        // ERROR state: Keep system in safe mode until manual reset
-        // Heater must stay OFF, cooling fan at safe speed
-        digitalWrite(HEATER, LOW);
-        heaterRelay.setPWM(0);
-        heaterPID.stop();
-        
-        // Run cooling fan at safe speed (not maximum to avoid mechanical stress)
-        fanRelay.setPWM(200);  // ~78% speed for sustained cooling
-        bdcFan.writeMicroseconds(1500);  // Mid-range for BDC fan
-        
-        // Update display with current temperature
-        myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
-        
-        DEBUG_PRINTLN("ERROR state - system locked. Reset required.");
-        
-        // Only exit ERROR state through hardware reset
-        // No automatic recovery to ensure user acknowledges the fault
-        break;
-        
-      default:
-        DEBUG_PRINTLN("Hit default case!!");
-        break;
+      break;
+    }
+
+    case ERROR:
+      // ERROR state: Keep system in safe mode until manual reset
+      // Heater must stay OFF, cooling fan at safe speed
+      digitalWrite(HEATER, LOW);
+      heaterRelay.setPWM(0);
+      heaterPID.stop();
+
+      // Run cooling fan at safe speed (not maximum to avoid mechanical stress)
+      fanRelay.setPWM(200);           // ~78% speed for sustained cooling
+      bdcFan.writeMicroseconds(1500); // Mid-range for BDC fan
+
+      // Update display with current temperature
+      myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
+
+      DEBUG_PRINTLN("ERROR state - system locked. Reset required.");
+
+      // Only exit ERROR state through hardware reset
+      // No automatic recovery to ensure user acknowledges the fault
+      break;
+
+    default:
+      DEBUG_PRINTLN("Hit default case!!");
+      break;
     }
     stateMachineTimer.reset();
   }
 }
 
-void trigger0() {  // Start roast command received
+void trigger0()
+{ // Start roast command received
   // Read all profile values with retry logic
   int temp1 = readNextionWithRetry("ConfigSetpoint.spTemp1.val");
   int temp2 = readNextionWithRetry("ConfigSetpoint.spTemp2.val");
@@ -448,10 +481,13 @@ void trigger0() {  // Start roast command received
   // Check if any reads failed - use current profile if so
   if (temp1 == NEXTION_READ_ERROR || temp2 == NEXTION_READ_ERROR || temp3 == NEXTION_READ_ERROR ||
       time1 == NEXTION_READ_ERROR || time2 == NEXTION_READ_ERROR || time3 == NEXTION_READ_ERROR ||
-      power1 == NEXTION_READ_ERROR || power2 == NEXTION_READ_ERROR || power3 == NEXTION_READ_ERROR) {
+      power1 == NEXTION_READ_ERROR || power2 == NEXTION_READ_ERROR || power3 == NEXTION_READ_ERROR)
+  {
     DEBUG_PRINTLN("Failed to read profile from Nextion - using existing profile");
     // Don't update profile, just start roast with current values
-  } else {
+  }
+  else
+  {
     // Validate all inputs are within safe ranges before adding to profile
     temp1 = constrain(temp1, 0, 500);
     temp2 = constrain(temp2, 0, 500);
@@ -474,7 +510,8 @@ void trigger0() {  // Start roast command received
   myNex.writeNum("globals.nextSetTempNum.val", setpointTemp);
 }
 
-void trigger1() {  // Stop roast command received
+void trigger1()
+{ // Stop roast command received
   roasterState = COOLING;
 
   heaterPID.stop();
@@ -490,19 +527,22 @@ void trigger1() {  // Stop roast command received
   myNex.writeNum("globals.nextSetTempNum.val", 145);
 }
 
-void trigger2() {  // Stop cooling command received
+void trigger2()
+{ // Stop cooling command received
   roasterState = IDLE;
   myNex.writeStr("page Start");
 }
 
-void trigger3() {  // Apply WiFi credentials
+void trigger3()
+{ // Apply WiFi credentials
   // Update global WiFi credentials
   wifiCredentials.ssid = myNex.readStr("ConfigWifi.ssid.txt");
   wifiCredentials.password = myNex.readStr("ConfigWifi.password.txt");
   myNex.writeStr("ConfigWifi.ip.txt", "Connecting...");
   String ip = initializeWifi(wifiCredentials);
   myNex.writeStr("ConfigWifi.ip.txt", ip);
-  if (ip != "Failed to connect to WiFi") {
+  if (ip != "Failed to connect to WiFi")
+  {
     preferences.putString("ssid", wifiCredentials.ssid);
     preferences.putString("password", wifiCredentials.password);
   }
