@@ -26,6 +26,8 @@
 #define DEBUG_PRINTF(...)    // blank line
 #endif
 
+#include "Types.hpp"
+#include "DebugLog.hpp"
 #include "Profiles.hpp"
 #include "Network.hpp"
 
@@ -63,6 +65,7 @@ Preferences preferences;
 SimpleTimer checkTempTimer(250);
 SimpleTimer tickTimer(5);
 SimpleTimer stateMachineTimer(500);
+SimpleTimer wsBroadcastTimer(1000);  // WebSocket broadcast every 1 second
 
 // PWM is used to control fan and heater outputs
 PWMrelay heaterRelay(HEATER, HIGH);
@@ -95,15 +98,7 @@ unsigned long coolingStartTime = 0; // Track cooling duration
 // WiFi credentials (loaded from preferences in setup())
 WifiCredentials wifiCredentials;
 
-enum RoasterState
-{
-  IDLE = 0,
-  START_ROAST = 1,
-  ROASTING = 2,
-  COOLING = 3,
-  ERROR = 4
-};
-
+// Roaster state variable (enum defined in Types.hpp)
 RoasterState roasterState = IDLE;
 
 MAX6675 thermocouple(SCK, TC1_CS, MISO);
@@ -176,6 +171,8 @@ void setup()
   fanRelay.setPeriod(10);
 
   bdcFan.writeMicroseconds(800);
+  
+  LOG_INFO("System initialized - entering IDLE state");
 
   setDefaultRoastProfile();
 
@@ -323,6 +320,7 @@ void loop()
       // Non-blocking fan ramp-up
       if (fanRampStep == 0)
       {
+        LOG_INFOF("Starting roast - Fan ramp-up initiated (%.1fF)", currentTemp);
         fanRampStartTime = millis();
         fanRampStep = 800;
       }
@@ -462,6 +460,13 @@ void loop()
       break;
     }
     stateMachineTimer.reset();
+  }
+
+  // Broadcast system state via WebSocket to debug console
+  if (wsBroadcastTimer.isReady())
+  {
+    broadcastSystemState();
+    wsBroadcastTimer.reset();
   }
 }
 

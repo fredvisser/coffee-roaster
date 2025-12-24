@@ -212,8 +212,11 @@ main() {
     test_num="$1"
     action="${2:-all}"  # Default to "all" if not specified
     
-    # Get sketch path and name
-    read sketch_path test_name <<< "$(get_sketch_path "$test_num")"
+    # Get sketch path and name (handle paths with spaces)
+    local output
+    output=$(get_sketch_path "$test_num")
+    sketch_path=$(echo "$output" | head -n1)
+    test_name=$(echo "$output" | tail -n1)
     
     if [ "$sketch_path" = "INVALID" ]; then
         print_error "Invalid test selection: $test_num"
