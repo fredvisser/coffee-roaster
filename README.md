@@ -57,101 +57,31 @@ Part list:
 
 ## Firmware Installation
 
-### Quick Setup (Automated)
+For complete firmware setup, build, and deployment instructions, see:
+
+**[roaster-firmware/README.md](roaster-firmware/README.md)**
+
+### Quick Start
 
 ```bash
 # 1. Clone this repository
 git clone https://github.com/fredvisser/coffee-roaster.git
-cd coffee-roaster
+cd coffee-roaster/roaster-firmware
 
-# 2. Run the automated setup script
+# 2. Run automated setup (installs dependencies)
 ./setup_libraries.sh
 
 # 3. Compile and upload firmware
-arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/roaster-firmware.ino
-arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora roaster-firmware/roaster-firmware.ino
+./run_tests.sh 1 upload
 ```
 
-### Manual Setup
+### Key Features
 
-1. **Install Arduino CLI** (or Arduino IDE)
-
-   ```bash
-   brew install arduino-cli  # macOS
-   # or download from https://arduino.github.io/arduino-cli/
-   ```
-
-2. **Install ESP32 Core**
-
-   ```bash
-   arduino-cli config init
-   arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-   arduino-cli core update-index
-   arduino-cli core install esp32:esp32@3.3.5
-   ```
-
-3. **Install Required Libraries**
-
-   ```bash
-   arduino-cli lib install "EasyNextionLibrary"
-   arduino-cli lib install "MAX6675 library"
-   arduino-cli lib install "SimpleTimer"
-   arduino-cli lib install "AutoPID"
-   arduino-cli lib install "ESP32Servo"
-   arduino-cli lib install "ElegantOTA@3.1.7"
-   arduino-cli lib install "PWMrelay"
-   arduino-cli lib install "ArduinoJson"
-   ```
-
-4. **Install AsyncWebServer Libraries** (manual installation required)
-
-   ```bash
-   cd ~/Documents/Arduino/libraries
-   git clone https://github.com/ESP32Async/AsyncTCP.git Async_TCP
-   git clone https://github.com/ESP32Async/ESPAsyncWebServer.git ESP_Async_WebServer
-   ```
-
-5. **⚠️ Configure ElegantOTA for Async Mode** (IMPORTANT)
-
-   ```bash
-   # Edit ~/Documents/Arduino/libraries/ElegantOTA/src/ElegantOTA.h
-   # Change: #define ELEGANTOTA_USE_ASYNC_WEBSERVER 0
-   # To:     #define ELEGANTOTA_USE_ASYNC_WEBSERVER 1
-
-   # Or use this command:
-   sed -i '' 's/#define ELEGANTOTA_USE_ASYNC_WEBSERVER 0/#define ELEGANTOTA_USE_ASYNC_WEBSERVER 1/' ~/Documents/Arduino/libraries/ElegantOTA/src/ElegantOTA.h
-   ```
-
-6. **Compile and Upload**
-   ```bash
-   arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/roaster-firmware.ino
-   arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora roaster-firmware/roaster-firmware.ino
-   ```
-
-### Alternative: PlatformIO (Recommended for Teams)
-
-PlatformIO handles all dependencies and configuration automatically (no manual library modification needed!):
-
-```bash
-# 1. Install PlatformIO
-pip install platformio
-
-# 2. Copy example configuration
-cp platformio.ini.example platformio.ini
-
-# 3. Build and upload
-pio run --target upload
-```
-
-### Over-The-Air (OTA) Updates
-
-After initial flash, subsequent firmware updates can be uploaded wirelessly:
-
-1. Navigate to `http://roaster.local/update` (or use device IP address)
-2. Upload the compiled `.bin` file from `roaster-firmware/build/arduino.esp32.nano_nora/roaster-firmware.ino.bin`
-3. Device will automatically update and reboot
-
-See [`OTA_SETUP.md`](OTA_SETUP.md) for complete OTA documentation.
+- **Web Console**: Access at `http://roaster.local/console` for real-time monitoring and debug logs
+- **OTA Updates**: Upload new firmware at `http://roaster.local/update`
+- **WiFi Connectivity**: WebSocket real-time data streaming
+- **Safety Systems**: Thermal runaway protection, over-temperature cutoff
+- **Profile Management**: Custom roast profiles with time/temperature/fan curves
 
 ### Nextion Display Firmware
 

@@ -67,8 +67,8 @@ public:
   }
   
   // Get logs as JSON array
-  String getLogsJSON(int maxEntries = 50) const {
-    String json = "[";
+  String getLogsJSON(int maxEntries = 50, bool wrapInObject = false) const {
+    String json = wrapInObject ? "{\"logs\":[" : "[";
     
     int entriesToReturn = min(maxEntries, count);
     int startIndex = (writeIndex - entriesToReturn + MAX_LOGS) % MAX_LOGS;
@@ -79,9 +79,9 @@ public:
       if (i > 0) json += ",";
       
       json += "{";
-      json += "\"ts\":" + String(logs[index].timestamp) + ",";
+      json += "\"timestamp\":" + String(logs[index].timestamp) + ",";
       json += "\"level\":\"" + String(getLevelName(logs[index].level)) + "\",";
-      json += "\"msg\":\"";
+      json += "\"message\":\"";
       
       // Escape special characters in message
       for (int j = 0; j < 80 && logs[index].message[j] != '\0'; j++) {
@@ -93,7 +93,7 @@ public:
       json += "\"}";
     }
     
-    json += "]";
+    json += wrapInObject ? "]}" : "]";
     return json;
   }
   

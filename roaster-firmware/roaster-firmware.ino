@@ -43,23 +43,14 @@ Preferences preferences;
 #define BDCFAN D5
 
 // PID settings and gains
-#define OUTPUT_MIN 0
-#define OUTPUT_MAX 255
 #define KP 8.0
 #define KI 0.46
 #define KD 0
 
-// Safety limits
-#define MAX_SAFE_TEMP 500.0       // Absolute maximum safe temperature (°F)
-#define MAX_ROAST_TEMP 460.0      // Maximum temperature during roast (°F)
-#define COOLING_TARGET_TEMP 145   // Target temperature for cooling (°F)
-#define MAX_BAD_READINGS 5        // Consecutive bad readings before sensor failure
-#define NEXTION_READ_ERROR 777777 // Error value returned by Nextion
-
 // Preferences namespace
 #define PREFS_NAMESPACE "roaster"
 
-#define VERSION "2025-12-22"
+#define VERSION "2025-12-24"
 
 // Use timers for simple multitasking
 SimpleTimer checkTempTimer(250);
@@ -93,7 +84,6 @@ int fanRampStep = 0;
 
 // Cooling state variables
 unsigned long coolingStartTime = 0; // Track cooling duration
-#define MAX_COOLING_TIME 1800000    // 30 minutes in milliseconds
 
 // WiFi credentials (loaded from preferences in setup())
 WifiCredentials wifiCredentials;
@@ -130,8 +120,7 @@ int readNextionWithRetry(const char *component, int retries = 2)
     }
     delay(10); // Small delay before retry
   }
-  DEBUG_PRINT("Nextion read failed: ");
-  DEBUG_PRINTLN(component);
+  LOG_WARNF("Nextion read failed: %s", component);
   return NEXTION_READ_ERROR;
 }
 
@@ -189,7 +178,7 @@ void setup()
   // Initialize preferences with error checking
   if (!preferences.begin(PREFS_NAMESPACE, false))
   {
-    DEBUG_PRINTLN("ERROR: Failed to initialize preferences!");
+    LOG_ERROR("Preferences initialization failed - using defaults");
     // Continue with defaults - don't halt system
   }
 
@@ -288,18 +277,7 @@ void loop()
     }
 
     fanTemp = thermocoupleFan.readFarenheit();
-    DEBUG_PRINT("Temp: ");
-    DEBUG_PRINTLN(currentTemp);
-    DEBUG_PRINT("Fan speed: ");
-    DEBUG_PRINTLN(setpointFanSpeed);
-    DEBUG_PRINT("Heater output: ");
-    DEBUG_PRINTLN(heaterOutputVal);
-    DEBUG_PRINT("Setpoint temp: ");
-    DEBUG_PRINTLN(setpointTemp);
-    DEBUG_PRINT("Setpoint progress: ");
-    DEBUG_PRINTLN(setpointProgress);
-    DEBUG_PRINT("Fan chamber temp: ");
-    DEBUG_PRINTLN(fanTemp);
+    // Metrics now available via debug console at /console
     checkTempTimer.reset();
   }
 
@@ -350,6 +328,7 @@ void loop()
         profile.startProfile((int)currentTemp, millis());
         heaterPID.run();
         heaterRelay.setPWM(heaterOutputVal);
+        LOG_INFOF("Roast started: Target=%.0fF, Setpoints=%d", (float)profile.getFinalTargetTemp(), profile.getSetpointCount());
         sendWsMessage("{ \"pushMessage\": \"startRoasting\" }");
       }
 
@@ -392,7 +371,7 @@ void loop()
 
         setpointProgress = 0;
         myNex.writeStr("page Cooling");
-        DEBUG_PRINTLN("Roast complete -> cooling");
+        LOG_INFOF("Roast complete at %.1fF - entering cooling phase", currentTemp);
       }
       myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
       myNex.writeNum("globals.nextSetTempNum.val", setpointTemp);
@@ -405,13 +384,12 @@ void loop()
     {
       digitalWrite(HEATER, LOW);
       myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
-      DEBUG_PRINTLN("Cooling");
 
       // Check for cooling timeout (30 minutes max)
       unsigned long coolingDuration = millis() - coolingStartTime;
       if (coolingDuration > MAX_COOLING_TIME)
       {
-        DEBUG_PRINTLN("Cooling timeout - forcing IDLE");
+        LOG_WARNF("Cooling timeout after %lu minutes - forcing IDLE", coolingDuration / 60000);
         fanRelay.setPWM(0);
         bdcFan.writeMicroseconds(800);
         digitalWrite(FAN, LOW);
@@ -428,9 +406,9 @@ void loop()
         digitalWrite(FAN, LOW);
         roasterState = IDLE;
 
+        LOG_INFOF("Cooling complete at %.1fF - returning to IDLE", currentTemp);
         sendWsMessage("{ \"pushMessage\": \"endRoasting\" }");
         myNex.writeStr("page Start");
-        DEBUG_PRINTLN("Cooling - stopped");
       }
       break;
     }
@@ -449,14 +427,15 @@ void loop()
       // Update display with current temperature
       myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
 
-      DEBUG_PRINTLN("ERROR state - system locked. Reset required.");
+      // ERROR state logged when entered, not every loop iteration
 
       // Only exit ERROR state through hardware reset
       // No automatic recovery to ensure user acknowledges the fault
       break;
 
     default:
-      DEBUG_PRINTLN("Hit default case!!");
+      LOG_WARNF("Unknown state: %d - returning to IDLE", roasterState);
+      roasterState = IDLE;
       break;
     }
     stateMachineTimer.reset();
@@ -466,6 +445,7 @@ void loop()
   if (wsBroadcastTimer.isReady())
   {
     broadcastSystemState();
+    broadcastLogs(50);  // Send last 50 log entries
     wsBroadcastTimer.reset();
   }
 }
@@ -488,7 +468,7 @@ void trigger0()
       time1 == NEXTION_READ_ERROR || time2 == NEXTION_READ_ERROR || time3 == NEXTION_READ_ERROR ||
       power1 == NEXTION_READ_ERROR || power2 == NEXTION_READ_ERROR || power3 == NEXTION_READ_ERROR)
   {
-    DEBUG_PRINTLN("Failed to read profile from Nextion - using existing profile");
+    LOG_WARN("Failed to read profile from Nextion - using existing profile");
     // Don't update profile, just start roast with current values
   }
   else

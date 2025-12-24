@@ -8,8 +8,7 @@ set -e
 BOARD_FQBN="esp32:esp32:nano_nora"
 SERIAL_PORT="${SERIAL_PORT:-auto}"
 BAUD_RATE=115200
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FIRMWARE_DIR="$PROJECT_DIR/roaster-firmware"
+FIRMWARE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTS_DIR="$FIRMWARE_DIR/tests"
 
 # Colors for output
@@ -78,11 +77,42 @@ compile_sketch() {
     
     if arduino-cli compile --fqbn "$BOARD_FQBN" "$sketch_path" 2>&1 | tee /tmp/compile.log; then
         print_success "$sketch_name compiled successfully"
+        copy_build_artifacts "$sketch_path" "$sketch_name"
         return 0
     else
         print_error "$sketch_name compilation failed"
         tail -20 /tmp/compile.log
         return 1
+    fi
+}
+
+copy_build_artifacts() {
+    local sketch_path="$1"
+    local sketch_name="$2"
+    
+    # Only copy artifacts for main firmware, not tests
+    if [[ "$sketch_name" != "roaster-firmware" ]]; then
+        return 0
+    fi
+    
+    local sketch_dir=$(dirname "$sketch_path")
+    local build_dir="$sketch_dir/build"
+    
+    # Create build directory if it doesn't exist
+    mkdir -p "$build_dir"
+    
+    # Find the most recently compiled .bin file in arduino cache
+    # arduino-cli stores builds in ~/Library/Caches/arduino/sketches/<HASH>/
+    local cache_dir="$HOME/Library/Caches/arduino/sketches"
+    local bin_file=$(find "$cache_dir" -name "$sketch_name.ino.bin" -type f -mmin -5 2>/dev/null | head -1)
+    
+    if [ -n "$bin_file" ] && [ -f "$bin_file" ]; then
+        cp "$bin_file" "$build_dir/$sketch_name.bin"
+        print_success "Build artifact copied to: $build_dir/$sketch_name.bin"
+        local size=$(ls -lh "$build_dir/$sketch_name.bin" | awk '{print $5}')
+        print_info "Firmware size: $size"
+    else
+        print_info "No .bin file found in build cache (this is normal for test sketches)"
     fi
 }
 

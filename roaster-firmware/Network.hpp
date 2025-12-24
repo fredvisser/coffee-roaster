@@ -30,11 +30,7 @@ extern int badReadingCount;
 extern RoasterState roasterState;  // Defined in Types.hpp
 extern Profiles profile;  // Profile configuration
 
-// Wifi credentials struct
-struct WifiCredentials {
-  String ssid;
-  String password;
-};
+// WifiCredentials struct defined in Types.hpp
 
 unsigned long ota_progress_millis = 0;
 
@@ -215,7 +211,7 @@ void broadcastSystemState() {
 
 // Broadcast logs to all WebSocket clients
 void broadcastLogs(int maxEntries = 10) {
-  String logsJson = debugLogger.getLogsJSON(maxEntries);
+  String logsJson = debugLogger.getLogsJSON(maxEntries, true);  // Wrap in {logs: [...]}
   ws.textAll(logsJson);
 }
 
@@ -278,7 +274,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       maxEntries = request->getParam("max")->value().toInt();
       maxEntries = constrain(maxEntries, 1, 100);
     }
-    String json = debugLogger.getLogsJSON(maxEntries);
+    String json = debugLogger.getLogsJSON(maxEntries, true);  // Wrap in {logs: [...]}
     request->send(200, "application/json", json);
   });
 
