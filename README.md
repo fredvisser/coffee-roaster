@@ -57,7 +57,34 @@ Part list:
 
 ## Firmware Installation
 
-1. This project uses the Arduino IDE to intially program the Arduino Nano ESP32. Open `roaster-firmware/` directory in Arduino and upload to your Arduino Nano ESP32. The firmware supports over-the-air updates, so subsequent updates can be made by uploading a new `roaster-firmware.ino.bin` file to [http://roaster.local/update](http://roaster.local/update).
+For complete firmware setup, build, and deployment instructions, see:
+
+**[roaster-firmware/README.md](roaster-firmware/README.md)**
+
+### Quick Start
+
+```bash
+# 1. Clone this repository
+git clone https://github.com/fredvisser/coffee-roaster.git
+cd coffee-roaster/roaster-firmware
+
+# 2. Run automated setup (installs dependencies)
+./setup_libraries.sh
+
+# 3. Compile and upload firmware
+./run_tests.sh 1 upload
+```
+
+### Key Features
+
+- **Web Console**: Access at `http://roaster.local/console` for real-time monitoring and debug logs
+- **OTA Updates**: Upload new firmware at `http://roaster.local/update`
+- **WiFi Connectivity**: WebSocket real-time data streaming
+- **Safety Systems**: Thermal runaway protection, over-temperature cutoff
+- **Profile Management**: Custom roast profiles with time/temperature/fan curves
+
+### Nextion Display Firmware
+
 1. Copy the `Nextion/roaster1.tft` file to a microSD card and insert into the Nextion display before powering on to install the display firmware.
 
 ## Roaster modification

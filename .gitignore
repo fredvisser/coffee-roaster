@@ -1,3 +1,4 @@
 .DS_Store
 roaster-firmware/build/arduino.esp32.nano_nora/roaster-firmware.ino.elf
 roaster-firmware/build/arduino.esp32.nano_nora/roaster-firmware.ino.map
+roaster-firmware/build/*.bin
