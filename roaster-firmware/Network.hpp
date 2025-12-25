@@ -9,6 +9,9 @@
 #include <ESPmDNS.h>
 #include <ElegantOTA.h>  // v3.1.7+ with async mode enabled for ESPAsyncWebServer compatibility
 #include "DebugLog.hpp"
+#include "ProfileEditor.hpp"    // Profile backend logic
+#include "ProfileWebUI.hpp"     // Profile UI HTML/CSS/JS
+#include <vector>
 
 // Removed global JsonDocument to prevent heap fragmentation
 // Using local allocation in functions instead
@@ -29,6 +32,8 @@ extern int bdcFanMs;
 extern int badReadingCount;
 extern RoasterState roasterState;  // Defined in Types.hpp
 extern Profiles profile;  // Profile configuration
+extern Preferences preferences; // NVS preferences from main firmware
+extern uint8_t profileBuffer[200];
 
 // WifiCredentials struct defined in Types.hpp
 
@@ -197,10 +202,29 @@ String getProfileJSON() {
     setpoint["temp"] = sp.temp;
     setpoint["fanSpeed"] = sp.fanSpeed;
   }
+  doc["activeName"] = preferences.getString("profile_active", "");
   
   String output;
   serializeJson(doc, output);
   return output;
+}
+
+// Load profile by name from preferences into active `profile`
+bool loadProfileByName(const String& name) {
+  if (name.length() == 0) return false;
+  String sanitized = sanitizeProfileName(name);
+  String key = String("profile_") + sanitized;
+  uint8_t buf[200];
+  size_t read = preferences.getBytes(key.c_str(), buf, sizeof(buf));
+  if (read == 0) {
+    LOG_WARNF("Failed to load profile '%s' (sanitized: '%s') - key not found", name.c_str(), sanitized.c_str());
+    return false;
+  }
+  profile.unflattenProfile(buf);
+  profile.flattenProfile(profileBuffer);
+  preferences.putBytes("profile", profileBuffer, sizeof(profileBuffer));
+  preferences.putString("profile_active", name);
+  return true;
 }
 
 // Broadcast system state to all WebSocket clients
@@ -259,12 +283,242 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     request->send(200, "application/json", json);
   });
 
-  // API endpoint: Profile data
-  server.on("/api/profile", HTTP_GET, [](AsyncWebServerRequest *request) {
-    LOG_DEBUG("API: /api/profile requested");
-    String json = getProfileJSON();
-    request->send(200, "application/json", json);
+  // =============================================================================
+  // PROFILE API - RESTful CRUD Operations
+  // =============================================================================
+
+  // Wildcard handler for /api/profile/* routes (must come BEFORE /api/profiles)
+  server.on("/api/profile/*", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String path = request->url();
+    
+    // Extract profile name from path
+    String profilePath = path.substring(13); // Skip "/api/profile/"
+    
+    // URL decode the profile name
+    String name = "";
+    for (int i = 0; i < profilePath.length(); i++) {
+      char c = profilePath.charAt(i);
+      if (c == '%' && i + 2 < profilePath.length()) {
+        char hex[3] = {profilePath.charAt(i+1), profilePath.charAt(i+2), 0};
+        name += (char)strtol(hex, nullptr, 16);
+        i += 2;
+      } else if (c == '+') {
+        name += ' ';
+      } else {
+        name += c;
+      }
+    }
+    
+    if (name.length() == 0) {
+      request->send(400, "application/json", "{\"error\":\"missing_name\"}");
+      return;
+    }
+    
+    // GET /api/profile/:name
+    LOG_DEBUGF("GET /api/profile/%s", name.c_str());
+    String result = getProfileByName(name);
+    request->send(200, "application/json", result);
   });
+  
+  // DELETE /api/profile/:name
+  server.on("/api/profile/*", HTTP_DELETE, [](AsyncWebServerRequest *request) {
+    String path = request->url();
+    String profilePath = path.substring(13);
+    
+    // URL decode
+    String name = "";
+    for (int i = 0; i < profilePath.length(); i++) {
+      char c = profilePath.charAt(i);
+      if (c == '%' && i + 2 < profilePath.length()) {
+        char hex[3] = {profilePath.charAt(i+1), profilePath.charAt(i+2), 0};
+        name += (char)strtol(hex, nullptr, 16);
+        i += 2;
+      } else if (c == '+') {
+        name += ' ';
+      } else {
+        name += c;
+      }
+    }
+    
+    if (name.length() == 0) {
+      request->send(400, "application/json", "{\"error\":\"missing_name\"}");
+      return;
+    }
+    
+    LOG_DEBUGF("DELETE /api/profile/%s", name.c_str());
+    String result = deleteProfile(name);
+    
+    JsonDocument doc;
+    deserializeJson(doc, result);
+    bool ok = doc["ok"].as<bool>();
+    String error = doc["error"].as<String>();
+    
+    if (!ok && error == "cannot_delete_active") {
+      request->send(409, "application/json", result);
+    } else {
+      request->send(ok ? 200 : 404, "application/json", result);
+    }
+  });
+  
+  // POST /api/profile/:name - Update specific profile (with body handler)
+  server.on("/api/profile/*", HTTP_POST,
+    [](AsyncWebServerRequest *request) {
+      // Check if this is /activate endpoint (no body needed)
+      String path = request->url();
+      if (path.endsWith("/activate")) {
+        // Extract name between "/api/profile/" and "/activate"
+        int start = 13; // Length of "/api/profile/"
+        int end = path.indexOf("/activate");
+        String profilePath = path.substring(start, end);
+        
+        // URL decode
+        String name = "";
+        for (int i = 0; i < profilePath.length(); i++) {
+          char c = profilePath.charAt(i);
+          if (c == '%' && i + 2 < profilePath.length()) {
+            char hex[3] = {profilePath.charAt(i+1), profilePath.charAt(i+2), 0};
+            name += (char)strtol(hex, nullptr, 16);
+            i += 2;
+          } else if (c == '+') {
+            name += ' ';
+          } else {
+            name += c;
+          }
+        }
+        
+        if (name.length() == 0) {
+          request->send(400, "application/json", "{\"error\":\"missing_name\"}");
+          return;
+        }
+        
+        LOG_DEBUGF("POST /api/profile/%s/activate", name.c_str());
+        String result = activateProfile(name);
+        request->send(200, "application/json", result);
+      }
+      // For other POST requests, the body handler will be called
+    },
+    nullptr,
+    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      // Skip if this is /activate endpoint (already handled in request handler)
+      String path = request->url();
+      if (path.endsWith("/activate")) {
+        return;
+      }
+      
+      // Extract profile name from URL
+      int lastSlash = path.lastIndexOf('/');
+      String encodedName = path.substring(lastSlash + 1);
+      
+      // URL decode
+      String profileName = "";
+      for (int i = 0; i < encodedName.length(); i++) {
+        char c = encodedName.charAt(i);
+        if (c == '%' && i + 2 < encodedName.length()) {
+          char hex[3] = {encodedName.charAt(i+1), encodedName.charAt(i+2), 0};
+          profileName += (char)strtol(hex, nullptr, 16);
+          i += 2;
+        } else if (c == '+') {
+          profileName += ' ';
+        } else {
+          profileName += c;
+        }
+      }
+      
+      // Accumulate body
+      if (index == 0) {
+        String* body = new String();
+        body->reserve(total + 1);
+        request->_tempObject = (void*)body;
+      }
+      
+      String* body = (String*)request->_tempObject;
+      if (!body) {
+        LOG_ERROR("POST /api/profile/:name: body allocation failed");
+        request->send(500, "application/json", "{\"error\":\"internal_error\"}");
+        return;
+      }
+      
+      for (size_t i = 0; i < len; i++) *body += (char)data[i];
+      
+      if (index + len < total) return;
+      
+      // Parse JSON
+      JsonDocument doc;
+      DeserializationError err = deserializeJson(doc, *body);
+      if (err) {
+        LOG_WARNF("POST /api/profile/%s: invalid JSON: %s", profileName.c_str(), err.c_str());
+        delete body;
+        request->send(400, "application/json", "{\"error\":\"invalid_json\"}");
+        return;
+      }
+      
+      // Ensure the name in JSON matches URL (or set it from URL)
+      doc["name"] = profileName;
+      
+      LOG_DEBUGF("POST /api/profile/%s: updating profile", profileName.c_str());
+      String result = saveProfile(doc);
+      
+      delete body;
+      request->send(200, "application/json", result);
+    }
+  );
+
+  // GET /api/profiles - List all saved profiles
+  server.on("/api/profiles", HTTP_GET, [](AsyncWebServerRequest *request) {
+    LOG_DEBUG("GET /api/profiles");
+    String result = getProfilesList();
+    request->send(200, "application/json", result);
+  });
+  
+  // POST /api/profiles - Create new profile
+  server.on("/api/profiles", HTTP_POST,
+    [](AsyncWebServerRequest *request) {},
+    nullptr,
+    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      // Accumulate body
+      if (index == 0) {
+        String* body = new String();
+        body->reserve(total + 1);
+        request->_tempObject = (void*)body;
+      }
+      
+      String* body = (String*)request->_tempObject;
+      if (!body) {
+        LOG_ERROR("POST /api/profiles: body allocation failed");
+        request->send(500, "application/json", "{\"error\":\"internal_error\"}");
+        return;
+      }
+      
+      for (size_t i = 0; i < len; i++) *body += (char)data[i];
+      
+      if (index + len < total) return;
+      
+      // Parse JSON
+      JsonDocument doc;
+      DeserializationError err = deserializeJson(doc, *body);
+      if (err) {
+        LOG_WARNF("POST /api/profiles: invalid JSON: %s", err.c_str());
+        delete body;
+        request->send(400, "application/json", "{\"error\":\"invalid_json\"}");
+        return;
+      }
+      
+      String name = doc["name"].as<String>();
+      if (name.length() == 0) {
+        name = "New Profile";
+      }
+      
+      LOG_DEBUGF("POST /api/profiles: creating '%s'", name.c_str());
+      String result = createNewProfile(name);
+      
+      delete body;
+      request->send(201, "application/json", result);  // 201 Created
+    }
+  );
+
+  // =============================================================================
+  // OTHER API ENDPOINTS
+  // =============================================================================
 
   // API endpoint: Debug logs
   server.on("/api/logs", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -953,6 +1207,12 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 </body>
 </html>
 )rawliteral");
+  });
+
+  // Profile Editor UI
+  server.on("/profile", HTTP_GET, [](AsyncWebServerRequest *request) {
+    LOG_INFO("Profile Editor UI accessed");
+    request->send_P(200, "text/html", PROFILE_EDITOR_HTML);
   });
 
   // Start ElegantOTA for over-the-air updates

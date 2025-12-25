@@ -28,6 +28,9 @@ public:
     // Calculate targetTemp based on current time
     uint32_t getTargetTemp(uint32_t tickTime) const;
 
+    // Calculate targetTemp at absolute time (no start offset)
+    uint32_t getTargetTempAtTime(uint32_t timeMs) const;
+
     // Get final targetTemp
     uint32_t getFinalTargetTemp() const;
 
@@ -97,6 +100,38 @@ uint32_t Profiles::getTargetTemp(uint32_t tickTime) const
                     return nextTemp;
                 }
                 
+                float timeRatio = (float)(currentTime - prevTime) / (nextTime - prevTime);
+                return prevTemp + (int)(nextTemp - prevTemp) * timeRatio;
+            }
+        }
+    }
+    return _setpoints[_setpointCount - 1].temp;
+}
+
+uint32_t Profiles::getTargetTempAtTime(uint32_t timeMs) const
+{
+    uint32_t currentTime = timeMs;
+    for (int i = 0; i < _setpointCount; i++)
+    {
+        if (_setpoints[i].time > currentTime)
+        {
+            if (i == 0)
+            {
+                return _setpoints[i].temp;
+            }
+            else
+            {
+                uint32_t prevTemp = _setpoints[i - 1].temp;
+                uint32_t nextTemp = _setpoints[i].temp;
+                uint32_t prevTime = _setpoints[i - 1].time;
+                uint32_t nextTime = _setpoints[i].time;
+
+                // Prevent division by zero
+                if (nextTime == prevTime)
+                {
+                    return nextTemp;
+                }
+
                 float timeRatio = (float)(currentTime - prevTime) / (nextTime - prevTime);
                 return prevTemp + (int)(nextTemp - prevTemp) * timeRatio;
             }
