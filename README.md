@@ -87,6 +87,22 @@ cd coffee-roaster/roaster-firmware
 
 1. Copy the `Nextion/roaster1.tft` file to a microSD card and insert into the Nextion display before powering on to install the display firmware.
 
+## Firmware REST API (summary)
+
+For full details see roaster-firmware/README.md. Key endpoints (id-based):
+
+- GET `/api/profiles` → `{ profiles: [{ id, name, active }], active: id }`
+- POST `/api/profiles` → Create profile `{ name, setpoints?, activate? }` → returns `{ ok, id, name, setpoints }`
+- GET `/api/profiles/:id` → `{ id, name, setpoints, active? }`
+- PUT `/api/profiles/:id` → Update `{ name, setpoints, activate? }` (id from path wins)
+- POST `/api/profiles/:id/activate` → Activate profile
+- DELETE `/api/profiles/:id` → Delete (409 if active)
+
+Notes:
+- Times are seconds in API/UI; firmware stores milliseconds.
+- Temp bounds 0–500°F; Fan bounds 0–100%.
+- Names are display-only; storage is keyed by opaque ids.
+
 ## Roaster modification
 
 1. Disassemble popcorn popper by removing 4 screws at the bottom.

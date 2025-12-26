@@ -29,6 +29,7 @@
 #include "Types.hpp"
 #include "DebugLog.hpp"
 #include "Profiles.hpp"
+#include "ProfileManager.hpp"
 #include "Network.hpp"
 
 Preferences preferences;
@@ -66,6 +67,7 @@ Servo bdcFan;
 
 // Create a roast profile object
 Profiles profile;
+ProfileManager profileManager;
 
 // Roaster state variables
 // NOTE: All temperature values throughout this codebase are in Fahrenheit (°F)
@@ -98,15 +100,8 @@ AutoPID heaterPID(&currentTemp, &setpointTemp, &heaterOutputVal, 0, 255, KP, KI,
 // Create a Nextion display connection
 EasyNex myNex(HW_SERIAL);
 
-// Default roast profile. Any changes stored in EEPROM will override these values.
-void setDefaultRoastProfile()
-{
-  profile.clearSetpoints();
-  profile.addSetpoint(150000, 300, 100);
-  profile.addSetpoint(300000, 380, 90);
-  profile.addSetpoint(480000, 440, 90);
-}
 uint8_t profileBuffer[200];
+int finalTempOverride = -1; // Nextion override for final target temp (F)
 
 // Helper function for reliable Nextion reads with retry logic
 int readNextionWithRetry(const char *component, int retries = 2)
@@ -124,9 +119,21 @@ int readNextionWithRetry(const char *component, int retries = 2)
   return NEXTION_READ_ERROR;
 }
 
+uint32_t getEffectiveFinalTargetTemp()
+{
+  // Use Nextion override if set; otherwise fall back to profile final target
+  if (finalTempOverride > 0)
+  {
+    return constrain(finalTempOverride, 0, 500);
+  }
+  return profile.getFinalTargetTemp();
+}
+
 void setup()
 {
   DEBUG_SERIALBEGIN(115200);
+  delay(1000); // Give Serial Monitor time to connect
+  Serial.println("\n\n--- ROASTER BOOTING ---");
   myNex.begin(115200);
 
   // Set heater and fan control pins to output
@@ -163,8 +170,6 @@ void setup()
   
   LOG_INFO("System initialized - entering IDLE state");
 
-  setDefaultRoastProfile();
-
   // Initialize hardware watchdog timer (10 seconds timeout)
   // If loop() stops running, watchdog will reset the system
   esp_task_wdt_config_t wdt_config = {
@@ -182,6 +187,22 @@ void setup()
     // Continue with defaults - don't halt system
   }
 
+  // --- BOOT LOOP PROTECTION ---
+  // If we crash repeatedly during startup (e.g. due to corrupt NVS), purge profiles
+  int bootCount = preferences.getInt("boot_count", 0);
+  Serial.printf("Boot count: %d\n", bootCount); // Force print to Serial
+  if (bootCount > 5) {
+    LOG_ERRORF("CRITICAL: Boot loop detected (count=%d)! Purging all profiles to recover system.", bootCount);
+    Serial.println("CRITICAL: Purging profiles due to boot loop!");
+    profileManager.deleteAllProfiles();
+    preferences.putInt("boot_count", 0);
+    delay(2000); // Allow time for serial log to be seen
+  } else {
+    preferences.putInt("boot_count", bootCount + 1);
+    LOG_INFOF("Boot count: %d", bootCount + 1);
+  }
+  // ----------------------------
+
   wifiCredentials.ssid = preferences.getString("ssid", "");
   wifiCredentials.password = preferences.getString("password", "");
 
@@ -192,18 +213,41 @@ void setup()
     preferences.putString("password", wifiCredentials.password);
   }
 
-  preferences.getBytes("profile", profileBuffer, 200);
-  profile.unflattenProfile(profileBuffer);
+  // Initialize profile system: ensure default exists, then load active profile
+  LOG_INFO("Initializing profile system...");
+  profileManager.ensureDefault();
+  
+  String activeId = profileManager.getActiveProfileId();
+  if (activeId.length() > 0) {
+    if (!profileManager.loadProfile(activeId)) {
+       LOG_WARN("Failed to load active profile");
+    }
+  } else {
+     // Fallback to first available
+     auto ids = profileManager.getProfileIds();
+     if (!ids.empty()) {
+         profileManager.setActiveProfileId(ids.front());
+         profileManager.loadProfile(ids.front());
+     }
+  }
+  
+  LOG_INFOF("Profile system initialized - using profile with %d setpoints", profile.getSetpointCount());
 
-  myNex.writeNum("ConfigSetpoint.spTemp1.val", profile.getSetpoint(1).temp);
-  myNex.writeNum("ConfigSetpoint.spTemp2.val", profile.getSetpoint(2).temp);
-  myNex.writeNum("ConfigSetpoint.spTemp3.val", profile.getSetpoint(3).temp);
-  myNex.writeNum("ConfigSetpoint.spTime1.val", profile.getSetpoint(1).time / 1000);
-  myNex.writeNum("ConfigSetpoint.spTime2.val", profile.getSetpoint(2).time / 1000);
-  myNex.writeNum("ConfigSetpoint.spTime3.val", profile.getSetpoint(3).time / 1000);
-  myNex.writeNum("ConfigSetpoint.spFan1.val", profile.getSetpoint(1).fanSpeed);
-  myNex.writeNum("ConfigSetpoint.spFan2.val", profile.getSetpoint(2).fanSpeed);
-  myNex.writeNum("ConfigSetpoint.spFan3.val", profile.getSetpoint(3).fanSpeed);
+  // Update Nextion display with current profile values
+  // Send final target temp override (moved from reloadActiveProfile to avoid blocking)
+  myNex.writeNum("globals.setTempNum.val", finalTempOverride);
+
+  if (profile.getSetpointCount() >= 4) {
+    myNex.writeNum("ConfigSetpoint.spTemp1.val", profile.getSetpoint(1).temp);
+    myNex.writeNum("ConfigSetpoint.spTemp2.val", profile.getSetpoint(2).temp);
+    myNex.writeNum("ConfigSetpoint.spTemp3.val", profile.getSetpoint(3).temp);
+    myNex.writeNum("ConfigSetpoint.spTime1.val", profile.getSetpoint(1).time / 1000);
+    myNex.writeNum("ConfigSetpoint.spTime2.val", profile.getSetpoint(2).time / 1000);
+    myNex.writeNum("ConfigSetpoint.spTime3.val", profile.getSetpoint(3).time / 1000);
+    myNex.writeNum("ConfigSetpoint.spFan1.val", profile.getSetpoint(1).fanSpeed);
+    myNex.writeNum("ConfigSetpoint.spFan2.val", profile.getSetpoint(2).fanSpeed);
+    myNex.writeNum("ConfigSetpoint.spFan3.val", profile.getSetpoint(3).fanSpeed);
+  }
   myNex.writeStr("ConfigWifi.ip.txt", ipAddress);
   myNex.writeStr("ConfigNav.rev.txt", VERSION);
 
@@ -215,6 +259,14 @@ void loop()
   // Reset watchdog timer every loop iteration
   // If loop hangs for >10 seconds, system will reset
   esp_task_wdt_reset();
+
+  // Reset boot count if system has been stable for 10 seconds
+  static bool bootCountReset = false;
+  if (!bootCountReset && millis() > 10000) {
+    preferences.putInt("boot_count", 0);
+    bootCountReset = true;
+    LOG_INFO("System stable - boot count reset");
+  }
 
   // Check WiFi connection and auto-reconnect if needed
   checkWiFiConnection(wifiCredentials);
@@ -319,16 +371,12 @@ void loop()
         // Reset for next roast
         fanRampStep = 0;
 
-        // Save profile BEFORE starting
-        profile.flattenProfile(profileBuffer);
-        preferences.putBytes("profile", profileBuffer, 200);
-
-        // Start roasting
+        // Start roasting with current active profile
         roasterState = ROASTING;
         profile.startProfile((int)currentTemp, millis());
         heaterPID.run();
         heaterRelay.setPWM(heaterOutputVal);
-        LOG_INFOF("Roast started: Target=%.0fF, Setpoints=%d", (float)profile.getFinalTargetTemp(), profile.getSetpointCount());
+        LOG_INFOF("Roast started: Target=%.0fF, Setpoints=%d", (float)getEffectiveFinalTargetTemp(), profile.getSetpointCount());
         sendWsMessage("{ \"pushMessage\": \"startRoasting\" }");
       }
 
@@ -355,7 +403,7 @@ void loop()
 
       heaterRelay.setPWM(heaterOutputVal);
 
-      if (currentTemp >= profile.getFinalTargetTemp())
+      if (currentTemp >= getEffectiveFinalTargetTemp())
       {
         heaterPID.stop();
         heaterOutputVal = 0;
@@ -450,49 +498,58 @@ void loop()
   }
 }
 
+void onProfileActivePageEnter() {
+  // Update Nextion display with current profile values
+  // This is called when entering the ProfileActive page to visualize the profile
+  
+  if (profile.getSetpointCount() >= 4) {
+    // Note: getSetpoint(0) is the start point (time=0), usually we display points 1-3 for editing
+    // or visualization if the UI is designed that way.
+    // Based on setup() logic, we send points 1, 2, 3.
+    
+    myNex.writeNum("ConfigSetpoint.spTemp1.val", profile.getSetpoint(1).temp);
+    myNex.writeNum("ConfigSetpoint.spTemp2.val", profile.getSetpoint(2).temp);
+    myNex.writeNum("ConfigSetpoint.spTemp3.val", profile.getSetpoint(3).temp);
+    
+    myNex.writeNum("ConfigSetpoint.spTime1.val", profile.getSetpoint(1).time / 1000);
+    myNex.writeNum("ConfigSetpoint.spTime2.val", profile.getSetpoint(2).time / 1000);
+    myNex.writeNum("ConfigSetpoint.spTime3.val", profile.getSetpoint(3).time / 1000);
+    
+    myNex.writeNum("ConfigSetpoint.spFan1.val", profile.getSetpoint(1).fanSpeed);
+    myNex.writeNum("ConfigSetpoint.spFan2.val", profile.getSetpoint(2).fanSpeed);
+    myNex.writeNum("ConfigSetpoint.spFan3.val", profile.getSetpoint(3).fanSpeed);
+  }
+}
+
 void trigger0()
 { // Start roast command received
-  // Read all profile values with retry logic
-  int temp1 = readNextionWithRetry("ConfigSetpoint.spTemp1.val");
-  int temp2 = readNextionWithRetry("ConfigSetpoint.spTemp2.val");
-  int temp3 = readNextionWithRetry("ConfigSetpoint.spTemp3.val");
-  int time1 = readNextionWithRetry("ConfigSetpoint.spTime1.val");
-  int time2 = readNextionWithRetry("ConfigSetpoint.spTime2.val");
-  int time3 = readNextionWithRetry("ConfigSetpoint.spTime3.val");
-  int power1 = readNextionWithRetry("ConfigSetpoint.spFan1.val");
-  int power2 = readNextionWithRetry("ConfigSetpoint.spFan2.val");
-  int power3 = readNextionWithRetry("ConfigSetpoint.spFan3.val");
-
-  // Check if any reads failed - use current profile if so
-  if (temp1 == NEXTION_READ_ERROR || temp2 == NEXTION_READ_ERROR || temp3 == NEXTION_READ_ERROR ||
-      time1 == NEXTION_READ_ERROR || time2 == NEXTION_READ_ERROR || time3 == NEXTION_READ_ERROR ||
-      power1 == NEXTION_READ_ERROR || power2 == NEXTION_READ_ERROR || power3 == NEXTION_READ_ERROR)
-  {
-    LOG_WARN("Failed to read profile from Nextion - using existing profile");
-    // Don't update profile, just start roast with current values
+  LOG_INFO("trigger0() called - Start button pressed");
+  
+  // Use the currently active profile (managed by web UI)
+  // Nextion display values are for display only, not for modifying the profile
+  int spCount = profile.getSetpointCount();
+  LOG_INFOF("Starting roast with active profile (%d setpoints)", spCount);
+  
+  if (spCount == 0) {
+    LOG_ERROR("Cannot start roast - profile has no setpoints!");
+    myNex.writeStr("page Error");
+    myNex.writeStr("Error.message.txt", "No Profile");
+    return;
   }
-  else
-  {
-    // Validate all inputs are within safe ranges before adding to profile
-    temp1 = constrain(temp1, 0, 500);
-    temp2 = constrain(temp2, 0, 500);
-    temp3 = constrain(temp3, 0, 500);
-    power1 = constrain(power1, 0, 100);
-    power2 = constrain(power2, 0, 100);
-    power3 = constrain(power3, 0, 100);
-    time1 = max(0, time1);
-    time2 = max(0, time2);
-    time3 = max(0, time3);
-
-    profile.clearSetpoints();
-    profile.addSetpoint(time1 * 1000, temp1, power1);
-    profile.addSetpoint(time2 * 1000, temp2, power2);
-    profile.addSetpoint(time3 * 1000, temp3, power3);
+  
+  int uiFinalTemp = readNextionWithRetry("globals.setTempNum.val");
+  if (uiFinalTemp != NEXTION_READ_ERROR && uiFinalTemp > 0) {
+    finalTempOverride = constrain(uiFinalTemp, 0, 500);
+    LOG_INFOF("Using Nextion final target override: %dF", finalTempOverride);
+  } else {
+    finalTempOverride = profile.getFinalTargetTemp();
+    LOG_WARN("Nextion final target not available - using profile final temp");
   }
-
+  
   roasterState = START_ROAST;
   myNex.writeStr("page Roasting");
   myNex.writeNum("globals.nextSetTempNum.val", setpointTemp);
+  LOG_INFO("trigger0() complete - state set to START_ROAST");
 }
 
 void trigger1()
@@ -531,4 +588,10 @@ void trigger3()
     preferences.putString("ssid", wifiCredentials.ssid);
     preferences.putString("password", wifiCredentials.password);
   }
+}
+
+void trigger4()
+{ // ProfileActive page button - plot current profile
+  LOG_INFO("trigger4() called - ProfileActive plot button");
+  onProfileActivePageEnter();
 }

@@ -1,0 +1,13 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Compile roaster-firmware",
+			"type": "shell",
+			"command": "cd \"${workspaceFolder}/roaster-firmware\" && ./run_tests.sh 1 compile",
+			"args": [],
+			"isBackground": false,
+			"group": "build"
+		}
+	]
+}

@@ -1,0 +1,553 @@
+openapi: 3.0.3
+info:
+  title: Coffee Roaster Control API
+  description: |
+    RESTful API for controlling and monitoring an ESP32-based coffee roaster.
+    
+    Features:
+    - Real-time temperature monitoring
+    - PID-controlled heating
+    - Variable speed fan control
+    - Profile-based roasting automation
+    - WebSocket live data streaming
+    
+    Hardware:
+    - ESP32 microcontroller
+    - MAX6675 thermocouple sensors
+    - PWM fan control
+    - BDC servo fan control
+    - Nextion HMI display
+  version: 1.0.0
+  contact:
+    name: Coffee Roaster Project
+  license:
+    name: MIT
+
+servers:
+  - url: http://roaster.local
+    description: mDNS hostname (requires Bonjour/Avahi)
+  - url: http://192.168.1.100
+    description: Direct IP address (replace with actual IP)
+
+tags:
+  - name: System
+    description: System state and monitoring
+  - name: Profiles
+    description: Roast profile management (CRUD operations)
+  - name: Debug
+    description: Debug logging and diagnostics
+  - name: UI
+    description: Web user interfaces
+
+paths:
+  /api/state:
+    get:
+      tags: [System]
+      summary: Get current system state
+      description: Returns real-time roaster state including temperatures, control outputs, profile progress, and safety metrics.
+      operationId: getSystemState
+      responses:
+        '200':
+          description: System state retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemState'
+              example:
+                timestamp: 1234567890
+                state: "ROASTING"
+                uptime: 3600
+                temps:
+                  current: 385.5
+                  setpoint: 390.0
+                  fan: 275.3
+                control:
+                  heater: 180
+                  pwmFan: 128
+                  bdcFan: 1200
+                profile:
+                  progress: 65
+                  setpointCount: 5
+                  finalTemp: 444
+                safety:
+                  badReadings: 0
+                memory:
+                  heapFree: 245760
+                  heapSize: 327680
+
+  /api/profiles:
+    get:
+      tags: [Profiles]
+      summary: List all saved profiles
+      description: Returns list of all profile names and the currently active profile.
+      operationId: listProfiles
+      responses:
+        '200':
+          description: Profile list retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfilesList'
+              example:
+                profiles: ["Light Roast", "Medium Roast", "Dark Roast"]
+                active: "Medium Roast"
+    
+    post:
+      tags: [Profiles]
+      summary: Create new profile
+      description: Creates a new roast profile with default setpoints or provided configuration.
+      operationId: createProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  maxLength: 13
+                  description: Profile name (max 13 chars due to NVS key length limits)
+                  example: "New Profile"
+      responses:
+        '201':
+          description: Profile created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/profile/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: URL-encoded profile name
+        schema:
+          type: string
+          maxLength: 13
+        example: "New%20Profile"
+    
+    get:
+      tags: [Profiles]
+      summary: Get specific profile
+      description: Retrieves a specific profile's setpoints and configuration without activating it.
+      operationId: getProfile
+      responses:
+        '200':
+          description: Profile retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+              example:
+                name: "New Profile"
+                setpoints:
+                  - time: 0
+                    temp: 200
+                    fanSpeed: 30
+                  - time: 180
+                    temp: 350
+                    fanSpeed: 50
+                  - time: 420
+                    temp: 400
+                    fanSpeed: 70
+                  - time: 600
+                    temp: 444
+                    fanSpeed: 80
+        '404':
+          description: Profile not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    
+    post:
+      tags: [Profiles]
+      summary: Update profile
+      description: Updates an existing profile or creates it if it doesn't exist. Saves setpoints to NVS.
+      operationId: updateProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Profile'
+      responses:
+        '200':
+          description: Profile updated successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      written:
+                        type: integer
+                        description: Bytes written to NVS
+                        example: 200
+        '400':
+          description: Invalid profile data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid_json:
+                  value:
+                    ok: false
+                    error: "invalid_json"
+                missing_setpoints:
+                  value:
+                    ok: false
+                    error: "missing_setpoints"
+                write_failed:
+                  value:
+                    ok: false
+                    error: "write_failed"
+                    written: 0
+                    expected: 200
+    
+    delete:
+      tags: [Profiles]
+      summary: Delete profile
+      description: Deletes a saved profile from NVS. Cannot delete the currently active profile.
+      operationId: deleteProfile
+      responses:
+        '200':
+          description: Profile deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: Profile not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Cannot delete active profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                ok: false
+                error: "cannot_delete_active"
+
+  /api/profile/{name}/activate:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: URL-encoded profile name
+        schema:
+          type: string
+        example: "Medium%20Roast"
+    
+    post:
+      tags: [Profiles]
+      summary: Activate profile
+      description: |
+        Loads a saved profile and sets it as the active roasting profile.
+        The profile is loaded into the global `profile` object and persisted as the active profile.
+      operationId: activateProfile
+      responses:
+        '200':
+          description: Profile activated successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      active:
+                        type: string
+                        description: Name of activated profile
+                        example: "Medium Roast"
+        '404':
+          description: Profile not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                ok: false
+                error: "profile_not_found"
+
+  /api/logs:
+    get:
+      tags: [Debug]
+      summary: Get debug logs
+      description: Retrieves recent debug log entries from the circular buffer.
+      operationId: getLogs
+      parameters:
+        - name: max
+          in: query
+          description: Maximum number of log entries to return (1-100)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Logs retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LogEntry'
+              example:
+                logs:
+                  - timestamp: 1234567890
+                    level: "INFO"
+                    message: "Profile activated: Medium Roast"
+                  - timestamp: 1234567891
+                    level: "DEBUG"
+                    message: "Temperature reading: 385.5°F"
+                  - timestamp: 1234567892
+                    level: "WARN"
+                    message: "Heater output clamped to max"
+
+  /console:
+    get:
+      tags: [UI]
+      summary: Debug console UI
+      description: |
+        Interactive HTML dashboard for real-time monitoring and debugging.
+        
+        Features:
+        - Live temperature gauges and charts
+        - Control output visualization
+        - Profile progress tracking
+        - System health metrics
+        - Filterable log viewer
+        - WebSocket-based live updates
+      operationId: getConsole
+      responses:
+        '200':
+          description: Console HTML page
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /profile:
+    get:
+      tags: [UI]
+      summary: Profile editor UI
+      description: |
+        Interactive SVG-based profile editor for creating and managing roast profiles.
+        
+        Features:
+        - Drag-and-drop setpoint editing
+        - Time-temperature curve visualization
+        - Profile save/load/activate/delete
+        - Import/export JSON profiles
+        - Grid snapping and undo/redo
+      operationId: getProfileEditor
+      responses:
+        '200':
+          description: Profile editor HTML page
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /WebSocket:
+    get:
+      tags: [System]
+      summary: WebSocket connection
+      description: |
+        Bi-directional WebSocket for real-time data streaming.
+        
+        Client sends:
+        ```json
+        {"command": "getData", "id": 123}
+        ```
+        
+        Server responds with system state updates and log broadcasts.
+      responses:
+        '101':
+          description: WebSocket connection upgraded
+
+components:
+  schemas:
+    SystemState:
+      type: object
+      properties:
+        timestamp:
+          type: integer
+          description: Milliseconds since boot
+        state:
+          type: string
+          enum: [IDLE, START_ROAST, ROASTING, COOLING, ERROR]
+          description: Current roaster state machine state
+        uptime:
+          type: integer
+          description: System uptime in seconds
+        temps:
+          type: object
+          properties:
+            current:
+              type: number
+              format: float
+              description: Current bean temperature (°F)
+            setpoint:
+              type: number
+              format: float
+              description: Target temperature (°F)
+            fan:
+              type: number
+              format: float
+              description: Fan/exhaust temperature (°F)
+        control:
+          type: object
+          properties:
+            heater:
+              type: integer
+              minimum: 0
+              maximum: 255
+              description: Heater PWM output (0-255)
+            pwmFan:
+              type: integer
+              minimum: 0
+              maximum: 255
+              description: PWM fan speed (0-255)
+            bdcFan:
+              type: integer
+              minimum: 800
+              maximum: 2000
+              description: BDC fan servo pulse width (µs)
+        profile:
+          type: object
+          properties:
+            progress:
+              type: integer
+              minimum: 0
+              maximum: 100
+              description: Roast progress percentage
+            setpointCount:
+              type: integer
+              description: Number of setpoints in active profile
+            finalTemp:
+              type: integer
+              description: Final target temperature
+        safety:
+          type: object
+          properties:
+            badReadings:
+              type: integer
+              description: Count of invalid sensor readings
+        memory:
+          type: object
+          properties:
+            heapFree:
+              type: integer
+              description: Free heap memory (bytes)
+            heapSize:
+              type: integer
+              description: Total heap size (bytes)
+
+    Profile:
+      type: object
+      required:
+        - name
+        - setpoints
+      properties:
+        name:
+          type: string
+          maxLength: 13
+          description: Profile name (max 13 chars)
+        setpoints:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Setpoint'
+
+    Setpoint:
+      type: object
+      required:
+        - time
+        - temp
+        - fanSpeed
+      properties:
+        time:
+          type: integer
+          minimum: 0
+          description: Time in seconds from start
+        temp:
+          type: integer
+          minimum: 0
+          maximum: 500
+          description: Target temperature (°F)
+        fanSpeed:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Fan speed percentage (0-100)
+
+    ProfilesList:
+      type: object
+      properties:
+        profiles:
+          type: array
+          items:
+            type: string
+          description: List of all profile names
+        active:
+          type: string
+          description: Currently active profile name
+
+    LogEntry:
+      type: object
+      properties:
+        timestamp:
+          type: integer
+          description: Milliseconds since boot
+        level:
+          type: string
+          enum: [DEBUG, INFO, WARN, ERROR]
+        message:
+          type: string
+
+    SuccessResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: true
+
+    ErrorResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: false
+        error:
+          type: string
+          description: Error code
+          enum:
+            - invalid_json
+            - missing_name
+            - missing_setpoints
+            - empty_name
+            - profile_not_found
+            - cannot_delete_active
+            - write_failed
+            - preferences_open_failed
+            - internal_error

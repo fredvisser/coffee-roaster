@@ -263,11 +263,17 @@ main() {
     case "$action" in
         compile)
             print_header "Compiling $test_name"
-            compile_sketch "$sketch_path"
+            compile_sketch "$sketch_path" || {
+                print_error "Compilation failed - aborting"
+                exit 1
+            }
             ;;
         upload)
             print_header "Uploading $test_name"
-            compile_sketch "$sketch_path" && upload_sketch "$sketch_path"
+            compile_sketch "$sketch_path" && upload_sketch "$sketch_path" || {
+                print_error "Build/upload failed - aborting"
+                exit 1
+            }
             ;;
         monitor)
             print_header "Monitoring $test_name"

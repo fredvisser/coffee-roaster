@@ -1,0 +1,59 @@
+{
+"name": "Yirgacheffe - Espresso",
+"setpoints": [
+{
+"time": 0,
+"temp": 180,
+"fanSpeed": 100,
+"comment": "Charge - bean temp starts rising quickly from ambient"
+},
+{
+"time": 180,
+"temp": 280,
+"fanSpeed": 100,
+"comment": "Early drying phase - building momentum"
+},
+{
+"time": 300,
+"temp": 320,
+"fanSpeed": 100,
+"comment": "Dry end target (~300-320°F bean temp at 5:00)"
+},
+{
+"time": 420,
+"temp": 365,
+"fanSpeed": 100,
+"comment": "Mid-Maillard - extending browning for sweetness/body"
+},
+{
+"time": 480,
+"temp": 385,
+"fanSpeed": 95,
+"comment": "Approaching first crack"
+},
+{
+"time": 540,
+"temp": 400,
+"fanSpeed": 95,
+"comment": "First crack onset (~400°F bean temp)"
+},
+{
+"time": 600,
+"temp": 415,
+"fanSpeed": 90,
+"comment": "Development phase - building body and chocolate notes"
+},
+{
+"time": 660,
+"temp": 425,
+"fanSpeed": 85,
+"comment": "Continued development for espresso sweetness"
+},
+{
+"time": 720,
+"temp": 432,
+"fanSpeed": 85,
+"comment": "Drop target - Full City+ (432°F bean temp, ~3:00 development)"
+}
+]
+}

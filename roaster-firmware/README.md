@@ -210,6 +210,40 @@ arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
 
 See `tests/README.md` for complete testing documentation.
 
+## Web Profile Editor
+
+- Access at: `http://roaster.local/profile`
+- Features:
+  - Drag-and-drop points on an interactive graph (time vs temperature)
+  - Up to 10 setpoints, each with time (seconds), temperature (°F), fan (%)
+  - Save named profiles to NVS; activate and delete from the UI
+  - Lists saved profiles and highlights active one
+  - Undo/Redo for edits (drag, add, remove, apply)
+  - Snapping controls (toggle + step sizes for time/temperature)
+  - Import/Export profiles as JSON files
+
+### REST API (id-based)
+
+- GET `/api/profiles`: List all saved profiles
+  - Response: `{ profiles: [{ id, name, active }], active: id }`
+- POST `/api/profiles`: Create a profile
+  - Body: `{ name, setpoints?: [...], activate?: boolean }`
+  - Response: `{ ok: true, id, name, setpoints }`
+- GET `/api/profiles/:id`: Fetch a saved profile by id
+  - Response: `{ id, name, setpoints, active?: boolean }`
+- PUT `/api/profiles/:id`: Create/update a profile by id (id from path wins)
+  - Body: `{ name, setpoints, activate?: boolean }`
+  - Response: `{ ok: true, id, name, setpoints, active?: id }`
+- POST `/api/profiles/:id/activate`: Activate a saved profile by id
+  - Response: `{ ok: true, active: id, name }`
+- DELETE `/api/profiles/:id`: Delete a saved profile (409 if active)
+
+Notes:
+- Times are seconds in API/UI; firmware stores milliseconds internally.
+- Temp bounds: 0–500°F; Fan bounds: 0–100% (validated server-side).
+- Names are display-only; storage is keyed by opaque ids (`pf_<id>` data, `pm_<id>` meta).
+- Active profile id is stored under `preferences` key `active_profile_id` for boot-time load.
+
 ## Safety
 
 ⚠️ **This device controls high temperatures and line voltage.**
