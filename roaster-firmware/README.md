@@ -222,23 +222,27 @@ See `tests/README.md` for complete testing documentation.
   - Snapping controls (toggle + step sizes for time/temperature)
   - Import/Export profiles as JSON files
 
-### REST API
+### REST API (id-based)
 
-- `GET /api/profile`: Current active profile JSON
-  - Response: `{ setpointCount, finalTemp, activeName, setpoints: [{ time, temp, fanSpeed }] }`
-- `POST /api/profile`: Save/update the active profile (and optionally named copy)
-  - Body: `{ name?: string, activate?: boolean, setpoints: [{ time: seconds, temp, fanSpeed }] }`
-  - Persists to `preferences` and updates `profile_active` when `activate` or first save
-- `GET /api/profiles`: List saved profiles
-  - Response: `{ profiles: [name...], active: name }`
-- `POST /api/profiles/activate`: Activate a saved profile
-  - Body: `{ name: string }`
-- `DELETE /api/profiles/delete?name=NAME`: Delete a saved profile (not allowed if active)
+- GET `/api/profiles`: List all saved profiles
+  - Response: `{ profiles: [{ id, name, active }], active: id }`
+- POST `/api/profiles`: Create a profile
+  - Body: `{ name, setpoints?: [...], activate?: boolean }`
+  - Response: `{ ok: true, id, name, setpoints }`
+- GET `/api/profiles/:id`: Fetch a saved profile by id
+  - Response: `{ id, name, setpoints, active?: boolean }`
+- PUT `/api/profiles/:id`: Create/update a profile by id (id from path wins)
+  - Body: `{ name, setpoints, activate?: boolean }`
+  - Response: `{ ok: true, id, name, setpoints, active?: id }`
+- POST `/api/profiles/:id/activate`: Activate a saved profile by id
+  - Response: `{ ok: true, active: id, name }`
+- DELETE `/api/profiles/:id`: Delete a saved profile (409 if active)
 
 Notes:
 - Times are seconds in API/UI; firmware stores milliseconds internally.
 - Temp bounds: 0–500°F; Fan bounds: 0–100% (validated server-side).
-- Active profile is also stored under `preferences` key `profile` for boot-time load.
+- Names are display-only; storage is keyed by opaque ids (`pf_<id>` data, `pm_<id>` meta).
+- Active profile id is stored under `preferences` key `active_profile_id` for boot-time load.
 
 ## Safety
 

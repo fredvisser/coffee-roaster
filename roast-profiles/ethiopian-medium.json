@@ -1,0 +1,59 @@
+{
+    "name": "Yirgacheffe - Medium",
+    "setpoints": [
+        {
+            "time": 0,
+            "temp": 180,
+            "fanSpeed": 100,
+            "comment": "Charge - bean temp starts rising quickly from ambient"
+        },
+        {
+            "time": 180,
+            "temp": 280,
+            "fanSpeed": 100,
+            "comment": "Early drying phase - building momentum"
+        },
+        {
+            "time": 300,
+            "temp": 320,
+            "fanSpeed": 100,
+            "comment": "Dry end target (~300-320°F bean temp at 5:00)"
+        },
+        {
+            "time": 420,
+            "temp": 365,
+            "fanSpeed": 100,
+            "comment": "Mid-Maillard - extending browning for sweetness/body"
+        },
+        {
+            "time": 480,
+            "temp": 385,
+            "fanSpeed": 95,
+            "comment": "Approaching first crack"
+        },
+        {
+            "time": 540,
+            "temp": 398,
+            "fanSpeed": 95,
+            "comment": "First crack onset (~398°F bean temp)"
+        },
+        {
+            "time": 600,
+            "temp": 410,
+            "fanSpeed": 90,
+            "comment": "Development phase - balanced sweetness and origin notes"
+        },
+        {
+            "time": 660,
+            "temp": 418,
+            "fanSpeed": 90,
+            "comment": "Continued development for medium body"
+        },
+        {
+            "time": 690,
+            "temp": 420,
+            "fanSpeed": 85,
+            "comment": "Drop target - Medium roast (420°F bean temp, ~2:30 development)"
+        }
+    ]
+}

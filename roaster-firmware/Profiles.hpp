@@ -9,9 +9,9 @@ class Profiles
 private:
     typedef struct
     {
-        uint32_t time;      // Time in seconds
+        uint32_t time;      // Time in milliseconds
         uint32_t temp;      // Temperature in Fahrenheit (°F)
-        uint32_t fanSpeed;  // Fan speed (0-255)
+        uint32_t fanSpeed;  // Fan speed (0-100%)
     } Setpoint;
     Setpoint _setpoints[10];    // Create an array of Setpoints with size 10
     int32_t _setpointCount = 0; // Keep track of how many setpoints are in the array
@@ -72,13 +72,11 @@ void Profiles::startProfile(uint32_t currentTemp, uint32_t tickTime)
     _startTime = tickTime;
     // startTime = (tickTime == 0) ? millis() : tickTime;
     _setpoints[0].temp = currentTemp;
-    _setpoints[0].fanSpeed = _setpoints[1].fanSpeed;
+    _setpoints[0].fanSpeed = (_setpointCount > 1) ? _setpoints[1].fanSpeed : 100;
 }
 
 uint32_t Profiles::getTargetTemp(uint32_t tickTime) const
 {
-    tickTime = tickTime;
-    // tickTime = (tickTime == 0) ? millis() : tickTime;
     uint32_t currentTime = tickTime - _startTime;
     for (int i = 0; i < _setpointCount; i++)
     {
@@ -94,14 +92,16 @@ uint32_t Profiles::getTargetTemp(uint32_t tickTime) const
                 uint32_t nextTemp = _setpoints[i].temp;
                 uint32_t prevTime = _setpoints[i - 1].time;
                 uint32_t nextTime = _setpoints[i].time;
-                
-                // Prevent division by zero
+
                 if (nextTime == prevTime) {
                     return nextTemp;
                 }
-                
-                float timeRatio = (float)(currentTime - prevTime) / (nextTime - prevTime);
-                return prevTemp + (int)(nextTemp - prevTemp) * timeRatio;
+
+                double timeRatio = (double)(currentTime - prevTime) / (double)(nextTime - prevTime);
+                double result = (double)prevTemp + ((double)nextTemp - (double)prevTemp) * timeRatio;
+                int32_t out = (int32_t)lround(result);
+                if (out < 0) out = 0; if (out > 500) out = 500;
+                return (uint32_t)out;
             }
         }
     }
@@ -126,14 +126,15 @@ uint32_t Profiles::getTargetTempAtTime(uint32_t timeMs) const
                 uint32_t prevTime = _setpoints[i - 1].time;
                 uint32_t nextTime = _setpoints[i].time;
 
-                // Prevent division by zero
-                if (nextTime == prevTime)
-                {
+                if (nextTime == prevTime) {
                     return nextTemp;
                 }
 
-                float timeRatio = (float)(currentTime - prevTime) / (nextTime - prevTime);
-                return prevTemp + (int)(nextTemp - prevTemp) * timeRatio;
+                double timeRatio = (double)(currentTime - prevTime) / (double)(nextTime - prevTime);
+                double result = (double)prevTemp + ((double)nextTemp - (double)prevTemp) * timeRatio;
+                int32_t out = (int32_t)lround(result);
+                if (out < 0) out = 0; if (out > 500) out = 500;
+                return (uint32_t)out;
             }
         }
     }
@@ -154,7 +155,8 @@ uint32_t Profiles::getTargetFanSpeed(uint32_t tickTime) const
         {
             if (i == 0)
             {
-                return ((long)_setpoints[i].fanSpeed * 255L) / 100L;
+                uint32_t pwm = ((uint64_t)_setpoints[i].fanSpeed * 255ULL) / 100ULL;
+                return (pwm > 255U) ? 255U : pwm;
             }
             else
             {
@@ -162,18 +164,24 @@ uint32_t Profiles::getTargetFanSpeed(uint32_t tickTime) const
                 uint32_t nextFanSpeed = _setpoints[i].fanSpeed;
                 uint32_t prevTime = _setpoints[i - 1].time;
                 uint32_t nextTime = _setpoints[i].time;
-                
-                // Prevent division by zero
+
                 if (nextTime == prevTime) {
-                    return ((long)nextFanSpeed * 255L) / 100L;
+                    uint32_t pwm = ((uint64_t)nextFanSpeed * 255ULL) / 100ULL;
+                    return (pwm > 255U) ? 255U : pwm;
                 }
-                
-                float timeRatio = (float)(currentTime - prevTime) / (nextTime - prevTime);
-                return ((long)(prevFanSpeed + (int)(nextFanSpeed - prevFanSpeed) * timeRatio) * 255L) / 100L;
+
+                double timeRatio = (double)(currentTime - prevTime) / (double)(nextTime - prevTime);
+                double pct = (double)prevFanSpeed + ((double)nextFanSpeed - (double)prevFanSpeed) * timeRatio;
+                int32_t pctInt = (int32_t)lround(pct);
+                if (pctInt < 0) pctInt = 0; if (pctInt > 100) pctInt = 100;
+                uint32_t pwm = ((uint64_t)pctInt * 255ULL) / 100ULL;
+                if (pwm > 255U) pwm = 255U;
+                return pwm;
             }
         }
     }
-    return ((long)_setpoints[_setpointCount - 1].fanSpeed * 255L) / 100L;
+    uint32_t pwm = ((uint64_t)_setpoints[_setpointCount - 1].fanSpeed * 255ULL) / 100ULL;
+    return (pwm > 255U) ? 255U : pwm;
 }
 
 uint32_t Profiles::getProfileProgress(uint32_t tickTime) const

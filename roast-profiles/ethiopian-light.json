@@ -1,0 +1,53 @@
+{
+    "name": "Yirgacheffe - Light",
+    "setpoints": [
+        {
+            "time": 0,
+            "temp": 180,
+            "fanSpeed": 100,
+            "comment": "Charge - bean temp starts rising quickly from ambient"
+        },
+        {
+            "time": 180,
+            "temp": 280,
+            "fanSpeed": 100,
+            "comment": "Early drying phase - building momentum"
+        },
+        {
+            "time": 300,
+            "temp": 320,
+            "fanSpeed": 100,
+            "comment": "Dry end target (~300-320°F bean temp at 5:00)"
+        },
+        {
+            "time": 420,
+            "temp": 360,
+            "fanSpeed": 100,
+            "comment": "Mid-Maillard - extending browning for sweetness/body"
+        },
+        {
+            "time": 480,
+            "temp": 380,
+            "fanSpeed": 95,
+            "comment": "Approaching first crack"
+        },
+        {
+            "time": 540,
+            "temp": 395,
+            "fanSpeed": 95,
+            "comment": "First crack onset (~390-400°F bean temp)"
+        },
+        {
+            "time": 600,
+            "temp": 405,
+            "fanSpeed": 90,
+            "comment": "Development phase - low RoR for evenness"
+        },
+        {
+            "time": 660,
+            "temp": 410,
+            "fanSpeed": 90,
+            "comment": "Drop target - light City+ (410°F bean temp, ~2:00 development)"
+        }
+    ]
+}

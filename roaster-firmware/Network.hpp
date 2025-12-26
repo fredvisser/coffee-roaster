@@ -3,13 +3,14 @@
 
 #include "Types.hpp"
 #include <WiFi.h>
+#include <esp_task_wdt.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <ElegantOTA.h>  // v3.1.7+ with async mode enabled for ESPAsyncWebServer compatibility
 #include "DebugLog.hpp"
-#include "ProfileEditor.hpp"    // Profile backend logic
+#include "ProfileManager.hpp"    // Profile backend logic
 #include "ProfileWebUI.hpp"     // Profile UI HTML/CSS/JS
 #include <vector>
 
@@ -32,8 +33,72 @@ extern int bdcFanMs;
 extern int badReadingCount;
 extern RoasterState roasterState;  // Defined in Types.hpp
 extern Profiles profile;  // Profile configuration
+extern ProfileManager profileManager;
 extern Preferences preferences; // NVS preferences from main firmware
 extern uint8_t profileBuffer[200];
+extern EasyNex myNex;
+
+// Helper to update Nextion display with active profile
+void plotProfileOnWaveform() {
+  LOG_INFO("plotProfileOnWaveform: Starting waveform update");
+  int count = profile.getSetpointCount();
+  if (count < 2) {
+    LOG_WARN("plotProfileOnWaveform: Profile has fewer than 2 setpoints, skipping plot");
+    return;
+  }
+  
+  auto finalSetpoint = profile.getSetpoint(count - 1);
+  uint32_t maxTime = finalSetpoint.time;
+  uint32_t maxTemp = finalSetpoint.temp;
+  
+  const int WAVEFORM_WIDTH = 480;
+  const int WAVEFORM_HEIGHT = 170;
+  
+  if (maxTemp == 0) {
+      LOG_WARN("plotProfileOnWaveform: Max temp is 0, skipping");
+      return;
+  }
+  
+  myNex.writeStr("s0.clr");
+  delay(50);
+  
+  LOG_INFOF("plotProfileOnWaveform: Plotting %d setpoints over %d ms", count, maxTime);
+
+  for (int i = 0; i < WAVEFORM_WIDTH; i++) {
+    if ((i & 0x0F) == 0) yield();
+    uint32_t timeAtX = (maxTime * (WAVEFORM_WIDTH - 1 - i)) / WAVEFORM_WIDTH;
+    uint32_t interpolatedTemp = profile.getTargetTempAtTime(timeAtX);
+    uint32_t scaledTemp32 = ((uint32_t)interpolatedTemp * (uint32_t)WAVEFORM_HEIGHT) / (uint32_t)maxTemp;
+    if (scaledTemp32 > (uint32_t)WAVEFORM_HEIGHT) scaledTemp32 = (uint32_t)WAVEFORM_HEIGHT;
+    
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "add 2,0,%lu", (unsigned long)scaledTemp32);
+    myNex.writeStr(cmd);
+  }
+  myNex.writeStr("ref b1");
+  LOG_INFO("plotProfileOnWaveform: Waveform update complete");
+}
+
+void updateNextionActiveProfile() {
+    String activeId = profileManager.getActiveProfileId();
+    LOG_INFOF("updateNextionActiveProfile: Updating for ID %s", activeId.c_str());
+    String activeName;
+    if (activeId.length() > 0) profileManager.loadProfileMeta(activeId, activeName);
+    
+    myNex.writeStr("page ProfileActive");
+    delay(100);
+    
+    if (activeName.length() > 0) {
+        String displayName = activeName;
+        myNex.writeStr("ProfileActive.t1.txt", displayName);
+    }
+    
+    // Update global setpoint variable on Nextion
+    uint32_t finalTemp = profile.getFinalTargetTemp();
+    myNex.writeNum("globals.setTempNum.val", finalTemp);
+
+    plotProfileOnWaveform();
+}
 
 // WifiCredentials struct defined in Types.hpp
 
@@ -82,7 +147,7 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
     Serial.printf("%s\n", buffer);
     
     // Use local JsonDocument to prevent heap fragmentation
-    JsonDocument wsRequestDoc;
+    StaticJsonDocument<1024> wsRequestDoc;
     DeserializationError error = deserializeJson(wsRequestDoc, buffer);
     free(buffer);  // Clean up buffer
     
@@ -102,7 +167,7 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
     const char* command = wsRequestDoc["command"];
     if (strcmp(command, "getData") == 0) {
       // Local allocation for response as well
-      JsonDocument wsResponseDoc;
+      StaticJsonDocument<1024> wsResponseDoc;
       wsResponseDoc["id"] = wsRequestDoc["id"];
       JsonObject temp_data = wsResponseDoc["data"].to<JsonObject>();
       temp_data["bt"] = currentTemp;
@@ -154,7 +219,7 @@ const char* getStateName(byte state) {
 
 // Serialize system state to JSON
 String getSystemStateJSON() {
-  StaticJsonDocument<1024> doc;
+  DynamicJsonDocument doc(1024);
   
   doc["timestamp"] = millis();
   doc["state"] = getStateName(roasterState);
@@ -187,44 +252,30 @@ String getSystemStateJSON() {
   return output;
 }
 
+// Simple sanitization for legacy name-based storage
+String sanitizeProfileName(const String& name) {
+  String sanitized;
+  sanitized.reserve(name.length());
+  for (unsigned int i = 0; i < name.length(); i++) {
+    char c = name[i];
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+      sanitized += c;
+    } else {
+      sanitized += '_';
+    }
+  }
+  return sanitized.length() ? sanitized : String("profile");
+}
+
 // Serialize profile to JSON
 String getProfileJSON() {
-  StaticJsonDocument<2048> doc;
-  
-  doc["setpointCount"] = profile.getSetpointCount();
-  doc["finalTemp"] = (int)profile.getFinalTargetTemp();
-  
-  JsonArray setpoints = doc.createNestedArray("setpoints");
-  for (int i = 0; i < profile.getSetpointCount(); i++) {
-    auto sp = profile.getSetpoint(i);
-    JsonObject setpoint = setpoints.createNestedObject();
-    setpoint["time"] = sp.time / 1000;  // Convert to seconds
-    setpoint["temp"] = sp.temp;
-    setpoint["fanSpeed"] = sp.fanSpeed;
-  }
-  doc["activeName"] = preferences.getString("profile_active", "");
-  
-  String output;
-  serializeJson(doc, output);
-  return output;
+  return profileManager.getProfile(profileManager.getActiveProfileId());
 }
 
 // Load profile by name from preferences into active `profile`
 bool loadProfileByName(const String& name) {
-  if (name.length() == 0) return false;
-  String sanitized = sanitizeProfileName(name);
-  String key = String("profile_") + sanitized;
-  uint8_t buf[200];
-  size_t read = preferences.getBytes(key.c_str(), buf, sizeof(buf));
-  if (read == 0) {
-    LOG_WARNF("Failed to load profile '%s' (sanitized: '%s') - key not found", name.c_str(), sanitized.c_str());
-    return false;
-  }
-  profile.unflattenProfile(buf);
-  profile.flattenProfile(profileBuffer);
-  preferences.putBytes("profile", profileBuffer, sizeof(profileBuffer));
-  preferences.putString("profile_active", name);
-  return true;
+  // Legacy support removed or redirected
+  return false;
 }
 
 // Broadcast system state to all WebSocket clients
@@ -245,29 +296,34 @@ void initWebSocket() {
 }
 
 String initializeWifi(const WifiCredentials& wifiCredentials) {
+  if (wifiCredentials.ssid.length() == 0) {
+    Serial.println("No WiFi credentials - skipping WiFi setup");
+    return "No WiFi";
+  }
+
   // Connect to Wi-Fi
   WiFi.begin(wifiCredentials.ssid, wifiCredentials.password);
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 10) {
+  // Reduced blocking wait to 3 seconds to allow faster boot
+  while (WiFi.status() != WL_CONNECTED && attempts < 3) {
+    esp_task_wdt_reset(); // Pet the watchdog
     delay(1000);
     Serial.println("Connecting to WiFi..");
     attempts++;
   }
+  
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Failed to connect to WiFi");
-    return "Failed to connect to WiFi";
+    Serial.println("WiFi not connected yet - continuing boot (will retry in background)");
   } else {
-    // Initialize mDNS
-    if (!MDNS.begin("roaster")) {  // Set the hostname to "roaster.local"
-      Serial.println("Error setting up MDNS responder! Continuing without mDNS...");
-      // Graceful degradation - device works without mDNS, user must use IP address
-    } else {
-      Serial.println("mDNS responder started - device accessible at roaster.local");
-    }
+    Serial.println(WiFi.localIP());
   }
 
-  // Print ESP Local IP Address
-  Serial.println(WiFi.localIP());
+  // Initialize mDNS regardless of current connection state (it might connect later)
+  if (!MDNS.begin("roaster")) {
+    Serial.println("Error setting up MDNS responder!");
+  } else {
+    Serial.println("mDNS responder started - device accessible at roaster.local");
+  }
 
   initWebSocket();
 
@@ -284,237 +340,208 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   });
 
   // =============================================================================
-  // PROFILE API - RESTful CRUD Operations
+  // PROFILE API - ID-based RESTful CRUD Operations
   // =============================================================================
 
-  // Wildcard handler for /api/profile/* routes (must come BEFORE /api/profiles)
-  server.on("/api/profile/*", HTTP_GET, [](AsyncWebServerRequest *request) {
-    String path = request->url();
-    
-    // Extract profile name from path
-    String profilePath = path.substring(13); // Skip "/api/profile/"
-    
-    // URL decode the profile name
-    String name = "";
-    for (int i = 0; i < profilePath.length(); i++) {
-      char c = profilePath.charAt(i);
-      if (c == '%' && i + 2 < profilePath.length()) {
-        char hex[3] = {profilePath.charAt(i+1), profilePath.charAt(i+2), 0};
-        name += (char)strtol(hex, nullptr, 16);
-        i += 2;
-      } else if (c == '+') {
-        name += ' ';
-      } else {
-        name += c;
-      }
-    }
-    
-    if (name.length() == 0) {
-      request->send(400, "application/json", "{\"error\":\"missing_name\"}");
-      return;
-    }
-    
-    // GET /api/profile/:name
-    LOG_DEBUGF("GET /api/profile/%s", name.c_str());
-    String result = getProfileByName(name);
-    request->send(200, "application/json", result);
-  });
-  
-  // DELETE /api/profile/:name
-  server.on("/api/profile/*", HTTP_DELETE, [](AsyncWebServerRequest *request) {
-    String path = request->url();
-    String profilePath = path.substring(13);
-    
-    // URL decode
-    String name = "";
-    for (int i = 0; i < profilePath.length(); i++) {
-      char c = profilePath.charAt(i);
-      if (c == '%' && i + 2 < profilePath.length()) {
-        char hex[3] = {profilePath.charAt(i+1), profilePath.charAt(i+2), 0};
-        name += (char)strtol(hex, nullptr, 16);
-        i += 2;
-      } else if (c == '+') {
-        name += ' ';
-      } else {
-        name += c;
-      }
-    }
-    
-    if (name.length() == 0) {
-      request->send(400, "application/json", "{\"error\":\"missing_name\"}");
-      return;
-    }
-    
-    LOG_DEBUGF("DELETE /api/profile/%s", name.c_str());
-    String result = deleteProfile(name);
-    
-    JsonDocument doc;
-    deserializeJson(doc, result);
-    bool ok = doc["ok"].as<bool>();
-    String error = doc["error"].as<String>();
-    
-    if (!ok && error == "cannot_delete_active") {
-      request->send(409, "application/json", result);
-    } else {
-      request->send(ok ? 200 : 404, "application/json", result);
-    }
-  });
-  
-  // POST /api/profile/:name - Update specific profile (with body handler)
-  server.on("/api/profile/*", HTTP_POST,
-    [](AsyncWebServerRequest *request) {
-      // Check if this is /activate endpoint (no body needed)
-      String path = request->url();
-      if (path.endsWith("/activate")) {
-        // Extract name between "/api/profile/" and "/activate"
-        int start = 13; // Length of "/api/profile/"
-        int end = path.indexOf("/activate");
-        String profilePath = path.substring(start, end);
-        
-        // URL decode
-        String name = "";
-        for (int i = 0; i < profilePath.length(); i++) {
-          char c = profilePath.charAt(i);
-          if (c == '%' && i + 2 < profilePath.length()) {
-            char hex[3] = {profilePath.charAt(i+1), profilePath.charAt(i+2), 0};
-            name += (char)strtol(hex, nullptr, 16);
-            i += 2;
-          } else if (c == '+') {
-            name += ' ';
-          } else {
-            name += c;
-          }
-        }
-        
-        if (name.length() == 0) {
-          request->send(400, "application/json", "{\"error\":\"missing_name\"}");
-          return;
-        }
-        
-        LOG_DEBUGF("POST /api/profile/%s/activate", name.c_str());
-        String result = activateProfile(name);
-        request->send(200, "application/json", result);
-      }
-      // For other POST requests, the body handler will be called
-    },
-    nullptr,
-    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-      // Skip if this is /activate endpoint (already handled in request handler)
-      String path = request->url();
-      if (path.endsWith("/activate")) {
-        return;
-      }
-      
-      // Extract profile name from URL
-      int lastSlash = path.lastIndexOf('/');
-      String encodedName = path.substring(lastSlash + 1);
-      
-      // URL decode
-      String profileName = "";
-      for (int i = 0; i < encodedName.length(); i++) {
-        char c = encodedName.charAt(i);
-        if (c == '%' && i + 2 < encodedName.length()) {
-          char hex[3] = {encodedName.charAt(i+1), encodedName.charAt(i+2), 0};
-          profileName += (char)strtol(hex, nullptr, 16);
-          i += 2;
-        } else if (c == '+') {
-          profileName += ' ';
-        } else {
-          profileName += c;
-        }
-      }
-      
-      // Accumulate body
-      if (index == 0) {
-        String* body = new String();
-        body->reserve(total + 1);
-        request->_tempObject = (void*)body;
-      }
-      
-      String* body = (String*)request->_tempObject;
-      if (!body) {
-        LOG_ERROR("POST /api/profile/:name: body allocation failed");
-        request->send(500, "application/json", "{\"error\":\"internal_error\"}");
-        return;
-      }
-      
-      for (size_t i = 0; i < len; i++) *body += (char)data[i];
-      
-      if (index + len < total) return;
-      
-      // Parse JSON
-      JsonDocument doc;
-      DeserializationError err = deserializeJson(doc, *body);
-      if (err) {
-        LOG_WARNF("POST /api/profile/%s: invalid JSON: %s", profileName.c_str(), err.c_str());
-        delete body;
-        request->send(400, "application/json", "{\"error\":\"invalid_json\"}");
-        return;
-      }
-      
-      // Ensure the name in JSON matches URL (or set it from URL)
-      doc["name"] = profileName;
-      
-      LOG_DEBUGF("POST /api/profile/%s: updating profile", profileName.c_str());
-      String result = saveProfile(doc);
-      
-      delete body;
-      request->send(200, "application/json", result);
-    }
-  );
-
-  // GET /api/profiles - List all saved profiles
+  // GET /api/profiles - list summaries
   server.on("/api/profiles", HTTP_GET, [](AsyncWebServerRequest *request) {
     LOG_DEBUG("GET /api/profiles");
-    String result = getProfilesList();
+    String result = profileManager.getProfilesList();
     request->send(200, "application/json", result);
   });
-  
-  // POST /api/profiles - Create new profile
+
+  // POST /api/profiles - create
   server.on("/api/profiles", HTTP_POST,
     [](AsyncWebServerRequest *request) {},
     nullptr,
     [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-      // Accumulate body
       if (index == 0) {
         String* body = new String();
         body->reserve(total + 1);
         request->_tempObject = (void*)body;
       }
-      
+
       String* body = (String*)request->_tempObject;
       if (!body) {
         LOG_ERROR("POST /api/profiles: body allocation failed");
         request->send(500, "application/json", "{\"error\":\"internal_error\"}");
         return;
       }
-      
+
       for (size_t i = 0; i < len; i++) *body += (char)data[i];
-      
-      if (index + len < total) return;
-      
-      // Parse JSON
-      JsonDocument doc;
-      DeserializationError err = deserializeJson(doc, *body);
-      if (err) {
-        LOG_WARNF("POST /api/profiles: invalid JSON: %s", err.c_str());
+      if (index + len < total) { 
+        esp_task_wdt_reset(); // Pet watchdog during large uploads
+        yield(); 
+        return; 
+      }
+
+      // Guard against oversized payloads that can destabilize heap
+      if (body->length() > 4096) {
+        LOG_WARNF("POST /api/profiles: payload too large (%d)", (int)body->length());
         delete body;
-        request->send(400, "application/json", "{\"error\":\"invalid_json\"}");
+        request->send(413, "application/json", "{\"error\":\"payload_too_large\"}");
         return;
       }
-      
-      String name = doc["name"].as<String>();
-      if (name.length() == 0) {
-        name = "New Profile";
-      }
-      
-      LOG_DEBUGF("POST /api/profiles: creating '%s'", name.c_str());
-      String result = createNewProfile(name);
-      
+
+      LOG_DEBUG("POST /api/profiles: Calling saveProfile...");
+      ProfileOperationResult result = profileManager.saveProfile(*body);
+      LOG_DEBUG("POST /api/profiles: saveProfile returned");
       delete body;
-      request->send(201, "application/json", result);  // 201 Created
+      request->_tempObject = nullptr; // Prevent double-free or access
+      LOG_DEBUG("POST /api/profiles: body deleted");
+      
+      if (result.success) {
+          LOG_DEBUG("POST /api/profiles: sending success response");
+          String out = "{\"ok\":true,\"id\":\"" + result.id + "\"}";
+          request->send(201, "application/json", out);
+      } else {
+          LOG_DEBUG("POST /api/profiles: sending error response");
+          String out = "{\"ok\":false,\"error\":\"" + result.error + "\"}";
+          request->send(400, "application/json", out);
+      }
+      LOG_DEBUG("POST /api/profiles: response sent");
     }
   );
+
+  // GET /api/profile/:id
+  server.on("/api/profile/*", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String path = request->url();
+    String id = path.substring(String("/api/profile/").length());
+    if (id.length() == 0) {
+      request->send(400, "application/json", "{\"error\":\"missing_id\"}");
+      return;
+    }
+    LOG_DEBUGF("GET /api/profile/%s", id.c_str());
+    
+    String result = profileManager.getProfile(id);
+    DynamicJsonDocument doc(2048);
+    DeserializationError err = deserializeJson(doc, result);
+    
+    if (err) {
+        request->send(500, "application/json", "{\"error\":\"json_error\"}");
+    } else if (doc.containsKey("error")) {
+        String error = doc["error"].as<String>();
+        request->send((error == "not_found") ? 404 : 400, "application/json", result);
+    } else {
+        request->send(200, "application/json", result);
+    }
+  });
+
+  // POST /api/profile/:id/activate
+  server.on("/api/profile/*", HTTP_POST, [](AsyncWebServerRequest *request) {
+    String path = request->url();
+    if (!path.endsWith("/activate")) return;  // Only handle activate here
+
+    int start = String("/api/profile/").length();
+    int end = path.lastIndexOf("/activate");
+    String id = path.substring(start, end);
+    if (id.length() == 0) {
+      request->send(400, "application/json", "{\"error\":\"missing_id\"}");
+      return;
+    }
+    LOG_DEBUGF("POST /api/profile/%s/activate", id.c_str());
+    
+    bool success = profileManager.activateProfile(id);
+    if (success) {
+        updateNextionActiveProfile();
+        request->send(200, "application/json", "{\"ok\":true}");
+    } else {
+        request->send(404, "application/json", "{\"ok\":false,\"error\":\"not_found\"}");
+    }
+  });
+
+  // PUT /api/profile/:id
+  server.on("/api/profile/*", HTTP_PUT,
+    [](AsyncWebServerRequest *request) {},
+    nullptr,
+    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      String path = request->url();
+      if (path.endsWith("/activate")) return;  // handled in POST
+
+      String id = path.substring(String("/api/profile/").length());
+      if (id.length() == 0) {
+        request->send(400, "application/json", "{\"error\":\"missing_id\"}");
+        return;
+      }
+
+      if (index == 0) {
+        String* body = new String();
+        body->reserve(total + 1);
+        request->_tempObject = (void*)body;
+      }
+
+      String* body = (String*)request->_tempObject;
+      if (!body) {
+        LOG_ERROR("PUT /api/profile/:id: body allocation failed");
+        request->send(500, "application/json", "{\"error\":\"internal_error\"}");
+        return;
+      }
+
+      for (size_t i = 0; i < len; i++) *body += (char)data[i];
+      if (index + len < total) { yield(); return; }
+
+      if (body->length() > 4096) {
+        LOG_WARNF("PUT /api/profile/%s: payload too large (%d)", id.c_str(), (int)body->length());
+        delete body;
+        request->_tempObject = nullptr;
+        request->send(413, "application/json", "{\"error\":\"payload_too_large\"}");
+        return;
+      }
+
+      LOG_DEBUGF("PUT /api/profile/%s: updating profile", id.c_str());
+      
+      DynamicJsonDocument doc(4096);
+      DeserializationError err = deserializeJson(doc, *body);
+      if (err) {
+          delete body;
+          request->_tempObject = nullptr;
+          request->send(400, "application/json", "{\"error\":\"invalid_json\"}");
+          return;
+      }
+      
+      doc["id"] = id; // Force ID from URL
+      String updatedBody;
+      serializeJson(doc, updatedBody);
+      delete body;
+      request->_tempObject = nullptr;
+
+      ProfileOperationResult result = profileManager.saveProfile(updatedBody, id);
+      
+      if (result.success) {
+          String out = "{\"ok\":true,\"id\":\"" + result.id + "\"}";
+          request->send(200, "application/json", out);
+      } else {
+          String out = "{\"ok\":false,\"error\":\"" + result.error + "\"}";
+          request->send(400, "application/json", out);
+      }
+    }
+  );
+
+  // DELETE /api/profile/:id
+  server.on("/api/profile/*", HTTP_DELETE, [](AsyncWebServerRequest *request) {
+    String path = request->url();
+    if (path.endsWith("/activate")) return;  // Not applicable
+    String id = path.substring(String("/api/profile/").length());
+    if (id.length() == 0) {
+      request->send(400, "application/json", "{\"error\":\"missing_id\"}");
+      return;
+    }
+    LOG_DEBUGF("DELETE /api/profile/%s", id.c_str());
+    
+    ProfileOperationResult result = profileManager.deleteProfile(id);
+    
+    if (result.success) {
+        request->send(200, "application/json", "{\"ok\":true}");
+    } else {
+        DynamicJsonDocument resDoc(256);
+        resDoc["ok"] = false;
+        resDoc["error"] = result.error;
+        String out;
+        serializeJson(resDoc, out);
+        int code = (result.error == "cannot_delete_active") ? 409 : 404;
+        request->send(code, "application/json", out);
+    }
+  });
 
   // =============================================================================
   // OTHER API ENDPOINTS
@@ -1250,6 +1277,8 @@ void wsCleanup() {
 // Call this periodically (e.g., every 5-10 seconds) from main loop
 void checkWiFiConnection(const WifiCredentials& wifiCredentials) {
 #ifdef ARDUINO_ARCH_ESP32
+  if (wifiCredentials.ssid.length() == 0) return;
+
   static unsigned long lastCheck = 0;
   static int reconnectAttempts = 0;
   const unsigned long CHECK_INTERVAL = 10000;  // Check every 10 seconds
@@ -1262,31 +1291,27 @@ void checkWiFiConnection(const WifiCredentials& wifiCredentials) {
   lastCheck = millis();
   
   if (WiFi.status() != WL_CONNECTED) {
-    DEBUG_PRINTF("WiFi disconnected! Status: %d, Attempt %d/%d\n", WiFi.status(), reconnectAttempts + 1, MAX_RECONNECT_ATTEMPTS);
+    // If we've exceeded max attempts, reset counter but don't try this time
+    // This creates a "cool down" period of one CHECK_INTERVAL
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      reconnectAttempts = 0;
+      DEBUG_PRINTLN("WiFi: Max reconnect attempts reached, pausing...");
+      return;
+    }
+
+    reconnectAttempts++;
+    DEBUG_PRINTF("WiFi disconnected! Attempting reconnect %d/%d\n", reconnectAttempts, MAX_RECONNECT_ATTEMPTS);
     
-    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-      reconnectAttempts++;
-      WiFi.disconnect();
-      delay(1000);
-      WiFi.begin(wifiCredentials.ssid, wifiCredentials.password);
-      
-      // Give it 5 seconds to connect
-      int attempts = 0;
-      while (WiFi.status() != WL_CONNECTED && attempts < 5) {
-        delay(1000);
-        attempts++;
-      }
-      
-      if (WiFi.status() == WL_CONNECTED) {
-        DEBUG_PRINTF("WiFi reconnected! IP: %s\n", WiFi.localIP().toString().c_str());
-        reconnectAttempts = 0;  // Reset counter on successful reconnect
-      }
-    } else {
-      // Max attempts reached, will retry after CHECK_INTERVAL
+    // Non-blocking reconnect: just start the process and return
+    // The next check (in 10s) will verify if it worked
+    WiFi.disconnect();
+    WiFi.begin(wifiCredentials.ssid.c_str(), wifiCredentials.password.c_str());
+    
+  } else {
+    if (reconnectAttempts > 0) {
+      DEBUG_PRINTF("WiFi reconnected! IP: %s\n", WiFi.localIP().toString().c_str());
       reconnectAttempts = 0;
     }
-  } else {
-    reconnectAttempts = 0;  // Reset counter when connected
   }
 #endif
 }

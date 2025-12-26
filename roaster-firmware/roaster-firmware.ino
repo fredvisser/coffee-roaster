@@ -29,6 +29,7 @@
 #include "Types.hpp"
 #include "DebugLog.hpp"
 #include "Profiles.hpp"
+#include "ProfileManager.hpp"
 #include "Network.hpp"
 
 Preferences preferences;
@@ -66,6 +67,7 @@ Servo bdcFan;
 
 // Create a roast profile object
 Profiles profile;
+ProfileManager profileManager;
 
 // Roaster state variables
 // NOTE: All temperature values throughout this codebase are in Fahrenheit (°F)
@@ -130,6 +132,8 @@ uint32_t getEffectiveFinalTargetTemp()
 void setup()
 {
   DEBUG_SERIALBEGIN(115200);
+  delay(1000); // Give Serial Monitor time to connect
+  Serial.println("\n\n--- ROASTER BOOTING ---");
   myNex.begin(115200);
 
   // Set heater and fan control pins to output
@@ -183,6 +187,22 @@ void setup()
     // Continue with defaults - don't halt system
   }
 
+  // --- BOOT LOOP PROTECTION ---
+  // If we crash repeatedly during startup (e.g. due to corrupt NVS), purge profiles
+  int bootCount = preferences.getInt("boot_count", 0);
+  Serial.printf("Boot count: %d\n", bootCount); // Force print to Serial
+  if (bootCount > 5) {
+    LOG_ERRORF("CRITICAL: Boot loop detected (count=%d)! Purging all profiles to recover system.", bootCount);
+    Serial.println("CRITICAL: Purging profiles due to boot loop!");
+    profileManager.deleteAllProfiles();
+    preferences.putInt("boot_count", 0);
+    delay(2000); // Allow time for serial log to be seen
+  } else {
+    preferences.putInt("boot_count", bootCount + 1);
+    LOG_INFOF("Boot count: %d", bootCount + 1);
+  }
+  // ----------------------------
+
   wifiCredentials.ssid = preferences.getString("ssid", "");
   wifiCredentials.password = preferences.getString("password", "");
 
@@ -195,18 +215,29 @@ void setup()
 
   // Initialize profile system: ensure default exists, then load active profile
   LOG_INFO("Initializing profile system...");
-  ensureDefaultProfile();
-  if (!reloadActiveProfile()) {
-    LOG_WARN("Failed to load active profile on first attempt - retrying");
-    // ensureDefaultProfile() will have created and activated "Default"
-    if (!reloadActiveProfile()) {
-      LOG_ERROR("Failed to load active profile on retry - system may be unstable");
+  profileManager.ensureDefault();
+  
+  String activeId = profileManager.getActiveProfileId();
+  if (activeId.length() > 0) {
+    if (!profileManager.loadProfile(activeId)) {
+       LOG_WARN("Failed to load active profile");
     }
+  } else {
+     // Fallback to first available
+     auto ids = profileManager.getProfileIds();
+     if (!ids.empty()) {
+         profileManager.setActiveProfileId(ids.front());
+         profileManager.loadProfile(ids.front());
+     }
   }
+  
   LOG_INFOF("Profile system initialized - using profile with %d setpoints", profile.getSetpointCount());
 
   // Update Nextion display with current profile values
-  if (profile.getSetpointCount() >= 3) {
+  // Send final target temp override (moved from reloadActiveProfile to avoid blocking)
+  myNex.writeNum("globals.setTempNum.val", finalTempOverride);
+
+  if (profile.getSetpointCount() >= 4) {
     myNex.writeNum("ConfigSetpoint.spTemp1.val", profile.getSetpoint(1).temp);
     myNex.writeNum("ConfigSetpoint.spTemp2.val", profile.getSetpoint(2).temp);
     myNex.writeNum("ConfigSetpoint.spTemp3.val", profile.getSetpoint(3).temp);
@@ -228,6 +259,14 @@ void loop()
   // Reset watchdog timer every loop iteration
   // If loop hangs for >10 seconds, system will reset
   esp_task_wdt_reset();
+
+  // Reset boot count if system has been stable for 10 seconds
+  static bool bootCountReset = false;
+  if (!bootCountReset && millis() > 10000) {
+    preferences.putInt("boot_count", 0);
+    bootCountReset = true;
+    LOG_INFO("System stable - boot count reset");
+  }
 
   // Check WiFi connection and auto-reconnect if needed
   checkWiFiConnection(wifiCredentials);
@@ -456,6 +495,29 @@ void loop()
     broadcastSystemState();
     broadcastLogs(50);  // Send last 50 log entries
     wsBroadcastTimer.reset();
+  }
+}
+
+void onProfileActivePageEnter() {
+  // Update Nextion display with current profile values
+  // This is called when entering the ProfileActive page to visualize the profile
+  
+  if (profile.getSetpointCount() >= 4) {
+    // Note: getSetpoint(0) is the start point (time=0), usually we display points 1-3 for editing
+    // or visualization if the UI is designed that way.
+    // Based on setup() logic, we send points 1, 2, 3.
+    
+    myNex.writeNum("ConfigSetpoint.spTemp1.val", profile.getSetpoint(1).temp);
+    myNex.writeNum("ConfigSetpoint.spTemp2.val", profile.getSetpoint(2).temp);
+    myNex.writeNum("ConfigSetpoint.spTemp3.val", profile.getSetpoint(3).temp);
+    
+    myNex.writeNum("ConfigSetpoint.spTime1.val", profile.getSetpoint(1).time / 1000);
+    myNex.writeNum("ConfigSetpoint.spTime2.val", profile.getSetpoint(2).time / 1000);
+    myNex.writeNum("ConfigSetpoint.spTime3.val", profile.getSetpoint(3).time / 1000);
+    
+    myNex.writeNum("ConfigSetpoint.spFan1.val", profile.getSetpoint(1).fanSpeed);
+    myNex.writeNum("ConfigSetpoint.spFan2.val", profile.getSetpoint(2).fanSpeed);
+    myNex.writeNum("ConfigSetpoint.spFan3.val", profile.getSetpoint(3).fanSpeed);
   }
 }
 
