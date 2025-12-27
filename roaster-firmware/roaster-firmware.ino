@@ -30,6 +30,7 @@
 #include "DebugLog.hpp"
 #include "Profiles.hpp"
 #include "ProfileManager.hpp"
+#include "ProfileEditor.hpp"
 #include "Network.hpp"
 
 Preferences preferences;
@@ -54,7 +55,7 @@ Preferences preferences;
 #define VERSION "2025-12-24"
 
 // Use timers for simple multitasking
-SimpleTimer checkTempTimer(250);
+SimpleTimer checkTempTimer(125);
 SimpleTimer tickTimer(5);
 SimpleTimer stateMachineTimer(500);
 SimpleTimer wsBroadcastTimer(1000);  // WebSocket broadcast every 1 second
@@ -77,7 +78,7 @@ double heaterOutputVal = 0; // PID output (0-255)
 byte setpointFanSpeed = 0;  // Target fan speed (0-255)
 int setpointProgress = 0;   // Roast time in seconds
 int bdcFanMs = 800;         // BDC fan servo pulse width (800-2000 µs)
-double fanTemp = 0;         // Alternate temperature sensor (°F)
+double fanTemp = 0;         // Inlet/fan temperature sensor (°F)
 int badReadingCount = 0;    // Track consecutive bad thermocouple readings
 
 // Fan ramp state variables (for non-blocking START_ROAST)
@@ -235,23 +236,17 @@ void setup()
 
   // Update Nextion display with current profile values
   // Send final target temp override (moved from reloadActiveProfile to avoid blocking)
-  myNex.writeNum("globals.setTempNum.val", finalTempOverride);
+  // If no override is set (-1), this will send the profile's default final target
+  LOG_INFOF("Original globals.setTempNum.val value is %dF", myNex.readNumber("globals.setTempNum.val"));
+  myNex.writeNum("globals.setTempNum.val", getEffectiveFinalTargetTemp());
+  LOG_INFOF("Set Nextion final target temp to %dF", getEffectiveFinalTargetTemp());
+  LOG_INFOF("Final globals.setTempNum.val value is %dF", myNex.readNumber("globals.setTempNum.val"));
 
-  if (profile.getSetpointCount() >= 4) {
-    myNex.writeNum("ConfigSetpoint.spTemp1.val", profile.getSetpoint(1).temp);
-    myNex.writeNum("ConfigSetpoint.spTemp2.val", profile.getSetpoint(2).temp);
-    myNex.writeNum("ConfigSetpoint.spTemp3.val", profile.getSetpoint(3).temp);
-    myNex.writeNum("ConfigSetpoint.spTime1.val", profile.getSetpoint(1).time / 1000);
-    myNex.writeNum("ConfigSetpoint.spTime2.val", profile.getSetpoint(2).time / 1000);
-    myNex.writeNum("ConfigSetpoint.spTime3.val", profile.getSetpoint(3).time / 1000);
-    myNex.writeNum("ConfigSetpoint.spFan1.val", profile.getSetpoint(1).fanSpeed);
-    myNex.writeNum("ConfigSetpoint.spFan2.val", profile.getSetpoint(2).fanSpeed);
-    myNex.writeNum("ConfigSetpoint.spFan3.val", profile.getSetpoint(3).fanSpeed);
-  }
   myNex.writeStr("ConfigWifi.ip.txt", ipAddress);
   myNex.writeStr("ConfigNav.rev.txt", VERSION);
 
   myNex.writeStr("page Start");
+  LOG_INFO("Setup complete - entering main loop");
 }
 
 void loop()
@@ -284,51 +279,97 @@ void loop()
 
   if (checkTempTimer.isReady())
   {
-    // Read thermocouple with failure detection
-    double reading = thermocouple.readFarenheit();
+    static int readCycle = 0; // 0-7 counter for 1Hz fan updates
+    static double lastValidTemp = 0;
+    static bool firstReading = true;
 
-    // MAX6675 returns ~2048°F when disconnected, also check for unreasonable values
-    if (reading < 0 || reading > 600)
+    // Cycle 0, 2, 4, 6: Read Main Sensor (4 Hz)
+    // Cycle 1, 3, 5, 7: Read Fan Sensor (4 Hz)
+    // This ensures we never read both sensors in the same 125ms window
+    if (readCycle % 2 == 0)
     {
-      badReadingCount++;
-      if (badReadingCount >= MAX_BAD_READINGS)
+      // Read thermocouple with failure detection
+      double reading = thermocouple.readFarenheit();
+
+      // 1. Range Check: MAX6675 returns ~2048°F when disconnected
+      // We also check for negative values which are invalid for this application
+      bool isRangeError = (reading < 0 || reading > SENSOR_FAULT_TEMP);
+      
+      // 2. Spike Check: Ignore physically impossible temperature jumps
+      bool isSpike = false;
+      if (!isRangeError && !firstReading && abs(reading - lastValidTemp) > MAX_TEMP_JUMP) {
+        isSpike = true;
+        LOG_WARNF("Temp spike ignored: %.1f -> %.1f", lastValidTemp, reading);
+      }
+
+      if (isRangeError || isSpike)
       {
-        // SENSOR FAILURE - EMERGENCY STOP
-        roasterState = ERROR;
-        digitalWrite(HEATER, LOW);
-        heaterPID.stop();
-        heaterOutputVal = 0;
-        heaterRelay.setPWM(0);
-        fanRelay.setPWM(255); // Full fan for safety
-        bdcFan.writeMicroseconds(2000);
-        DEBUG_PRINTLN("EMERGENCY: Thermocouple failure detected!");
-        myNex.writeStr("page Error");
-        myNex.writeStr("Error.message.txt", "Sensor Failed");
+        badReadingCount++;
+        if (badReadingCount >= MAX_BAD_READINGS)
+        {
+          // SENSOR FAILURE - EMERGENCY STOP
+          roasterState = ERROR;
+          digitalWrite(HEATER, LOW);
+          heaterPID.stop();
+          heaterOutputVal = 0;
+          heaterRelay.setPWM(0);
+          fanRelay.setPWM(255); // Full fan for safety
+          bdcFan.writeMicroseconds(2000);
+          DEBUG_PRINTLN("EMERGENCY: Thermocouple failure detected!");
+          myNex.writeStr("page Error");
+          myNex.writeStr("Error.message.txt", "Sensor Failed");
+        }
+      }
+      else
+      {
+        currentTemp = reading;
+        lastValidTemp = reading;
+        firstReading = false;
+        badReadingCount = 0; // Reset counter on good reading
+
+        // THERMAL RUNAWAY PROTECTION
+        if (currentTemp > MAX_SAFE_TEMP)
+        {
+          // EMERGENCY SHUTDOWN
+          roasterState = ERROR;
+          digitalWrite(HEATER, LOW);
+          heaterPID.stop();
+          heaterOutputVal = 0;
+          heaterRelay.setPWM(0);
+          fanRelay.setPWM(255); // Full fan to cool down
+          bdcFan.writeMicroseconds(2000);
+          DEBUG_PRINTLN("EMERGENCY: Thermal runaway detected!");
+          myNex.writeStr("page Error");
+          myNex.writeStr("Error.message.txt", "Over Temp");
+        }
       }
     }
+    // Odd cycles: Read Fan Sensor (4 Hz)
     else
     {
-      currentTemp = reading;
-      badReadingCount = 0; // Reset counter on good reading
-
-      // THERMAL RUNAWAY PROTECTION
-      if (currentTemp > MAX_SAFE_TEMP)
-      {
-        // EMERGENCY SHUTDOWN
-        roasterState = ERROR;
-        digitalWrite(HEATER, LOW);
-        heaterPID.stop();
-        heaterOutputVal = 0;
-        heaterRelay.setPWM(0);
-        fanRelay.setPWM(255); // Full fan to cool down
-        bdcFan.writeMicroseconds(2000);
-        DEBUG_PRINTLN("EMERGENCY: Thermal runaway detected!");
-        myNex.writeStr("page Error");
-        myNex.writeStr("Error.message.txt", "Over Temp");
+      double fReading = thermocoupleFan.readFarenheit();
+      // Simple range check for fan sensor
+      if (fReading > 0 && fReading < SENSOR_FAULT_TEMP) {
+        fanTemp = fReading;
+        
+        // Safety check for fan sensor (cold inlet temp)
+        if (fanTemp > MAX_SAFE_FAN_TEMP) {
+          // EMERGENCY SHUTDOWN
+          roasterState = ERROR;
+          digitalWrite(HEATER, LOW);
+          heaterPID.stop();
+          heaterOutputVal = 0;
+          heaterRelay.setPWM(0);
+          fanRelay.setPWM(255); // Full fan to cool down
+          bdcFan.writeMicroseconds(2000);
+          DEBUG_PRINTLN("EMERGENCY: Fan/Exhaust Over Temp!");
+          myNex.writeStr("page Error");
+          myNex.writeStr("Error.message.txt", "Exhaust Over Temp");
+        }
       }
     }
 
-    fanTemp = thermocoupleFan.readFarenheit();
+    readCycle = (readCycle + 1) % 8;
     // Metrics now available via debug console at /console
     checkTempTimer.reset();
   }
@@ -389,6 +430,9 @@ void loop()
     {
       // Ensure PID is actively running every loop iteration
       heaterPID.run();
+      
+      // Safety clamp for heater output
+      heaterOutputVal = constrain(heaterOutputVal, 0, 255);
 
       setpointTemp = profile.getTargetTemp(millis());
       setpointFanSpeed = profile.getTargetFanSpeed(millis());
@@ -498,28 +542,7 @@ void loop()
   }
 }
 
-void onProfileActivePageEnter() {
-  // Update Nextion display with current profile values
-  // This is called when entering the ProfileActive page to visualize the profile
-  
-  if (profile.getSetpointCount() >= 4) {
-    // Note: getSetpoint(0) is the start point (time=0), usually we display points 1-3 for editing
-    // or visualization if the UI is designed that way.
-    // Based on setup() logic, we send points 1, 2, 3.
-    
-    myNex.writeNum("ConfigSetpoint.spTemp1.val", profile.getSetpoint(1).temp);
-    myNex.writeNum("ConfigSetpoint.spTemp2.val", profile.getSetpoint(2).temp);
-    myNex.writeNum("ConfigSetpoint.spTemp3.val", profile.getSetpoint(3).temp);
-    
-    myNex.writeNum("ConfigSetpoint.spTime1.val", profile.getSetpoint(1).time / 1000);
-    myNex.writeNum("ConfigSetpoint.spTime2.val", profile.getSetpoint(2).time / 1000);
-    myNex.writeNum("ConfigSetpoint.spTime3.val", profile.getSetpoint(3).time / 1000);
-    
-    myNex.writeNum("ConfigSetpoint.spFan1.val", profile.getSetpoint(1).fanSpeed);
-    myNex.writeNum("ConfigSetpoint.spFan2.val", profile.getSetpoint(2).fanSpeed);
-    myNex.writeNum("ConfigSetpoint.spFan3.val", profile.getSetpoint(3).fanSpeed);
-  }
-}
+
 
 void trigger0()
 { // Start roast command received
@@ -547,8 +570,8 @@ void trigger0()
   }
   
   roasterState = START_ROAST;
-  myNex.writeStr("page Roasting");
   myNex.writeNum("globals.nextSetTempNum.val", setpointTemp);
+  myNex.writeStr("page Roasting");
   LOG_INFO("trigger0() complete - state set to START_ROAST");
 }
 
@@ -565,8 +588,8 @@ void trigger1()
   fanRelay.setPWM(setpointFanSpeed);
   bdcFan.writeMicroseconds(2000);
 
-  myNex.writeStr("page Cooling");
   myNex.writeNum("globals.nextSetTempNum.val", 145);
+  myNex.writeStr("page Cooling");
 }
 
 void trigger2()
@@ -594,4 +617,5 @@ void trigger4()
 { // ProfileActive page button - plot current profile
   LOG_INFO("trigger4() called - ProfileActive plot button");
   onProfileActivePageEnter();
+  myNex.writeStr("page ProfileActive");
 }

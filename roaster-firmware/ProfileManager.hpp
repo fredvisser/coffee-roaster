@@ -402,7 +402,7 @@ public:
         auto ids = getProfileIds();
         if (ids.empty()) {
             LOG_INFO("Creating default profile...");
-            String defaultJson = "{\"name\":\"Default\",\"activate\":true,\"setpoints\":[{\"time\":0,\"temp\":200,\"fanSpeed\":30},{\"time\":180,\"temp\":350,\"fanSpeed\":50},{\"time\":420,\"temp\":400,\"fanSpeed\":70},{\"time\":600,\"temp\":444,\"fanSpeed\":80}]}";
+            String defaultJson = "{\"name\":\"Default\",\"activate\":true,\"setpoints\":[{\"time\":0,\"temp\":200,\"fanSpeed\":100},{\"time\":150,\"temp\":300,\"fanSpeed\":100},{\"time\":300,\"temp\":380,\"fanSpeed\":100},{\"time\":480,\"temp\":430,\"fanSpeed\":95}]}";
             saveProfile(defaultJson);
         }
     }

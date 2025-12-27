@@ -24,14 +24,16 @@ enum RoasterState
 // Temperature limits (all values in Fahrenheit)
 #define MAX_SAFE_TEMP 500.0       // Absolute maximum safe temperature (°F)
 #define MAX_ROAST_TEMP 460.0      // Maximum temperature during roast (°F)
-#define COOLING_TARGET_TEMP 145   // Target temperature for cooling (°F)
+#define COOLING_TARGET_TEMP 140   // Target temperature for cooling (°F)
+#define MAX_SAFE_FAN_TEMP 150.0   // Maximum safe inlet/fan temperature (°F)
 
 // Sensor failure detection
 #define MAX_BAD_READINGS 5        // Consecutive bad readings before sensor failure
+#define MAX_TEMP_JUMP 40.0        // Max allowed change in temp between readings (F)
 #define SENSOR_FAULT_TEMP 600.0   // Thermocouple reads ~2048°F when disconnected
 
 // Timing limits
-#define MAX_COOLING_TIME 1800000  // 30 minutes in milliseconds
+#define MAX_COOLING_TIME 300000  // 5 minutes in milliseconds
 
 // ============================================================================
 // HARDWARE CONFIGURATION

@@ -740,7 +740,8 @@ String deleteProfileById(const String& id) {
 
 /**
  * Create a new profile with default setpoints
- * 4 points ending at 444°F
+ * 4 points ending at 430F over 8 minutes
+  Returns JSON with new profile id and name
  */
 String createNewProfile(const String& name) {
   StaticJsonDocument<1024> doc;
@@ -751,9 +752,9 @@ String createNewProfile(const String& name) {
   Profiles tempProfile;
   tempProfile.clearSetpoints();
   tempProfile.addSetpoint(0,   200, 30);
-  tempProfile.addSetpoint(180000, 350, 50);
-  tempProfile.addSetpoint(420000, 400, 70);
-  tempProfile.addSetpoint(600000, 444, 80);
+  tempProfile.addSetpoint(150000, 300, 100);
+  tempProfile.addSetpoint(300000, 380, 100);
+  tempProfile.addSetpoint(480000, 430, 95);
   tempProfile.flattenProfile(profileBuffer);
 
   preferences.putBytes(profileDataKey(id).c_str(), profileBuffer, sizeof(profileBuffer));
@@ -770,22 +771,22 @@ String createNewProfile(const String& name) {
   JsonObject sp1 = arr.createNestedObject();
   sp1["time"] = 0;
   sp1["temp"] = 200;
-  sp1["fanSpeed"] = 30;
+  sp1["fanSpeed"] = 100;
 
   JsonObject sp2 = arr.createNestedObject();
-  sp2["time"] = 180;
-  sp2["temp"] = 350;
-  sp2["fanSpeed"] = 50;
+  sp2["time"] = 150;
+  sp2["temp"] = 300;
+  sp2["fanSpeed"] = 100;
 
   JsonObject sp3 = arr.createNestedObject();
-  sp3["time"] = 420;
-  sp3["temp"] = 400;
-  sp3["fanSpeed"] = 70;
+  sp3["time"] = 300;
+  sp3["temp"] = 380;
+  sp3["fanSpeed"] = 100;
 
   JsonObject sp4 = arr.createNestedObject();
-  sp4["time"] = 600;
-  sp4["temp"] = 444;
-  sp4["fanSpeed"] = 80;
+  sp4["time"] = 480;
+  sp4["temp"] = 430;
+  sp4["fanSpeed"] = 95;
 
   LOG_INFOF("Created new profile id=%s name='%s'", id.c_str(), profileName.c_str());
 

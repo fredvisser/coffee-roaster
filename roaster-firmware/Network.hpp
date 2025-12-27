@@ -39,45 +39,7 @@ extern uint8_t profileBuffer[200];
 extern EasyNex myNex;
 
 // Helper to update Nextion display with active profile
-void plotProfileOnWaveform() {
-  LOG_INFO("plotProfileOnWaveform: Starting waveform update");
-  int count = profile.getSetpointCount();
-  if (count < 2) {
-    LOG_WARN("plotProfileOnWaveform: Profile has fewer than 2 setpoints, skipping plot");
-    return;
-  }
-  
-  auto finalSetpoint = profile.getSetpoint(count - 1);
-  uint32_t maxTime = finalSetpoint.time;
-  uint32_t maxTemp = finalSetpoint.temp;
-  
-  const int WAVEFORM_WIDTH = 480;
-  const int WAVEFORM_HEIGHT = 170;
-  
-  if (maxTemp == 0) {
-      LOG_WARN("plotProfileOnWaveform: Max temp is 0, skipping");
-      return;
-  }
-  
-  myNex.writeStr("s0.clr");
-  delay(50);
-  
-  LOG_INFOF("plotProfileOnWaveform: Plotting %d setpoints over %d ms", count, maxTime);
-
-  for (int i = 0; i < WAVEFORM_WIDTH; i++) {
-    if ((i & 0x0F) == 0) yield();
-    uint32_t timeAtX = (maxTime * (WAVEFORM_WIDTH - 1 - i)) / WAVEFORM_WIDTH;
-    uint32_t interpolatedTemp = profile.getTargetTempAtTime(timeAtX);
-    uint32_t scaledTemp32 = ((uint32_t)interpolatedTemp * (uint32_t)WAVEFORM_HEIGHT) / (uint32_t)maxTemp;
-    if (scaledTemp32 > (uint32_t)WAVEFORM_HEIGHT) scaledTemp32 = (uint32_t)WAVEFORM_HEIGHT;
-    
-    char cmd[32];
-    snprintf(cmd, sizeof(cmd), "add 2,0,%lu", (unsigned long)scaledTemp32);
-    myNex.writeStr(cmd);
-  }
-  myNex.writeStr("ref b1");
-  LOG_INFO("plotProfileOnWaveform: Waveform update complete");
-}
+void plotProfileOnWaveform();
 
 void updateNextionActiveProfile() {
     String activeId = profileManager.getActiveProfileId();
