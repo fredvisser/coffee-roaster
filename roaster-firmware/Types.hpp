@@ -14,7 +14,8 @@ enum RoasterState
   START_ROAST = 1,
   ROASTING = 2,
   COOLING = 3,
-  ERROR = 4
+  ERROR = 4,
+  CALIBRATING = 5
 };
 
 // ============================================================================

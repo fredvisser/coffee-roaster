@@ -39,6 +39,7 @@ public:
 
     // Get profile progress based on current time
     uint32_t getProfileProgress(uint32_t tickTime) const;
+    void setFinalTargetTemp(uint32_t temp);
 
     // Get setpoint count
     int getSetpointCount() const;
@@ -144,6 +145,13 @@ uint32_t Profiles::getTargetTempAtTime(uint32_t timeMs) const
 uint32_t Profiles::getFinalTargetTemp() const
 {
     return _setpoints[_setpointCount - 1].temp;
+}
+
+void Profiles::setFinalTargetTemp(uint32_t temp)
+{
+    if (_setpointCount == 0) return;
+    uint32_t clamped = (temp > 500U) ? 500U : temp;
+    _setpoints[_setpointCount - 1].temp = clamped;
 }
 
 uint32_t Profiles::getTargetFanSpeed(uint32_t tickTime) const

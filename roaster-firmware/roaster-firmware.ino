@@ -31,6 +31,7 @@
 #include "Profiles.hpp"
 #include "ProfileManager.hpp"
 #include "ProfileEditor.hpp"
+#include "PIDAutotuner.hpp"
 #include "Network.hpp"
 
 Preferences preferences;
@@ -45,9 +46,9 @@ Preferences preferences;
 #define BDCFAN D5
 
 // PID settings and gains
-#define KP 8.0
-#define KI 0.46
-#define KD 0
+double kp = 8.0;
+double ki = 0.46;
+double kd = 0;
 
 // Preferences namespace
 #define PREFS_NAMESPACE "roaster"
@@ -81,6 +82,10 @@ int bdcFanMs = 800;         // BDC fan servo pulse width (800-2000 µs)
 double fanTemp = 0;         // Inlet/fan temperature sensor (°F)
 int badReadingCount = 0;    // Track consecutive bad thermocouple readings
 
+// Restart handling
+bool restartRequested = false;
+unsigned long restartAt = 0;
+
 // Fan ramp state variables (for non-blocking START_ROAST)
 unsigned long fanRampStartTime = 0;
 int fanRampStep = 0;
@@ -96,7 +101,8 @@ RoasterState roasterState = IDLE;
 
 MAX6675 thermocouple(SCK, TC1_CS, MISO);
 MAX6675 thermocoupleFan(SCK, TC2_CS, MISO);
-AutoPID heaterPID(&currentTemp, &setpointTemp, &heaterOutputVal, 0, 255, KP, KI, KD);
+AutoPID heaterPID(&currentTemp, &setpointTemp, &heaterOutputVal, 0, 255, kp, ki, kd);
+PIDAutotuner autotuner;
 
 // Create a Nextion display connection
 EasyNex myNex(HW_SERIAL);
@@ -187,6 +193,13 @@ void setup()
     LOG_ERROR("Preferences initialization failed - using defaults");
     // Continue with defaults - don't halt system
   }
+
+  // Load PID values
+  kp = preferences.getDouble("kp", 8.0);
+  ki = preferences.getDouble("ki", 0.46);
+  kd = preferences.getDouble("kd", 0.0);
+  heaterPID.setGains(kp, ki, kd);
+  LOG_INFOF("PID Loaded: Kp=%.4f, Ki=%.4f, Kd=%.4f", kp, ki, kd);
 
   // --- BOOT LOOP PROTECTION ---
   // If we crash repeatedly during startup (e.g. due to corrupt NVS), purge profiles
@@ -376,6 +389,25 @@ void loop()
 
   if (stateMachineTimer.isReady())
   {
+    static RoasterState lastState = IDLE;
+    if (roasterState != lastState) {
+        LOG_INFOF("State transition: %d -> %d", lastState, roasterState);
+        
+        // Handle state entry logic
+        if (roasterState == CALIBRATING) {
+             // Stop PID to prevent interference
+             heaterPID.stop();
+             heaterOutputVal = 0;
+             
+             // Initialize fan ramp
+             fanRampStep = 0;
+             
+             LOG_INFO("Calibration: Starting fan ramp sequence");
+        }
+        
+        lastState = roasterState;
+    }
+
     switch (roasterState)
     {
     case IDLE:
@@ -415,6 +447,10 @@ void loop()
         // Start roasting with current active profile
         roasterState = ROASTING;
         profile.startProfile((int)currentTemp, millis());
+        
+        // Log active PID parameters
+        LOG_INFOF("PID Active: Kp=%.4f, Ki=%.4f, Kd=%.4f", kp, ki, kd);
+        
         heaterPID.run();
         heaterRelay.setPWM(heaterOutputVal);
         LOG_INFOF("Roast started: Target=%.0fF, Setpoints=%d", (float)getEffectiveFinalTargetTemp(), profile.getSetpointCount());
@@ -525,12 +561,102 @@ void loop()
       // No automatic recovery to ensure user acknowledges the fault
       break;
 
+    case CALIBRATING:
+      // Fan Ramp Logic (Reuse logic from START_ROAST)
+      if (fanRampStep < 2000) 
+      {
+        if (fanRampStep == 0) {
+             fanRampStartTime = millis();
+             fanRampStep = 800;
+             LOG_INFO("Calibration: Fan ramp initiated");
+        }
+
+        unsigned long elapsed = millis() - fanRampStartTime;
+        int targetStep = 800 + (elapsed / 500) * 100;
+
+        if (targetStep > fanRampStep)
+        {
+          fanRampStep = targetStep;
+          if (fanRampStep > 2000) fanRampStep = 2000;
+          
+          bdcFan.writeMicroseconds(fanRampStep);
+          // Ramp PWM fan proportionally
+          int pwmFan = map(fanRampStep, 800, 2000, 50, 255);
+          fanRelay.setPWM(pwmFan);
+          LOG_INFOF("Calib Ramp: BDC=%d", fanRampStep);
+        }
+        
+        // Ensure heater is OFF during ramp
+        heaterRelay.setPWM(0);
+        break; 
+      }
+
+      LOG_INFO("State: CALIBRATING loop");
+      
+      // Force fan to 100% every loop to ensure it stays on
+      fanRelay.setPWM(255);
+      bdcFan.writeMicroseconds(1975);
+      
+      // Run autotuner
+      heaterOutputVal = autotuner.getOutput(currentTemp);
+      LOG_INFOF("Autotuner output: %.2f", heaterOutputVal);
+      heaterRelay.setPWM(heaterOutputVal);
+      
+      // Update UI
+      myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
+      
+      if (autotuner.isComplete()) {
+          double newKp, newKi, newKd;
+          autotuner.getPID(newKp, newKi, newKd);
+          
+          // Save to preferences
+          preferences.putDouble("kp", newKp);
+          preferences.putDouble("ki", newKi);
+          preferences.putDouble("kd", newKd);
+          
+          // Update runtime PID
+          kp = newKp; ki = newKi; kd = newKd;
+          heaterPID.setGains(kp, ki, kd);
+          
+          LOG_INFOF("Calibration saved: Kp=%.4f, Ki=%.4f, Kd=%.4f", kp, ki, kd);
+          
+          // Stop heater
+          heaterOutputVal = 0;
+          heaterRelay.setPWM(0);
+          
+          // Transition to COOLING to bring temp down to 145F
+          setpointTemp = 145;
+          roasterState = COOLING;
+          coolingStartTime = millis();
+          
+          // Max fan for cooling
+          setpointFanSpeed = 255;
+          fanRelay.setPWM(setpointFanSpeed);
+          bdcFan.writeMicroseconds(2000);
+          
+          myNex.writeStr("page Cooling");
+          sendWsMessage("{ \"pushMessage\": \"calibrationComplete\" }");
+
+            // Schedule a safe restart to avoid post-calibration instability
+            restartRequested = true;
+            restartAt = millis() + 3000; // allow message to flush and fans to spin up
+      }
+      break;
+
     default:
       LOG_WARNF("Unknown state: %d - returning to IDLE", roasterState);
       roasterState = IDLE;
       break;
     }
     stateMachineTimer.reset();
+  }
+
+  // Handle deferred restart (used after calibration)
+  if (restartRequested && millis() >= restartAt)
+  {
+    LOG_INFO("Restarting controller after calibration...");
+    delay(100);
+    ESP.restart();
   }
 
   // Broadcast system state via WebSocket to debug console
@@ -564,6 +690,8 @@ void trigger0()
   if (uiFinalTemp != NEXTION_READ_ERROR && uiFinalTemp > 0) {
     finalTempOverride = constrain(uiFinalTemp, 0, 500);
     LOG_INFOF("Using Nextion final target override: %dF", finalTempOverride);
+    // Also update the active profile's final setpoint so heater control uses the override
+    profile.setFinalTargetTemp(finalTempOverride);
   } else {
     finalTempOverride = profile.getFinalTargetTemp();
     LOG_WARN("Nextion final target not available - using profile final temp");

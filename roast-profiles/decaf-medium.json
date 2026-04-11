@@ -1,0 +1,59 @@
+{
+    "name": "Decaf - Medium",
+    "setpoints": [
+        {
+            "time": 0,
+            "temp": 165,
+            "fanSpeed": 100,
+            "comment": "Charge - lower than usual (10-20°F below regular) to avoid scorching fragile decaf beans"
+        },
+        {
+            "time": 180,
+            "temp": 275,
+            "fanSpeed": 100,
+            "comment": "Early drying phase - gentle ramp to build even momentum"
+        },
+        {
+            "time": 300,
+            "temp": 315,
+            "fanSpeed": 100,
+            "comment": "Dry end target (~315-325°F bean temp at ~5:00; decaf loses moisture faster)"
+        },
+        {
+            "time": 420,
+            "temp": 360,
+            "fanSpeed": 100,
+            "comment": "Mid-Maillard - developing caramel/toffee sweetness slowly"
+        },
+        {
+            "time": 480,
+            "temp": 380,
+            "fanSpeed": 95,
+            "comment": "Approaching first crack (decaf often cracks ~395-405°F; quieter than regular)"
+        },
+        {
+            "time": 540,
+            "temp": 398,
+            "fanSpeed": 95,
+            "comment": "First crack onset (~398°F bean temp; expect subtler sound/smell)"
+        },
+        {
+            "time": 600,
+            "temp": 410,
+            "fanSpeed": 90,
+            "comment": "Development phase - extend gently for body without bitterness"
+        },
+        {
+            "time": 660,
+            "temp": 418,
+            "fanSpeed": 90,
+            "comment": "Continued development for medium sweetness"
+        },
+        {
+            "time": 720,
+            "temp": 422,
+            "fanSpeed": 85,
+            "comment": "Drop target - Medium roast / Full City (422°F bean temp, ~3:00 development)"
+        }
+    ]
+}

@@ -1,0 +1,59 @@
+{
+  "name": "Medium roast - Guatemalan (Bean Temp Target)",
+  "setpoints": [
+    {
+      "time": 0,
+      "temp": 180,
+      "fanSpeed": 100,
+      "comment": "Charge - bean temp starts rising quickly from ambient"
+    },
+    {
+      "time": 180,
+      "temp": 285,
+      "fanSpeed": 100,
+      "comment": "Early drying phase - building momentum"
+    },
+    {
+      "time": 330,
+      "temp": 325,
+      "fanSpeed": 100,
+      "comment": "Dry end target (~325°F bean temp at 5:30)"
+    },
+    {
+      "time": 450,
+      "temp": 370,
+      "fanSpeed": 100,
+      "comment": "Mid-Maillard - developing caramel and chocolate notes"
+    },
+    {
+      "time": 510,
+      "temp": 390,
+      "fanSpeed": 95,
+      "comment": "Approaching first crack"
+    },
+    {
+      "time": 570,
+      "temp": 400,
+      "fanSpeed": 95,
+      "comment": "First crack onset (~400°F bean temp)"
+    },
+    {
+      "time": 630,
+      "temp": 412,
+      "fanSpeed": 90,
+      "comment": "Development phase - building body and sweetness"
+    },
+    {
+      "time": 690,
+      "temp": 420,
+      "fanSpeed": 90,
+      "comment": "Continued development for balanced medium roast"
+    },
+    {
+      "time": 720,
+      "temp": 422,
+      "fanSpeed": 85,
+      "comment": "Drop target - Medium roast (422°F bean temp, ~2:30 development)"
+    }
+  ]
+}

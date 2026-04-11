@@ -9,6 +9,7 @@
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <ElegantOTA.h>  // v3.1.7+ with async mode enabled for ESPAsyncWebServer compatibility
+#include <AutoPID.h>
 #include "DebugLog.hpp"
 #include "ProfileManager.hpp"    // Profile backend logic
 #include "ProfileWebUI.hpp"     // Profile UI HTML/CSS/JS
@@ -31,12 +32,19 @@ extern double heaterOutputVal;
 extern int setpointProgress;
 extern int bdcFanMs;
 extern int badReadingCount;
+extern double kp;
+extern double ki;
+extern double kd;
 extern RoasterState roasterState;  // Defined in Types.hpp
 extern Profiles profile;  // Profile configuration
 extern ProfileManager profileManager;
 extern Preferences preferences; // NVS preferences from main firmware
 extern uint8_t profileBuffer[200];
 extern EasyNex myNex;
+extern PIDAutotuner autotuner;
+extern AutoPID heaterPID;
+extern bool restartRequested;
+extern unsigned long restartAt;
 
 // Helper to update Nextion display with active profile
 void plotProfileOnWaveform();
@@ -291,7 +299,34 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 
   // Route for root / web page
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(200, "text/plain", "Hi! You've reached roaster.local.");
+    request->send(200, "text/html", R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Roaster Links</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #0d1117; color: #c9d1d9; margin: 0; padding: 40px; }
+    .card { max-width: 420px; margin: 0 auto; background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 24px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
+    h1 { margin-top: 0; font-size: 24px; color: #fff; }
+    p { color: #8b949e; }
+    a { display: block; margin: 12px 0; padding: 12px 16px; border-radius: 8px; text-decoration: none; color: #fff; font-weight: 600; text-align: center; background: linear-gradient(135deg, #1f6feb, #58a6ff); }
+    a.secondary { background: linear-gradient(135deg, #3fb950, #2ea043); }
+    a.tertiary { background: linear-gradient(135deg, #f0883e, #f85149); }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Roaster Control</h1>
+    <p>Select a tool:</p>
+    <a href="/console">Debug Console</a>
+    <a class="secondary" href="/profile">Profile Editor</a>
+    <a class="tertiary" href="/pid">PID Tuning</a>
+  </div>
+</body>
+</html>
+)rawliteral");
   });
 
   // API endpoint: System state
@@ -519,6 +554,107 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     }
     String json = debugLogger.getLogsJSON(maxEntries, true);  // Wrap in {logs: [...]}
     request->send(200, "application/json", json);
+  });
+
+  // API endpoint: Get current PID values
+  server.on("/api/pid", HTTP_GET, [](AsyncWebServerRequest *request) {
+    StaticJsonDocument<256> doc;
+    doc["kp"] = kp;
+    doc["ki"] = ki;
+    doc["kd"] = kd;
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+  });
+
+  // API endpoint: Apply new PID values
+  server.on("/api/pid", HTTP_POST,
+    [](AsyncWebServerRequest *request) {},
+    nullptr,
+    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (index == 0) {
+        String* body = new String();
+        body->reserve(total + 1);
+        request->_tempObject = (void*)body;
+      }
+
+      String* body = (String*)request->_tempObject;
+      if (!body) {
+        request->send(500, "application/json", "{\"error\":\"internal_error\"}");
+        return;
+      }
+
+      for (size_t i = 0; i < len; i++) *body += (char)data[i];
+      if (index + len < total) { yield(); return; }
+
+      StaticJsonDocument<256> doc;
+      DeserializationError err = deserializeJson(doc, *body);
+      delete body;
+      request->_tempObject = nullptr;
+
+      if (err) {
+        request->send(400, "application/json", "{\"error\":\"invalid_json\"}");
+        return;
+      }
+
+      double newKp = doc.containsKey("kp") ? doc["kp"].as<double>() : kp;
+      double newKi = doc.containsKey("ki") ? doc["ki"].as<double>() : ki;
+      double newKd = doc.containsKey("kd") ? doc["kd"].as<double>() : kd;
+
+      kp = newKp; ki = newKi; kd = newKd;
+      preferences.putDouble("kp", kp);
+      preferences.putDouble("ki", ki);
+      preferences.putDouble("kd", kd);
+      heaterPID.setGains(kp, ki, kd);
+
+      StaticJsonDocument<256> resp;
+      resp["ok"] = true;
+      resp["kp"] = kp;
+      resp["ki"] = ki;
+      resp["kd"] = kd;
+      String out;
+      serializeJson(resp, out);
+      request->send(200, "application/json", out);
+    }
+  );
+
+  // API endpoint: Start PID Calibration
+  server.on("/api/calibrate-pid", HTTP_POST, [](AsyncWebServerRequest *request) {
+    LOG_INFO("API: /api/calibrate-pid requested");
+    
+    if (roasterState != IDLE) {
+        request->send(400, "application/json", "{\"error\":\"Roaster must be IDLE to start calibration\"}");
+        return;
+    }
+    
+    double target = 150.0;
+    if (request->hasParam("target")) {
+        target = request->getParam("target")->value().toDouble();
+    }
+    
+    // Start fan at full speed for calibration safety/consistency?
+    // Usually tuning is done with the system in normal operating conditions.
+    // For a roaster, fan speed affects thermal mass/response.
+    // We should probably allow setting fan speed too.
+    
+    int fanSpeed = 255; // Default to max fan
+    if (request->hasParam("fan")) {
+        fanSpeed = request->getParam("fan")->value().toInt();
+    }
+    
+    // Set fan
+    // digitalWrite(FAN, HIGH); // Removed: FAN pin not defined here, handled by main loop
+    
+    // We'll store the target fan speed in the global variable used by the loop
+    setpointFanSpeed = fanSpeed;
+    
+    // Start autotuner
+    autotuner.start(target);
+    roasterState = CALIBRATING;
+    
+    char msg[64];
+    snprintf(msg, sizeof(msg), "{\"status\":\"Calibration started\", \"target\":%.1f}", target);
+    request->send(200, "application/json", msg);
   });
 
   // Debug Console UI
@@ -1192,6 +1328,109 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     // Start with polling as fallback (will be cleared if WebSocket connects)
     pollingInterval = setInterval(fetchState, 1000);
     logsPollingInterval = setInterval(fetchLogs, 2000);
+  </script>
+</body>
+</html>
+)rawliteral");
+  });
+
+  // PID Tuning UI
+  server.on("/pid", HTTP_GET, [](AsyncWebServerRequest *request) {
+    LOG_INFO("PID UI accessed");
+    request->send(200, "text/html", R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PID Tuning</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
+    .card { max-width: 520px; margin: 0 auto; background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
+    h1 { margin-top: 0; color: #fff; }
+    label { display: block; margin: 12px 0 4px; color: #8b949e; }
+    input { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #30363d; background: #0d1117; color: #c9d1d9; }
+    button { margin-top: 14px; width: 100%; padding: 12px; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; }
+    .primary { background: linear-gradient(135deg, #1f6feb, #58a6ff); color: #fff; }
+    .secondary { background: linear-gradient(135deg, #3fb950, #2ea043); color: #fff; }
+    .note { color: #8b949e; font-size: 13px; margin-top: 8px; }
+    .row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>PID Tuning</h1>
+    <div class="row">
+      <div>
+        <label for="kp">Kp</label>
+        <input id="kp" type="number" step="0.01" />
+      </div>
+      <div>
+        <label for="ki">Ki</label>
+        <input id="ki" type="number" step="0.01" />
+      </div>
+      <div>
+        <label for="kd">Kd</label>
+        <input id="kd" type="number" step="0.01" />
+      </div>
+    </div>
+    <button class="primary" onclick="applyPid()">Apply PID Values</button>
+    <p class="note" id="status">Loading current PID...</p>
+    <hr style="margin:20px 0; border: 0; border-top: 1px solid #30363d;" />
+    <label for="target">Autotune Target (°F)</label>
+    <input id="target" type="number" value="150" />
+    <label for="fan">Fan PWM (0-255)</label>
+    <input id="fan" type="number" value="255" />
+    <button class="secondary" onclick="startAutotune()">Run Autotune</button>
+    <p class="note">Autotune runs the calibration routine, then auto-restarts the controller.</p>
+  </div>
+
+  <script>
+    async function loadPid() {
+      try {
+        const res = await fetch('/api/pid');
+        const data = await res.json();
+        document.getElementById('kp').value = data.kp ?? '';
+        document.getElementById('ki').value = data.ki ?? '';
+        document.getElementById('kd').value = data.kd ?? '';
+        document.getElementById('status').textContent = 'Current PID loaded.';
+      } catch (e) {
+        document.getElementById('status').textContent = 'Failed to load PID values.';
+      }
+    }
+
+    async function applyPid() {
+      const kp = parseFloat(document.getElementById('kp').value);
+      const ki = parseFloat(document.getElementById('ki').value);
+      const kd = parseFloat(document.getElementById('kd').value);
+      document.getElementById('status').textContent = 'Applying PID...';
+      try {
+        const res = await fetch('/api/pid', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kp, ki, kd }) });
+        const data = await res.json();
+        document.getElementById('status').textContent = data.ok ? 'PID applied and saved.' : 'Failed to apply PID.';
+      } catch (e) {
+        document.getElementById('status').textContent = 'Failed to apply PID.';
+      }
+    }
+
+    async function startAutotune() {
+      const target = parseFloat(document.getElementById('target').value) || 150;
+      const fan = parseInt(document.getElementById('fan').value) || 255;
+      document.getElementById('status').textContent = 'Starting autotune...';
+      try {
+        const res = await fetch(`/api/calibrate-pid?target=${target}&fan=${fan}`, { method: 'POST' });
+        if (res.ok) {
+          document.getElementById('status').textContent = 'Autotune started. Device will restart when done.';
+        } else {
+          const txt = await res.text();
+          document.getElementById('status').textContent = 'Failed to start autotune: ' + txt;
+        }
+      } catch (e) {
+        document.getElementById('status').textContent = 'Failed to start autotune.';
+      }
+    }
+
+    loadPid();
   </script>
 </body>
 </html>
