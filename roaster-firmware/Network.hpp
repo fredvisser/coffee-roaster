@@ -13,6 +13,7 @@
 #include "DebugLog.hpp"
 #include "ProfileManager.hpp"    // Profile backend logic
 #include "ProfileWebUI.hpp"     // Profile UI HTML/CSS/JS
+#include "SystemLinkWebUI.hpp"
 #include <vector>
 
 // Removed global JsonDocument to prevent heap fragmentation
@@ -323,6 +324,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     <a href="/console">Debug Console</a>
     <a class="secondary" href="/profile">Profile Editor</a>
     <a class="tertiary" href="/pid">PID Tuning</a>
+    <a href="/systemlink">SystemLink</a>
   </div>
 </body>
 </html>
@@ -555,6 +557,42 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     String json = debugLogger.getLogsJSON(maxEntries, true);  // Wrap in {logs: [...]}
     request->send(200, "application/json", json);
   });
+
+  server.on("/api/systemlink", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(200, "application/json", getSystemLinkConfigJSON());
+  });
+
+  server.on("/api/systemlink", HTTP_POST,
+    [](AsyncWebServerRequest *request) {},
+    nullptr,
+    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (index == 0) {
+        String* body = new String();
+        body->reserve(total + 1);
+        request->_tempObject = (void*)body;
+      }
+
+      String* body = (String*)request->_tempObject;
+      if (!body) {
+        request->send(500, "application/json", "{\"error\":\"internal_error\"}");
+        return;
+      }
+
+      for (size_t i = 0; i < len; i++) *body += (char)data[i];
+      if (index + len < total) { yield(); return; }
+
+      String error;
+      bool ok = updateSystemLinkConfigFromJSON(*body, error);
+      delete body;
+      request->_tempObject = nullptr;
+
+      if (!ok) {
+        request->send(400, "application/json", String("{\"error\":\"") + error + "\"}");
+        return;
+      }
+
+      request->send(200, "application/json", getSystemLinkConfigJSON());
+    });
 
   // API endpoint: Get current PID values
   server.on("/api/pid", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -1441,6 +1479,11 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   server.on("/profile", HTTP_GET, [](AsyncWebServerRequest *request) {
     LOG_INFO("Profile Editor UI accessed");
     request->send_P(200, "text/html", PROFILE_EDITOR_HTML);
+  });
+
+  server.on("/systemlink", HTTP_GET, [](AsyncWebServerRequest *request) {
+    LOG_INFO("SystemLink config UI accessed");
+    request->send_P(200, "text/html", SYSTEMLINK_CONFIG_HTML);
   });
 
   // Start ElegantOTA for over-the-air updates

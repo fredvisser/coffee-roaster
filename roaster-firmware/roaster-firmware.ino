@@ -32,6 +32,7 @@
 #include "ProfileManager.hpp"
 #include "ProfileEditor.hpp"
 #include "PIDAutotuner.hpp"
+#include "SystemLink.hpp"
 #include "Network.hpp"
 
 Preferences preferences;
@@ -60,6 +61,7 @@ SimpleTimer checkTempTimer(125);
 SimpleTimer tickTimer(5);
 SimpleTimer stateMachineTimer(500);
 SimpleTimer wsBroadcastTimer(1000);  // WebSocket broadcast every 1 second
+SimpleTimer roastTraceTimer(1000);   // Roast trace capture every 1 second
 
 // PWM is used to control fan and heater outputs
 PWMrelay heaterRelay(HEATER, HIGH);
@@ -198,6 +200,9 @@ void setup()
   kp = preferences.getDouble("kp", 8.0);
   ki = preferences.getDouble("ki", 0.46);
   kd = preferences.getDouble("kd", 0.0);
+  loadSystemLinkConfig();
+  initSystemLinkTagTask();
+  initSystemLinkPublishTask();
   heaterPID.setGains(kp, ki, kd);
   LOG_INFOF("PID Loaded: Kp=%.4f, Ki=%.4f, Kd=%.4f", kp, ki, kd);
 
@@ -208,6 +213,7 @@ void setup()
   if (bootCount > 5) {
     LOG_ERRORF("CRITICAL: Boot loop detected (count=%d)! Purging all profiles to recover system.", bootCount);
     Serial.println("CRITICAL: Purging profiles due to boot loop!");
+    systemLinkUpdateLastFault("boot_loop_detected");
     profileManager.deleteAllProfiles();
     preferences.putInt("boot_count", 0);
     delay(2000); // Allow time for serial log to be seen
@@ -216,6 +222,9 @@ void setup()
     LOG_INFOF("Boot count: %d", bootCount + 1);
   }
   // ----------------------------
+
+  systemLinkSetBootContext(bootCount + 1);
+  systemLinkPrepareRecoveryPublish();
 
   wifiCredentials.ssid = preferences.getString("ssid", "");
   wifiCredentials.password = preferences.getString("password", "");
@@ -328,6 +337,8 @@ void loop()
           heaterRelay.setPWM(0);
           fanRelay.setPWM(255); // Full fan for safety
           bdcFan.writeMicroseconds(2000);
+          systemLinkUpdateLastFault("sensor_failed");
+          systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "sensor_failed");
           DEBUG_PRINTLN("EMERGENCY: Thermocouple failure detected!");
           myNex.writeStr("page Error");
           myNex.writeStr("Error.message.txt", "Sensor Failed");
@@ -351,6 +362,8 @@ void loop()
           heaterRelay.setPWM(0);
           fanRelay.setPWM(255); // Full fan to cool down
           bdcFan.writeMicroseconds(2000);
+          systemLinkUpdateLastFault("over_temperature");
+          systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "over_temperature");
           DEBUG_PRINTLN("EMERGENCY: Thermal runaway detected!");
           myNex.writeStr("page Error");
           myNex.writeStr("Error.message.txt", "Over Temp");
@@ -375,6 +388,8 @@ void loop()
           heaterRelay.setPWM(0);
           fanRelay.setPWM(255); // Full fan to cool down
           bdcFan.writeMicroseconds(2000);
+          systemLinkUpdateLastFault("fan_over_temperature");
+          systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "fan_over_temperature");
           DEBUG_PRINTLN("EMERGENCY: Fan/Exhaust Over Temp!");
           myNex.writeStr("page Error");
           myNex.writeStr("Error.message.txt", "Exhaust Over Temp");
@@ -447,6 +462,7 @@ void loop()
         // Start roasting with current active profile
         roasterState = ROASTING;
         profile.startProfile((int)currentTemp, millis());
+        systemLinkMarkRoastingPhaseStarted();
         
         // Log active PID parameters
         LOG_INFOF("PID Active: Kp=%.4f, Ki=%.4f, Kd=%.4f", kp, ki, kd);
@@ -490,6 +506,7 @@ void loop()
         heaterRelay.setPWM(heaterOutputVal);
 
         setpointTemp = 145;
+        systemLinkMarkCoolingPhaseStarted(SYSTEMLINK_OUTCOME_PASSED, "final_target_reached");
         roasterState = COOLING;
         coolingStartTime = millis(); // Start cooling timer
 
@@ -518,6 +535,7 @@ void loop()
       if (coolingDuration > MAX_COOLING_TIME)
       {
         LOG_WARNF("Cooling timeout after %lu minutes - forcing IDLE", coolingDuration / 60000);
+        systemLinkFinishRoast(SYSTEMLINK_OUTCOME_TERMINATED, "cooling_timeout");
         fanRelay.setPWM(0);
         bdcFan.writeMicroseconds(800);
         digitalWrite(FAN, LOW);
@@ -529,6 +547,7 @@ void loop()
 
       if (currentTemp <= 145)
       {
+        systemLinkFinishRoast(SYSTEMLINK_OUTCOME_NONE, "cooling_complete");
         fanRelay.setPWM(0);
         bdcFan.writeMicroseconds(800);
         digitalWrite(FAN, LOW);
@@ -666,6 +685,12 @@ void loop()
     broadcastLogs(50);  // Send last 50 log entries
     wsBroadcastTimer.reset();
   }
+
+  if (roastTraceTimer.isReady())
+  {
+    systemLinkRecordRoastSample();
+    roastTraceTimer.reset();
+  }
 }
 
 
@@ -698,6 +723,7 @@ void trigger0()
   }
   
   roasterState = START_ROAST;
+  systemLinkMarkRoastStarted();
   myNex.writeNum("globals.nextSetTempNum.val", setpointTemp);
   myNex.writeStr("page Roasting");
   LOG_INFO("trigger0() complete - state set to START_ROAST");
@@ -705,6 +731,7 @@ void trigger0()
 
 void trigger1()
 { // Stop roast command received
+  systemLinkMarkCoolingPhaseStarted(SYSTEMLINK_OUTCOME_TERMINATED, "user_stop");
   roasterState = COOLING;
 
   heaterPID.stop();
