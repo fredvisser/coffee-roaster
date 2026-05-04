@@ -19,8 +19,13 @@ enum RoasterState
   START_ROAST = 1,
   ROASTING = 2,
   COOLING = 3,
-  ERROR = 4
+  ERROR = 4,
+  CALIBRATING = 5
 };
+
+// Safety constants (must match Types.hpp)
+#define MAX_SAFE_TEMP 500.0
+#define COOLING_TARGET_TEMP 140
 
 // Test state machine variables
 RoasterState testState = IDLE;
@@ -173,11 +178,11 @@ test(StateMachine_Transition_CoolingToIdle)
 {
   resetTestState();
   testState = COOLING;
-  testCurrentTemp = 145.0;
+  testCurrentTemp = (double)COOLING_TARGET_TEMP;
   testFanSpeed = 255;
 
   // Check cooling completion
-  if (testCurrentTemp <= 145.0)
+  if (testCurrentTemp <= COOLING_TARGET_TEMP)
   {
     testState = IDLE;
     testFanSpeed = 0;
@@ -268,16 +273,16 @@ test(StateMachine_Safety_HighTempProtection)
   testState = ROASTING;
   testCurrentTemp = 550.0; // Dangerously high
 
-  // Should trigger emergency cooling
-  if (testCurrentTemp > 500.0)
+  // Should trigger emergency - transition to ERROR state
+  if (testCurrentTemp > MAX_SAFE_TEMP)
   {
-    testState = COOLING;
+    testState = ERROR;
     testHeaterOutput = 0;
     testHeaterEnabled = false;
     testFanSpeed = 255;
   }
 
-  assertEqual(COOLING, testState);
+  assertEqual(ERROR, testState);
   assertEqual(0.0, testHeaterOutput);
   assertEqual(255, testFanSpeed);
 }
@@ -309,7 +314,7 @@ test(StateMachine_Error_ThermocoupleFault)
   testCurrentTemp = 999.0; // Fault reading
 
   // Simulate thermocouple fault detection
-  if (testCurrentTemp > 500.0)
+  if (testCurrentTemp > MAX_SAFE_TEMP)
   {
     testState = ERROR;
     testHeaterOutput = 0;
@@ -322,21 +327,21 @@ test(StateMachine_Error_ThermocoupleFault)
   assertEqual(255, testFanSpeed);
 }
 
-test(StateMachine_Error_RecoveryToIdle)
+test(StateMachine_Error_NoRecoveryWithoutReset)
 {
   resetTestState();
   testState = ERROR;
-  testCurrentTemp = 150.0; // Valid reading
+  testCurrentTemp = 150.0; // Valid reading, cool temp
 
-  // Simulate error recovery
-  bool errorCleared = true;
-  if (errorCleared && testCurrentTemp < 200.0)
-  {
-    testState = IDLE;
-    testFanSpeed = 0;
-  }
+  // ERROR state should NOT allow software recovery
+  // Only hardware reset should clear ERROR state
+  // Verify state remains ERROR regardless of conditions
+  assertEqual(ERROR, testState);
 
-  assertEqual(IDLE, testState);
+  // Even with safe conditions, state must not change
+  testHeaterOutput = 0;
+  testFanSpeed = 200; // Safe fan speed
+  assertEqual(ERROR, testState);
 }
 
 test(StateMachine_Error_NoHeaterInError)
@@ -592,10 +597,10 @@ test(StateMachine_Boundary_CoolingAtAmbient)
 {
   resetTestState();
   testState = COOLING;
-  testCurrentTemp = 145.0; // Already at cooling target
+  testCurrentTemp = (double)COOLING_TARGET_TEMP; // Already at cooling target
 
   // Should immediately transition to IDLE
-  if (testCurrentTemp <= 145.0)
+  if (testCurrentTemp <= COOLING_TARGET_TEMP)
   {
     testState = IDLE;
     testFanSpeed = 0;

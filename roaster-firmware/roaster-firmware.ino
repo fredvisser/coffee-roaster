@@ -88,6 +88,7 @@ int setpointProgress = 0;   // Roast time in seconds
 int bdcFanMs = 800;         // BDC fan servo pulse width (800-2000 µs)
 double fanTemp = 0;         // Inlet/fan temperature sensor (°F)
 int badReadingCount = 0;    // Track consecutive bad thermocouple readings
+int badFanReadingCount = 0; // Track consecutive bad fan thermocouple readings
 
 // Restart handling
 bool restartRequested = false;
@@ -375,6 +376,10 @@ bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent)
 
 void enterCoolingState()
 {
+  // SAFETY: Immediately kill heater before any other state changes
+  digitalWrite(HEATER, LOW);
+  heaterRelay.setPWM(0);
+
   setpointTemp = COOLING_TARGET_TEMP;
   roasterState = COOLING;
   coolingStartTime = millis();
@@ -628,9 +633,10 @@ void loop()
     else
     {
       double fReading = thermocoupleFan.readFarenheit();
-      // Simple range check for fan sensor
+      // Range check for fan sensor
       if (fReading > 0 && fReading < SENSOR_FAULT_TEMP) {
         fanTemp = fReading;
+        badFanReadingCount = 0; // Reset counter on good reading
         
         // Safety check for fan sensor (cold inlet temp)
         if (fanTemp > MAX_SAFE_FAN_TEMP) {
@@ -647,6 +653,23 @@ void loop()
           DEBUG_PRINTLN("EMERGENCY: Fan/Exhaust Over Temp!");
           myNex.writeStr("page Error");
           myNex.writeStr("Error.message.txt", "Exhaust Over Temp");
+        }
+      } else {
+        badFanReadingCount++;
+        if (badFanReadingCount >= MAX_BAD_READINGS && roasterState != IDLE && roasterState != ERROR) {
+          // FAN SENSOR FAILURE - EMERGENCY STOP
+          roasterState = ERROR;
+          digitalWrite(HEATER, LOW);
+          resetRoastControllerState();
+          heaterRelay.setPWM(0);
+          fanRelay.setPWM(255);
+          bdcFan.writeMicroseconds(2000);
+          bdcFanMs = 2000;
+          systemLinkUpdateLastFault("fan_sensor_failed");
+          systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "fan_sensor_failed");
+          DEBUG_PRINTLN("EMERGENCY: Fan thermocouple failure detected!");
+          myNex.writeStr("page Error");
+          myNex.writeStr("Error.message.txt", "Fan Sensor Failed");
         }
       }
     }
@@ -891,8 +914,13 @@ void loop()
     }
 
     default:
-      LOG_WARNF("Unknown state: %d - returning to IDLE", roasterState);
-      roasterState = IDLE;
+      LOG_ERRORF("CRITICAL: Unknown state: %d - entering ERROR", roasterState);
+      roasterState = ERROR;
+      digitalWrite(HEATER, LOW);
+      heaterRelay.setPWM(0);
+      systemLinkUpdateLastFault("invalid_state");
+      myNex.writeStr("page Error");
+      myNex.writeStr("Error.message.txt", "Invalid State");
       break;
     }
     stateMachineTimer.reset();
@@ -972,8 +1000,20 @@ void trigger1()
 
 void trigger2()
 { // Stop cooling command received
+  // SAFETY: Only allow skipping cooling if temperature is safe
+  if (currentTemp > COOLING_TARGET_TEMP + 20)
+  {
+    LOG_WARNF("Cooling skip rejected - temp %.1fF too high (need <%d)", currentTemp, COOLING_TARGET_TEMP + 20);
+    return;
+  }
+
   finalizeValidationIfRunning(false, "cooling_skipped");
   restoreValidationProfileIfNeeded();
+  systemLinkFinishRoast(SYSTEMLINK_OUTCOME_NONE, "cooling_skipped");
+  fanRelay.setPWM(0);
+  bdcFan.writeMicroseconds(800);
+  bdcFanMs = 800;
+  digitalWrite(FAN, LOW);
   roasterState = IDLE;
   myNex.writeStr("page Start");
 }
