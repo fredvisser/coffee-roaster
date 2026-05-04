@@ -3,7 +3,6 @@
 #include <max6675.h>
 #include <SimpleTimer.h>
 #include <PWMrelay.h>
-#include <AutoPID.h>
 #include <SPI.h>
 #include <Preferences.h>
 #include <ElegantOTA.h> // v3.1.7+ with async mode enabled for ESPAsyncWebServer compatibility
@@ -28,10 +27,13 @@
 
 #include "Types.hpp"
 #include "DebugLog.hpp"
+#include "PIDController.hpp"
 #include "Profiles.hpp"
 #include "ProfileManager.hpp"
 #include "ProfileEditor.hpp"
-#include "PIDAutotuner.hpp"
+#include "StepResponseTuner.hpp"
+#include "PIDRuntimeController.hpp"
+#include "PIDValidation.hpp"
 #include "SystemLink.hpp"
 #include "Network.hpp"
 
@@ -59,6 +61,7 @@ double kd = 0;
 // Use timers for simple multitasking
 SimpleTimer checkTempTimer(125);
 SimpleTimer tickTimer(5);
+SimpleTimer controlLoopTimer(250);
 SimpleTimer stateMachineTimer(500);
 SimpleTimer wsBroadcastTimer(1000);  // WebSocket broadcast every 1 second
 SimpleTimer roastTraceTimer(1000);   // Roast trace capture every 1 second
@@ -77,7 +80,9 @@ ProfileManager profileManager;
 // NOTE: All temperature values throughout this codebase are in Fahrenheit (°F)
 double currentTemp = 0;     // Current bean temperature (°F)
 double setpointTemp = 0;    // Target temperature from profile (°F)
-double heaterOutputVal = 0; // PID output (0-255)
+double heaterOutputVal = 0; // Final heater command (0-255)
+double heaterPidTrimVal = 0;
+double heaterFeedforwardVal = 0;
 byte setpointFanSpeed = 0;  // Target fan speed (0-255)
 int setpointProgress = 0;   // Roast time in seconds
 int bdcFanMs = 800;         // BDC fan servo pulse width (800-2000 µs)
@@ -103,14 +108,27 @@ RoasterState roasterState = IDLE;
 
 MAX6675 thermocouple(SCK, TC1_CS, MISO);
 MAX6675 thermocoupleFan(SCK, TC2_CS, MISO);
-AutoPID heaterPID(&currentTemp, &setpointTemp, &heaterOutputVal, 0, 255, kp, ki, kd);
-PIDAutotuner autotuner;
+PIDController heaterPID(&currentTemp, &setpointTemp, &heaterPidTrimVal, 0, 255, kp, ki, kd);
+StepResponseTuner stepTuner;
+bool autoValidateAfterCooling = false;
+PIDRuntimeController pidRuntimeController;
+PIDValidationSession pidValidation;
 
 // Create a Nextion display connection
 EasyNex myNex(HW_SERIAL);
 
 uint8_t profileBuffer[200];
 int finalTempOverride = -1; // Nextion override for final target temp (F)
+Profiles validationSavedProfile;
+bool validationProfileLoaded = false;
+int savedValidationFinalTempOverride = -1;
+unsigned long roastStartedAtMs = 0;
+double appliedKp = kp;
+double appliedKi = ki;
+double appliedKd = kd;
+bool pidScheduleConfigured = false;
+bool pidScheduleActive = false;
+int activePidBandIndex = -1;
 
 // Helper function for reliable Nextion reads with retry logic
 int readNextionWithRetry(const char *component, int retries = 2)
@@ -136,6 +154,239 @@ uint32_t getEffectiveFinalTargetTemp()
     return constrain(finalTempOverride, 0, 500);
   }
   return profile.getFinalTargetTemp();
+}
+
+void applyHeaterPIDGains(double newKp, double newKi, double newKd)
+{
+  if (fabs(appliedKp - newKp) < 0.0001 && fabs(appliedKi - newKi) < 0.0001 && fabs(appliedKd - newKd) < 0.0001)
+  {
+    return;
+  }
+
+  heaterPID.setGains(newKp, newKi, newKd);
+  appliedKp = newKp;
+  appliedKi = newKi;
+  appliedKd = newKd;
+}
+
+void resetRoastControllerState()
+{
+  heaterPID.stop();
+  heaterPidTrimVal = 0;
+  heaterFeedforwardVal = 0;
+  heaterOutputVal = 0;
+  pidScheduleActive = false;
+  activePidBandIndex = -1;
+  pidRuntimeController.resetForRoast();
+  applyHeaterPIDGains(kp, ki, kd);
+}
+
+void setManualPIDGains(double newKp, double newKi, double newKd)
+{
+  kp = newKp;
+  ki = newKi;
+  kd = newKd;
+
+  preferences.putDouble("kp", kp);
+  preferences.putDouble("ki", ki);
+  preferences.putDouble("kd", kd);
+
+  pidRuntimeController.setFallbackGains(kp, ki, kd);
+  pidRuntimeController.clearPreferences(preferences);
+  pidScheduleConfigured = false;
+  resetRoastControllerState();
+}
+
+void updateRoastControl(unsigned long now)
+{
+  if (roasterState != ROASTING)
+  {
+    return;
+  }
+
+  setpointTemp = profile.getTargetTemp(now);
+  setpointFanSpeed = profile.getTargetFanSpeed(now);
+  setpointProgress = profile.getProfileProgress(now);
+
+  PIDRuntimeController::ControlDecision decision = pidRuntimeController.decide(now, currentTemp, setpointTemp, fanTemp);
+  pidScheduleActive = decision.scheduleActive;
+  activePidBandIndex = decision.bandIndex;
+  applyHeaterPIDGains(decision.kp, decision.ki, decision.kd);
+
+  heaterPID.run();
+
+  heaterFeedforwardVal = decision.feedforward;
+  heaterOutputVal = constrain(heaterPidTrimVal + heaterFeedforwardVal, 0.0, 255.0);
+  fanRelay.setPWM(setpointFanSpeed);
+
+  int bdcValue = constrain(5 * setpointFanSpeed + 700, 800, 2000);
+  bdcFan.writeMicroseconds(bdcValue);
+  bdcFanMs = bdcValue;
+
+  heaterRelay.setPWM(heaterOutputVal);
+}
+
+void updateCalibrationControl(unsigned long now)
+{
+  if (roasterState != CALIBRATING || fanRampStep < 2000)
+  {
+    return;
+  }
+
+  updateStepResponseCalibration(now);
+}
+
+void updateStepResponseCalibration(unsigned long now)
+{
+  heaterOutputVal = stepTuner.getOutput(currentTemp, fanTemp, setpointFanSpeed);
+  setpointTemp = stepTuner.getSetpoint();
+  heaterPidTrimVal = heaterOutputVal;
+  heaterFeedforwardVal = 0.0;
+
+  int requestedFanPwm = stepTuner.isRecoveryCooling() ? 255 : setpointFanSpeed;
+  fanRelay.setPWM(requestedFanPwm);
+  int calibrationBdcValue = stepTuner.isRecoveryCooling() ? 2000 : constrain(5 * requestedFanPwm + 700, 800, 2000);
+  bdcFan.writeMicroseconds(calibrationBdcValue);
+  bdcFanMs = calibrationBdcValue;
+  heaterRelay.setPWM(heaterOutputVal);
+
+  if (stepTuner.isComplete())
+  {
+    double newKp, newKi, newKd;
+    stepTuner.getPID(newKp, newKi, newKd);
+
+    setManualPIDGains(newKp, newKi, newKd);
+    pidRuntimeController.clearPreferences(preferences);
+    pidScheduleConfigured = false;
+    activePidBandIndex = -1;
+
+    // Load per-band models into runtime controller
+    Calibration::CharacterizationSummary cs = stepTuner.getCharacterizationSummary();
+    pidRuntimeController.loadFromSummary(cs);
+    if (pidRuntimeController.isEnabled()) {
+      pidRuntimeController.saveToPreferences(preferences);
+      pidScheduleConfigured = true;
+      LOG_INFO("Step-response band models loaded into gain scheduler");
+    }
+
+    LOG_INFOF("Step-response tuning saved: Kp=%.4f, Ki=%.6f, Kd=%.4f", kp, ki, kd);
+
+    // Publish calibration data to SystemLink
+    systemLinkPublishCalibration(stepTuner);
+
+    resetRoastControllerState();
+    heaterRelay.setPWM(0);
+    autoValidateAfterCooling = true;
+    enterCoolingState();
+    sendWsMessage("{ \"pushMessage\": \"pidTuningComplete\" }");
+    return;
+  }
+
+  if (!stepTuner.isRunning())
+  {
+    LOG_WARNF("Step-response tuning ended: %s", stepTuner.getLastError());
+    resetRoastControllerState();
+    heaterRelay.setPWM(0);
+    enterCoolingState();
+    if (strcmp(stepTuner.getLastError(), "cancelled") == 0)
+    {
+      sendWsMessage("{ \"pushMessage\": \"pidTuningCancelled\" }");
+    }
+    else
+    {
+      sendWsMessage("{ \"pushMessage\": \"pidTuningFailed\" }");
+    }
+  }
+}
+
+bool currentRoastUsesValidationProfile()
+{
+  return validationProfileLoaded;
+}
+
+void restoreValidationProfileIfNeeded()
+{
+  if (!validationProfileLoaded)
+  {
+    return;
+  }
+
+  profile = validationSavedProfile;
+  finalTempOverride = savedValidationFinalTempOverride;
+  validationProfileLoaded = false;
+}
+
+void finalizeValidationIfRunning(bool completed, const char *reason)
+{
+  if (!pidValidation.isActive())
+  {
+    return;
+  }
+
+  double durationSeconds = 0.0;
+  if (roastStartedAtMs > 0)
+  {
+    durationSeconds = (millis() - roastStartedAtMs) / 1000.0;
+  }
+
+  pidValidation.finish(completed, durationSeconds, reason);
+  restoreValidationProfileIfNeeded();
+}
+
+bool roastShouldCompleteNow()
+{
+  if (currentRoastUsesValidationProfile())
+  {
+    return profile.getProfileProgress(millis()) >= 100;
+  }
+
+  return currentTemp >= getEffectiveFinalTargetTemp();
+}
+
+void startRoastSession()
+{
+  roastStartedAtMs = 0;
+  roasterState = START_ROAST;
+  systemLinkMarkRoastStarted();
+  myNex.writeNum("globals.nextSetTempNum.val", setpointTemp);
+  myNex.writeStr("page Roasting");
+}
+
+bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent)
+{
+  if (roasterState != IDLE)
+  {
+    return false;
+  }
+
+  if (currentTemp > 180.0)
+  {
+    return false;
+  }
+
+  validationSavedProfile = profile;
+  savedValidationFinalTempOverride = finalTempOverride;
+  pidValidation.start(profile, currentTemp, finalTargetTemp, fanPercent);
+  validationProfileLoaded = true;
+  finalTempOverride = constrain((int)lround(finalTargetTemp), 0, 500);
+  startRoastSession();
+  return true;
+}
+
+void enterCoolingState()
+{
+  setpointTemp = COOLING_TARGET_TEMP;
+  roasterState = COOLING;
+  coolingStartTime = millis();
+  resetRoastControllerState();
+
+  setpointFanSpeed = 255;
+  fanRelay.setPWM(setpointFanSpeed);
+  bdcFan.writeMicroseconds(2000);
+  bdcFanMs = 2000;
+
+  myNex.writeNum("globals.nextSetTempNum.val", COOLING_TARGET_TEMP);
+  myNex.writeStr("page Cooling");
 }
 
 void setup()
@@ -203,8 +454,12 @@ void setup()
   loadSystemLinkConfig();
   initSystemLinkTagTask();
   initSystemLinkPublishTask();
-  heaterPID.setGains(kp, ki, kd);
+  pidRuntimeController.setFallbackGains(kp, ki, kd);
+  pidRuntimeController.loadFromPreferences(preferences);
+  pidScheduleConfigured = pidRuntimeController.isEnabled();
+  applyHeaterPIDGains(kp, ki, kd);
   LOG_INFOF("PID Loaded: Kp=%.4f, Ki=%.4f, Kd=%.4f", kp, ki, kd);
+  LOG_INFOF("PID runtime schedule %s (%u valid bands)", pidRuntimeController.isEnabled() ? "enabled" : "disabled", pidRuntimeController.getValidBandCount());
 
   // --- BOOT LOOP PROTECTION ---
   // If we crash repeatedly during startup (e.g. due to corrupt NVS), purge profiles
@@ -293,7 +548,6 @@ void loop()
     myNex.NextionListen();
     heaterRelay.tick();
     fanRelay.tick();
-    heaterPID.run();
     wsCleanup();
     ElegantOTA.loop(); // Handle OTA updates
     tickTimer.reset();
@@ -332,11 +586,11 @@ void loop()
           // SENSOR FAILURE - EMERGENCY STOP
           roasterState = ERROR;
           digitalWrite(HEATER, LOW);
-          heaterPID.stop();
-          heaterOutputVal = 0;
+          resetRoastControllerState();
           heaterRelay.setPWM(0);
           fanRelay.setPWM(255); // Full fan for safety
           bdcFan.writeMicroseconds(2000);
+          bdcFanMs = 2000;
           systemLinkUpdateLastFault("sensor_failed");
           systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "sensor_failed");
           DEBUG_PRINTLN("EMERGENCY: Thermocouple failure detected!");
@@ -357,11 +611,11 @@ void loop()
           // EMERGENCY SHUTDOWN
           roasterState = ERROR;
           digitalWrite(HEATER, LOW);
-          heaterPID.stop();
-          heaterOutputVal = 0;
+          resetRoastControllerState();
           heaterRelay.setPWM(0);
           fanRelay.setPWM(255); // Full fan to cool down
           bdcFan.writeMicroseconds(2000);
+          bdcFanMs = 2000;
           systemLinkUpdateLastFault("over_temperature");
           systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "over_temperature");
           DEBUG_PRINTLN("EMERGENCY: Thermal runaway detected!");
@@ -383,11 +637,11 @@ void loop()
           // EMERGENCY SHUTDOWN
           roasterState = ERROR;
           digitalWrite(HEATER, LOW);
-          heaterPID.stop();
-          heaterOutputVal = 0;
+          resetRoastControllerState();
           heaterRelay.setPWM(0);
           fanRelay.setPWM(255); // Full fan to cool down
           bdcFan.writeMicroseconds(2000);
+          bdcFanMs = 2000;
           systemLinkUpdateLastFault("fan_over_temperature");
           systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "fan_over_temperature");
           DEBUG_PRINTLN("EMERGENCY: Fan/Exhaust Over Temp!");
@@ -402,6 +656,15 @@ void loop()
     checkTempTimer.reset();
   }
 
+  if (controlLoopTimer.isReady())
+  {
+    unsigned long now = millis();
+    updateRoastControl(now);
+    updateCalibrationControl(now);
+    systemLinkRecordHighRateSample();
+    controlLoopTimer.reset();
+  }
+
   if (stateMachineTimer.isReady())
   {
     static RoasterState lastState = IDLE;
@@ -411,8 +674,7 @@ void loop()
         // Handle state entry logic
         if (roasterState == CALIBRATING) {
              // Stop PID to prevent interference
-             heaterPID.stop();
-             heaterOutputVal = 0;
+             resetRoastControllerState();
              
              // Initialize fan ramp
              fanRampStep = 0;
@@ -429,8 +691,8 @@ void loop()
       digitalWrite(HEATER, LOW);
       digitalWrite(FAN, LOW);
       bdcFan.writeMicroseconds(800); // Ensure BDC stays at low speed
-      heaterPID.stop();
-      heaterOutputVal = 0;
+      bdcFanMs = 800;
+      resetRoastControllerState();
       break;
 
     case START_ROAST:
@@ -461,14 +723,21 @@ void loop()
 
         // Start roasting with current active profile
         roasterState = ROASTING;
+        roastStartedAtMs = millis();
         profile.startProfile((int)currentTemp, millis());
         systemLinkMarkRoastingPhaseStarted();
+        resetRoastControllerState();
+        updateRoastControl(millis());
         
         // Log active PID parameters
-        LOG_INFOF("PID Active: Kp=%.4f, Ki=%.4f, Kd=%.4f", kp, ki, kd);
-        
-        heaterPID.run();
-        heaterRelay.setPWM(heaterOutputVal);
+        PIDRuntimeController::ControlDecision decision = pidRuntimeController.getLastDecision();
+        LOG_INFOF("PID Active: Kp=%.4f, Ki=%.4f, Kd=%.4f, Schedule=%s, Band=%d, FF=%.1f",
+                  decision.kp,
+                  decision.ki,
+                  decision.kd,
+                  decision.scheduleActive ? "banded" : "single",
+                  decision.bandIndex,
+                  decision.feedforward);
         LOG_INFOF("Roast started: Target=%.0fF, Setpoints=%d", (float)getEffectiveFinalTargetTemp(), profile.getSetpointCount());
         sendWsMessage("{ \"pushMessage\": \"startRoasting\" }");
       }
@@ -480,42 +749,22 @@ void loop()
 
     case ROASTING:
     {
-      // Ensure PID is actively running every loop iteration
-      heaterPID.run();
-      
-      // Safety clamp for heater output
-      heaterOutputVal = constrain(heaterOutputVal, 0, 255);
-
-      setpointTemp = profile.getTargetTemp(millis());
-      setpointFanSpeed = profile.getTargetFanSpeed(millis());
-      setpointProgress = profile.getProfileProgress(millis());
-
-      fanRelay.setPWM(setpointFanSpeed);
-
-      // Clamp BDC fan to safe range (800-2000 microseconds)
-      int bdcValue = 5 * setpointFanSpeed + 700;
-      bdcValue = constrain(bdcValue, 800, 2000);
-      bdcFan.writeMicroseconds(bdcValue);
-
-      heaterRelay.setPWM(heaterOutputVal);
-
-      if (currentTemp >= getEffectiveFinalTargetTemp())
+      if (roastShouldCompleteNow())
       {
-        heaterPID.stop();
-        heaterOutputVal = 0;
+        bool validationRun = currentRoastUsesValidationProfile();
+        if (validationRun)
+        {
+          finalizeValidationIfRunning(true, "profile_complete");
+        }
+
+        resetRoastControllerState();
         heaterRelay.setPWM(heaterOutputVal);
 
-        setpointTemp = 145;
-        systemLinkMarkCoolingPhaseStarted(SYSTEMLINK_OUTCOME_PASSED, "final_target_reached");
-        roasterState = COOLING;
-        coolingStartTime = millis(); // Start cooling timer
-
-        setpointFanSpeed = 255;
-        fanRelay.setPWM(setpointFanSpeed);
-        bdcFan.writeMicroseconds(2000);
+        systemLinkMarkCoolingPhaseStarted(SYSTEMLINK_OUTCOME_PASSED,
+                                          validationRun ? "validation_profile_complete" : "final_target_reached");
+        enterCoolingState();
 
         setpointProgress = 0;
-        myNex.writeStr("page Cooling");
         LOG_INFOF("Roast complete at %.1fF - entering cooling phase", currentTemp);
       }
       myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
@@ -534,6 +783,8 @@ void loop()
       unsigned long coolingDuration = millis() - coolingStartTime;
       if (coolingDuration > MAX_COOLING_TIME)
       {
+        autoValidateAfterCooling = false;
+        finalizeValidationIfRunning(false, "cooling_timeout");
         LOG_WARNF("Cooling timeout after %lu minutes - forcing IDLE", coolingDuration / 60000);
         systemLinkFinishRoast(SYSTEMLINK_OUTCOME_TERMINATED, "cooling_timeout");
         fanRelay.setPWM(0);
@@ -545,8 +796,9 @@ void loop()
         break;
       }
 
-      if (currentTemp <= 145)
+      if (currentTemp <= COOLING_TARGET_TEMP)
       {
+        restoreValidationProfileIfNeeded();
         systemLinkFinishRoast(SYSTEMLINK_OUTCOME_NONE, "cooling_complete");
         fanRelay.setPWM(0);
         bdcFan.writeMicroseconds(800);
@@ -556,20 +808,33 @@ void loop()
         LOG_INFOF("Cooling complete at %.1fF - returning to IDLE", currentTemp);
         sendWsMessage("{ \"pushMessage\": \"endRoasting\" }");
         myNex.writeStr("page Start");
+
+        // Auto-validate after step-response tuning
+        if (autoValidateAfterCooling) {
+          autoValidateAfterCooling = false;
+          LOG_INFO("Starting auto-validation after step-response tuning");
+          if (startValidationRoast(200.0, 70)) {
+            sendWsMessage("{ \"pushMessage\": \"pidValidationStarted\" }");
+          } else {
+            LOG_WARN("Auto-validation could not start (temp or state issue)");
+          }
+        }
       }
       break;
     }
 
     case ERROR:
+      finalizeValidationIfRunning(false, "error_state");
       // ERROR state: Keep system in safe mode until manual reset
       // Heater must stay OFF, cooling fan at safe speed
       digitalWrite(HEATER, LOW);
       heaterRelay.setPWM(0);
-      heaterPID.stop();
+      resetRoastControllerState();
 
       // Run cooling fan at safe speed (not maximum to avoid mechanical stress)
       fanRelay.setPWM(200);           // ~78% speed for sustained cooling
       bdcFan.writeMicroseconds(1500); // Mid-range for BDC fan
+      bdcFanMs = 1500;
 
       // Update display with current temperature
       myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
@@ -581,6 +846,7 @@ void loop()
       break;
 
     case CALIBRATING:
+    {
       // Fan Ramp Logic (Reuse logic from START_ROAST)
       if (fanRampStep < 2000) 
       {
@@ -611,56 +877,18 @@ void loop()
       }
 
       LOG_INFO("State: CALIBRATING loop");
-      
-      // Force fan to 100% every loop to ensure it stays on
-      fanRelay.setPWM(255);
-      bdcFan.writeMicroseconds(1975);
-      
-      // Run autotuner
-      heaterOutputVal = autotuner.getOutput(currentTemp);
-      LOG_INFOF("Autotuner output: %.2f", heaterOutputVal);
-      heaterRelay.setPWM(heaterOutputVal);
-      
+
+      fanRelay.setPWM(setpointFanSpeed);
+      int calibrationBdcValue = constrain(5 * setpointFanSpeed + 700, 800, 2000);
+      bdcFan.writeMicroseconds(calibrationBdcValue);
+      bdcFanMs = calibrationBdcValue;
+
       // Update UI
       myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
-      
-      if (autotuner.isComplete()) {
-          double newKp, newKi, newKd;
-          autotuner.getPID(newKp, newKi, newKd);
-          
-          // Save to preferences
-          preferences.putDouble("kp", newKp);
-          preferences.putDouble("ki", newKi);
-          preferences.putDouble("kd", newKd);
-          
-          // Update runtime PID
-          kp = newKp; ki = newKi; kd = newKd;
-          heaterPID.setGains(kp, ki, kd);
-          
-          LOG_INFOF("Calibration saved: Kp=%.4f, Ki=%.4f, Kd=%.4f", kp, ki, kd);
-          
-          // Stop heater
-          heaterOutputVal = 0;
-          heaterRelay.setPWM(0);
-          
-          // Transition to COOLING to bring temp down to 145F
-          setpointTemp = 145;
-          roasterState = COOLING;
-          coolingStartTime = millis();
-          
-          // Max fan for cooling
-          setpointFanSpeed = 255;
-          fanRelay.setPWM(setpointFanSpeed);
-          bdcFan.writeMicroseconds(2000);
-          
-          myNex.writeStr("page Cooling");
-          sendWsMessage("{ \"pushMessage\": \"calibrationComplete\" }");
-
-            // Schedule a safe restart to avoid post-calibration instability
-            restartRequested = true;
-            restartAt = millis() + 3000; // allow message to flush and fans to spin up
-      }
+      double calSetpoint = stepTuner.getSetpoint();
+      myNex.writeNum("globals.nextSetTempNum.val", (int)round(calSetpoint));
       break;
+    }
 
     default:
       LOG_WARNF("Unknown state: %d - returning to IDLE", roasterState);
@@ -688,6 +916,10 @@ void loop()
 
   if (roastTraceTimer.isReady())
   {
+    if (roasterState == ROASTING && pidValidation.isActive())
+    {
+      pidValidation.recordSample(currentTemp, setpointTemp);
+    }
     systemLinkRecordRoastSample();
     roastTraceTimer.reset();
   }
@@ -722,33 +954,26 @@ void trigger0()
     LOG_WARN("Nextion final target not available - using profile final temp");
   }
   
-  roasterState = START_ROAST;
-  systemLinkMarkRoastStarted();
-  myNex.writeNum("globals.nextSetTempNum.val", setpointTemp);
-  myNex.writeStr("page Roasting");
+  startRoastSession();
   LOG_INFO("trigger0() complete - state set to START_ROAST");
 }
 
 void trigger1()
 { // Stop roast command received
+  finalizeValidationIfRunning(false, "user_stop");
   systemLinkMarkCoolingPhaseStarted(SYSTEMLINK_OUTCOME_TERMINATED, "user_stop");
-  roasterState = COOLING;
 
-  heaterPID.stop();
-  heaterOutputVal = 0;
+  resetRoastControllerState();
   heaterRelay.setPWM(heaterOutputVal);
   digitalWrite(HEATER, LOW);
 
-  setpointFanSpeed = 255;
-  fanRelay.setPWM(setpointFanSpeed);
-  bdcFan.writeMicroseconds(2000);
-
-  myNex.writeNum("globals.nextSetTempNum.val", 145);
-  myNex.writeStr("page Cooling");
+  enterCoolingState();
 }
 
 void trigger2()
 { // Stop cooling command received
+  finalizeValidationIfRunning(false, "cooling_skipped");
+  restoreValidationProfileIfNeeded();
   roasterState = IDLE;
   myNex.writeStr("page Start");
 }

@@ -1,7 +1,7 @@
 /**
  * PID Controller Unit Tests
  *
- * Tests for AutoPID controller including:
+ * Tests for the in-repo PID controller including:
  * - Temperature tracking accuracy
  * - Response to setpoint changes
  * - Output clamping (0-255 range)
@@ -9,7 +9,8 @@
  */
 
 #include <AUnit.h>
-#include <AutoPID.h>
+#include "../../PIDController.hpp"
+#include "../../PIDRuntimeController.hpp"
 
 using namespace aunit;
 
@@ -25,8 +26,8 @@ double testHeaterOutput = 0;
 #define OUTPUT_MIN 0
 #define OUTPUT_MAX 255
 
-AutoPID testPID(&testCurrentTemp, &testSetpointTemp, &testHeaterOutput,
-                OUTPUT_MIN, OUTPUT_MAX, TEST_KP, TEST_KI, TEST_KD);
+PIDController testPID(&testCurrentTemp, &testSetpointTemp, &testHeaterOutput,
+                      OUTPUT_MIN, OUTPUT_MAX, TEST_KP, TEST_KI, TEST_KD);
 
 void setup()
 {
@@ -268,6 +269,29 @@ test(PID_IntegralTerm_WindupPrevention)
   assertTrue(testHeaterOutput >= 254.0 && testHeaterOutput <= 255.0);
 }
 
+test(PID_IntegralTerm_UnwindsAfterSetpointDrop)
+{
+  testCurrentTemp = 100.0;
+  testSetpointTemp = 450.0;
+  testHeaterOutput = 0;
+
+  for (int i = 0; i < 12; i++)
+  {
+    testPID.run();
+    delay(260);
+  }
+
+  testCurrentTemp = 320.0;
+  testSetpointTemp = 250.0;
+  for (int i = 0; i < 4; i++)
+  {
+    testPID.run();
+    delay(260);
+  }
+
+  assertTrue(testHeaterOutput < 20.0);
+}
+
 // ============================================================================
 // STABILITY TESTS
 // ============================================================================
@@ -497,4 +521,66 @@ test(PID_Integration_FullRoastSimulation)
   }
 
   assertTrue(reachedSetpoint);
+}
+
+test(PID_RuntimeScheduler_UsesFallbackWithoutBands)
+{
+  PIDRuntimeController controller;
+  controller.setFallbackGains(4.0, 0.4, 1.0);
+
+  PIDRuntimeController::ControlDecision decision = controller.decide(1000, 200.0, 250.0, 90.0);
+
+  assertFalse(decision.scheduleActive);
+  assertEqual(-1, decision.bandIndex);
+  assertEqual(4.0, decision.kp);
+  assertEqual(0.4, decision.ki);
+  assertEqual(1.0, decision.kd);
+  assertEqual(0.0, decision.feedforward);
+}
+
+test(PID_RuntimeScheduler_SelectsBandsAndComputesFeedforward)
+{
+  PIDRuntimeController controller;
+  controller.setFallbackGains(4.0, 0.4, 1.0);
+
+  Calibration::CharacterizationSummary summary = {};
+  summary.validBandCount = 2;
+  summary.bands[0].valid = true;
+  summary.bands[0].targetTemp = 225.0;
+  summary.bands[0].minTemp = 180.0;
+  summary.bands[0].maxTemp = 250.0;
+  summary.bands[0].drift = -0.08;
+  summary.bands[0].coolingCoeff = -0.010;
+  summary.bands[0].heaterCoeff = 0.005;
+  summary.bands[0].deadTime = 6.0;
+  summary.bands[0].kp = 7.0;
+  summary.bands[0].ki = 0.7;
+  summary.bands[0].kd = 2.0;
+  summary.bands[1].valid = true;
+  summary.bands[1].targetTemp = 290.0;
+  summary.bands[1].minTemp = 250.0;
+  summary.bands[1].maxTemp = 330.0;
+  summary.bands[1].drift = -0.10;
+  summary.bands[1].coolingCoeff = -0.012;
+  summary.bands[1].heaterCoeff = 0.0045;
+  summary.bands[1].deadTime = 8.0;
+  summary.bands[1].kp = 11.0;
+  summary.bands[1].ki = 0.9;
+  summary.bands[1].kd = 4.0;
+
+  assertTrue(controller.loadFromSummary(summary));
+
+  PIDRuntimeController::ControlDecision lowBand = controller.decide(1000, 205.0, 225.0, 90.0);
+  PIDRuntimeController::ControlDecision holdHysteresis = controller.decide(2000, 215.0, 254.0, 90.0);
+  PIDRuntimeController::ControlDecision highBand = controller.decide(3000, 230.0, 265.0, 90.0);
+
+  assertTrue(lowBand.scheduleActive);
+  assertEqual(0, lowBand.bandIndex);
+  assertEqual(7.0, lowBand.kp);
+  assertTrue(lowBand.feedforward > 0.0);
+
+  assertEqual(0, holdHysteresis.bandIndex);
+  assertEqual(1, highBand.bandIndex);
+  assertEqual(11.0, highBand.kp);
+  assertTrue(highBand.feedforward >= lowBand.feedforward);
 }
