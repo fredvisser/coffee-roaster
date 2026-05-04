@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ main ]
 
+env:
+  BOARD_FQBN: esp32:esp32:nano_nora
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,6 +19,16 @@ jobs:
     
     - name: Setup Arduino CLI
       uses: arduino/setup-arduino-cli@v1
+
+    - name: Cache Arduino dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.arduino15
+          ~/Arduino/libraries
+        key: ${{ runner.os }}-arduino-${{ hashFiles('.github/workflows/arduino-ci.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-arduino-
       
     - name: Install ESP32 platform
       run: |
@@ -53,37 +66,45 @@ jobs:
         
     - name: Compile main firmware
       run: |
+        set -o pipefail
         cd roaster-firmware
-        arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware.ino --warnings all
-        
-    - name: Check firmware size
+        mkdir -p build
+        arduino-cli compile --fqbn "$BOARD_FQBN" roaster-firmware.ino --warnings all --output-dir build 2>&1 | tee ../firmware-compile.log
+
+    - name: Generate firmware size report
       run: |
-        cd roaster-firmware
-        arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware.ino | grep "Sketch uses"
+        {
+          echo "# Firmware Size Report"
+          echo ""
+          echo "Generated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo ""
+          grep -E "^(Sketch uses|Global variables use)" firmware-compile.log || echo "Size information not available"
+        } > size-report.md
+        cat size-report.md
         
     - name: Compile profile tests
       run: |
-        arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/tests/test_profiles/test_profiles.ino
+        arduino-cli compile --fqbn "$BOARD_FQBN" roaster-firmware/tests/test_profiles/test_profiles.ino
         
     - name: Compile PID tests
       run: |
-        arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/tests/test_pid/test_pid.ino
+        arduino-cli compile --fqbn "$BOARD_FQBN" roaster-firmware/tests/test_pid/test_pid.ino
         
     - name: Compile state machine tests
       run: |
-        arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/tests/test_state_machine/test_state_machine.ino
+        arduino-cli compile --fqbn "$BOARD_FQBN" roaster-firmware/tests/test_state_machine/test_state_machine.ino
         
     - name: Compile safety tests
       run: |
-        arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/tests/test_safety/test_safety.ino
+        arduino-cli compile --fqbn "$BOARD_FQBN" roaster-firmware/tests/test_safety/test_safety.ino
         
     - name: Compile unit test runner
       run: |
-        arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/tests/unit_tests/unit_tests.ino
+        arduino-cli compile --fqbn "$BOARD_FQBN" roaster-firmware/tests/unit_tests/unit_tests.ino
         
     - name: Compile hardware validation tests
       run: |
-        arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/tests/hardware_validation/hardware_validation.ino
+        arduino-cli compile --fqbn "$BOARD_FQBN" roaster-firmware/tests/hardware_validation/hardware_validation.ino
         
     - name: Archive build artifacts
       uses: actions/upload-artifact@v4
@@ -91,6 +112,7 @@ jobs:
         name: firmware-builds
         path: |
           roaster-firmware/build/
+          firmware-compile.log
         retention-days: 30
         
     - name: Generate build report
@@ -98,9 +120,7 @@ jobs:
         echo "# Build Report" > build-report.md
         echo "" >> build-report.md
         echo "## Main Firmware" >> build-report.md
-        cd roaster-firmware
-        arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware.ino | grep -E "(Sketch|Global)" >> ../build-report.md || true
-        cd ..
+        grep -E "^(Sketch uses|Global variables use)" firmware-compile.log >> build-report.md || true
         echo "" >> build-report.md
         echo "## Test Suites Compiled" >> build-report.md
         echo "- ✓ test_profiles.ino" >> build-report.md
@@ -115,7 +135,9 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: build-report
-        path: build-report.md
+        path: |
+          build-report.md
+          size-report.md
         retention-days: 30
 
   lint:
@@ -131,69 +153,6 @@ jobs:
         path: roaster-firmware
         library-manager: update
         compliance: specification
-        
-  size-report:
-    runs-on: ubuntu-latest
-    needs: build
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
-      
-    - name: Setup Arduino CLI
-      uses: arduino/setup-arduino-cli@v1
-      
-    - name: Install ESP32 platform
-      run: |
-        arduino-cli config init
-        arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-        arduino-cli core update-index
-        arduino-cli core install esp32:esp32
-        
-    - name: Install libraries
-      run: |
-        arduino-cli lib install "Easy Nextion Library"
-        arduino-cli lib install "MAX6675 library"
-        arduino-cli lib install "SimpleTimer"
-        arduino-cli lib install "AutoPID"
-        arduino-cli lib install "ESP32Servo"
-        arduino-cli lib install "PWMrelay"
-        arduino-cli lib install "ArduinoJson"
-        arduino-cli lib install "ElegantOTA@3.1.7"
-        
-    - name: Install async libraries from GitHub
-      run: |
-        cd $HOME
-        mkdir -p Arduino/libraries
-        cd Arduino/libraries
-        git clone https://github.com/ESP32Async/AsyncTCP.git Async_TCP || true
-        git clone https://github.com/ESP32Async/ESPAsyncWebServer.git ESP_Async_WebServer || true
-        
-    - name: Configure ElegantOTA for async mode
-      run: |
-        ELEGANTOTA_H="$HOME/Arduino/libraries/ElegantOTA/src/ElegantOTA.h"
-        if [ -f "$ELEGANTOTA_H" ]; then
-          sed -i 's/#define ELEGANTOTA_USE_ASYNC_WEBSERVER 0/#define ELEGANTOTA_USE_ASYNC_WEBSERVER 1/' "$ELEGANTOTA_H"
-        fi
-        
-    - name: Generate size report
-      run: |
-        cd roaster-firmware
-        arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware.ino --output-dir ../build-output
-        cd ..
-        echo "# Firmware Size Report" > size-report.md
-        echo "" >> size-report.md
-        echo "Generated: $(date)" >> size-report.md
-        echo "" >> size-report.md
-        arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/roaster-firmware.ino | grep -A 5 "Sketch uses" >> size-report.md || echo "Size information not available" >> size-report.md
-        cat size-report.md
-        
-    - name: Upload size report
-      uses: actions/upload-artifact@v4
-      with:
-        name: size-report
-        path: size-report.md
-        retention-days: 90
 
   # Future: Hardware-in-the-loop testing with self-hosted runner
   # hardware-tests:
