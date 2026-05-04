@@ -9,8 +9,11 @@
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <ElegantOTA.h>  // v3.1.7+ with async mode enabled for ESPAsyncWebServer compatibility
-#include <AutoPID.h>
 #include "DebugLog.hpp"
+#include "PIDController.hpp"
+#include "StepResponseTuner.hpp"
+#include "PIDRuntimeController.hpp"
+#include "PIDValidation.hpp"
 #include "ProfileManager.hpp"    // Profile backend logic
 #include "ProfileWebUI.hpp"     // Profile UI HTML/CSS/JS
 #include "SystemLinkWebUI.hpp"
@@ -30,6 +33,8 @@ extern double setpointTemp;
 extern byte setpointFanSpeed;
 extern double fanTemp;
 extern double heaterOutputVal;
+extern double heaterPidTrimVal;
+extern double heaterFeedforwardVal;
 extern int setpointProgress;
 extern int bdcFanMs;
 extern int badReadingCount;
@@ -42,13 +47,17 @@ extern ProfileManager profileManager;
 extern Preferences preferences; // NVS preferences from main firmware
 extern uint8_t profileBuffer[200];
 extern EasyNex myNex;
-extern PIDAutotuner autotuner;
-extern AutoPID heaterPID;
+extern StepResponseTuner stepTuner;
+extern PIDRuntimeController pidRuntimeController;
+extern PIDValidationSession pidValidation;
+extern PIDController heaterPID;
 extern bool restartRequested;
 extern unsigned long restartAt;
 
 // Helper to update Nextion display with active profile
 void plotProfileOnWaveform();
+bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent);
+void setManualPIDGains(double newKp, double newKi, double newKd);
 
 void updateNextionActiveProfile() {
     String activeId = profileManager.getActiveProfileId();
@@ -74,29 +83,33 @@ void updateNextionActiveProfile() {
 // WifiCredentials struct defined in Types.hpp
 
 unsigned long ota_progress_millis = 0;
+bool otaUpdateInProgress = false;
 
 void onOTAStart() {
   // Log when OTA has started
-  Serial.println("OTA update started!");
-  // <Add your own code here>
+  otaUpdateInProgress = true;
+  ota_progress_millis = millis();
+  LOG_INFOF("OTA update started: freeHeap=%u, wifiRSSI=%d", ESP.getFreeHeap(), WiFi.RSSI());
 }
 
 void onOTAProgress(size_t current, size_t final) {
   // Log every 1 second
   if (millis() - ota_progress_millis > 1000) {
     ota_progress_millis = millis();
-    Serial.printf("OTA Progress Current: %u bytes, Final: %u bytes\n", current, final);
+    LOG_INFOF("OTA progress: current=%u final=%u freeHeap=%u", current, final, ESP.getFreeHeap());
   }
 }
 
 void onOTAEnd(bool success) {
   // Log when OTA has finished
   if (success) {
-    Serial.println("OTA update finished successfully!");
+    LOG_INFOF("OTA update finished successfully: freeHeap=%u", ESP.getFreeHeap());
+    restartRequested = true;
+    restartAt = millis() + 8000; // Give the HTTP response plenty of time to flush before rebooting.
   } else {
-    Serial.println("There was an error during OTA update!");
+    LOG_ERRORF("OTA update failed: freeHeap=%u", ESP.getFreeHeap());
   }
-  // <Add your own code here>
+  otaUpdateInProgress = false;
 }
 
 // void OTATick() {
@@ -190,7 +203,7 @@ const char* getStateName(byte state) {
 
 // Serialize system state to JSON
 String getSystemStateJSON() {
-  DynamicJsonDocument doc(1024);
+  DynamicJsonDocument doc(1280);
   
   doc["timestamp"] = millis();
   doc["state"] = getStateName(roasterState);
@@ -203,8 +216,12 @@ String getSystemStateJSON() {
   
   JsonObject control = doc.createNestedObject("control");
   control["heater"] = (int)heaterOutputVal;
+  control["pidTrim"] = round(heaterPidTrimVal * 10) / 10.0;
+  control["feedforward"] = round(heaterFeedforwardVal * 10) / 10.0;
   control["pwmFan"] = (int)setpointFanSpeed;
   control["bdcFan"] = bdcFanMs;
+  control["scheduleEnabled"] = pidRuntimeController.isEnabled();
+  control["activeBand"] = pidRuntimeController.getActiveBandIndex();
   
   JsonObject profileObj = doc.createNestedObject("profile");
   profileObj["progress"] = setpointProgress;
@@ -308,7 +325,11 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Roaster Links</title>
   <style>
-    body { font-family: Arial, sans-serif; background: #0d1117; color: #c9d1d9; margin: 0; padding: 40px; }
+    body { font-family: Arial, sans-serif; background: #0d1117; color: #c9d1d9; margin: 0; padding: 24px; }
+    .page { max-width: 960px; margin: 0 auto; }
+    .topnav { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 auto 20px; padding: 14px; background: #161b22; border: 1px solid #30363d; border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); }
+    .topnav a { display: inline-flex; align-items: center; justify-content: center; min-width: 120px; padding: 10px 14px; border-radius: 999px; background: #21262d; color: #c9d1d9; text-decoration: none; font-weight: 600; }
+    .topnav a.active { background: linear-gradient(135deg, #1f6feb, #58a6ff); color: #fff; }
     .card { max-width: 420px; margin: 0 auto; background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 24px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
     h1 { margin-top: 0; font-size: 24px; color: #fff; }
     p { color: #8b949e; }
@@ -318,13 +339,24 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>Roaster Control</h1>
-    <p>Select a tool:</p>
-    <a href="/console">Debug Console</a>
-    <a class="secondary" href="/profile">Profile Editor</a>
-    <a class="tertiary" href="/pid">PID Tuning</a>
-    <a href="/systemlink">SystemLink</a>
+  <div class="page">
+    <nav class="topnav">
+      <a class="active" href="/">Home</a>
+      <a href="/console">Console</a>
+      <a href="/profile">Profiles</a>
+      <a href="/pid">PID</a>
+      <a href="/update">Update</a>
+      <a href="/systemlink">SystemLink</a>
+    </nav>
+    <div class="card">
+      <h1>Roaster Control</h1>
+      <p>Select a tool:</p>
+      <a href="/console">Debug Console</a>
+      <a class="secondary" href="/profile">Profile Editor</a>
+      <a class="tertiary" href="/pid">PID Tuning</a>
+      <a class="secondary" href="/update">Firmware Update</a>
+      <a href="/systemlink">SystemLink</a>
+    </div>
   </div>
 </body>
 </html>
@@ -594,12 +626,239 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       request->send(200, "application/json", getSystemLinkConfigJSON());
     });
 
+  // Register more specific PID validation routes before /api/pid because
+  // ESPAsyncWebServer matches the shorter prefix route first.
+  server.on("/api/calibrate-pid/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+    StaticJsonDocument<4096> doc;
+
+    doc["running"] = stepTuner.isRunning();
+    doc["complete"] = stepTuner.isComplete();
+    doc["phase"] = stepTuner.getPhaseName();
+    doc["progressPercent"] = stepTuner.getProgressPercent();
+      doc["sampleCount"] = stepTuner.getSampleCount();
+      doc["lastError"] = stepTuner.getLastError();
+      doc["method"] = "step_response";
+
+      StepResponseTuner::Summary ss = stepTuner.getSummary();
+      JsonObject model = doc.createNestedObject("model");
+      model["valid"] = ss.valid;
+      model["passed"] = ss.passed;
+      model["targetTemp"] = ss.targetTemp;
+      model["ambientTemp"] = ss.ambientTemp;
+      model["recommendedKp"] = ss.recommendedKp;
+      model["recommendedKi"] = ss.recommendedKi;
+      model["recommendedKd"] = ss.recommendedKd;
+      model["meanFitRmse"] = ss.meanFitRmse;
+      model["worstFitRmse"] = ss.worstFitRmse;
+      model["maxTemp"] = ss.maxTemp;
+      model["validBandCount"] = ss.validBandCount;
+      model["totalSamples"] = ss.totalSamples;
+      model["completedBands"] = ss.completedBands;
+      model["totalBands"] = ss.totalBands;
+      model["tauCFactor"] = ss.tauCFactor;
+      model["currentSetpoint"] = ss.currentSetpoint;
+
+      // Band details with FOPDT models
+      JsonArray bands = model.createNestedArray("bands");
+      for (uint8_t i = 0; i < ss.totalBands && i < StepResponseTuner::MAX_BANDS; i++) {
+        const StepResponseTuner::BandResult &br = ss.bands[i];
+        JsonObject item = bands.createNestedObject();
+        item["index"] = i + 1;
+        item["valid"] = br.valid;
+        item["targetTemp"] = br.targetTemp;
+        item["minTemp"] = br.minTemp;
+        item["maxTemp"] = br.maxTemp;
+        item["sampleCount"] = br.sampleCount;
+        item["kp"] = br.kp;
+        item["ki"] = br.ki;
+        item["kd"] = br.kd;
+        if (br.model.valid) {
+          item["processGain"] = br.model.processGain;
+          item["timeConstant"] = br.model.timeConstant;
+          item["deadTime"] = br.model.deadTime;
+          item["fitRmse"] = br.model.fitRmse;
+          item["baselineTemp"] = br.model.baselineTemp;
+          item["finalTemp"] = br.model.finalTemp;
+        }
+      }
+
+      // Backward-compatible cycle array (maps bands to cycles)
+      JsonArray cycles = model.createNestedArray("cycles");
+      for (uint8_t i = 0; i < ss.totalBands && i < StepResponseTuner::MAX_BANDS; i++) {
+        const StepResponseTuner::BandResult &br = ss.bands[i];
+        JsonObject item = cycles.createNestedObject();
+        item["index"] = i + 1;
+        item["valid"] = br.valid;
+        item["passed"] = br.valid;
+        item["modelValid"] = br.model.valid;
+        item["processGain"] = br.model.processGain;
+        item["timeConstant"] = br.model.timeConstant;
+        item["deadTime"] = br.model.deadTime;
+        item["fitRmse"] = br.model.fitRmse;
+        item["sampleCount"] = br.sampleCount;
+        item["kp"] = br.kp;
+        item["ki"] = br.ki;
+        item["kd"] = br.kd;
+      }
+
+      if (stepTuner.isComplete()) {
+        model["kp"] = kp;
+        model["ki"] = ki;
+        model["kd"] = kd;
+      }
+
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+  });
+
+  server.on("/api/pid/validate/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+    PIDValidationSession::Summary summary = pidValidation.getSummary();
+    StaticJsonDocument<768> doc;
+    doc["active"] = summary.active;
+    doc["complete"] = summary.complete;
+    doc["passed"] = summary.passed;
+    doc["cancelled"] = summary.cancelled;
+    doc["startTemp"] = summary.startTemp;
+    doc["finalTargetTemp"] = summary.finalTargetTemp;
+    doc["durationSeconds"] = summary.durationSeconds;
+    doc["meanAbsError"] = summary.meanAbsError;
+    doc["rmse"] = summary.rmse;
+    doc["maxAbsError"] = summary.maxAbsError;
+    doc["holdMeanAbsError"] = summary.holdMeanAbsError;
+    doc["holdMaxAbsError"] = summary.holdMaxAbsError;
+    doc["withinOneDegreePercent"] = summary.withinOneDegreePercent;
+    doc["withinTwoDegreesPercent"] = summary.withinTwoDegreesPercent;
+    doc["sampleCount"] = summary.sampleCount;
+    doc["holdSampleCount"] = summary.holdSampleCount;
+    doc["lastError"] = summary.lastError;
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+  });
+
+  // API endpoint: Start PID Calibration
+  server.on("/api/calibrate-pid", HTTP_POST, [](AsyncWebServerRequest *request) {
+    LOG_INFO("API: /api/calibrate-pid requested");
+    
+    if (roasterState != IDLE) {
+        request->send(400, "application/json", "{\"error\":\"Roaster must be IDLE to start calibration\"}");
+        return;
+    }
+
+    if (currentTemp > 140.0) {
+      request->send(400, "application/json", "{\"error\":\"Roaster must be below 140F to start tuning\"}");
+      return;
+    }
+    
+    int fanSpeed = 255;
+    if (request->hasParam("fan")) {
+        fanSpeed = request->getParam("fan")->value().toInt();
+    }
+
+    setpointFanSpeed = constrain(fanSpeed, 80, 255);
+
+    double tauCFactor = 0.5;
+    if (request->hasParam("tau_c")) {
+      tauCFactor = request->getParam("tau_c")->value().toFloat();
+    }
+    stepTuner.start(currentTemp, kp, ki, kd, setpointFanSpeed, tauCFactor);
+    if (!stepTuner.isRunning()) {
+      String error = String("{\"error\":\"") + stepTuner.getLastError() + "\"}";
+      request->send(400, "application/json", error);
+      return;
+    }
+    roasterState = CALIBRATING;
+    char msg[192];
+    snprintf(msg, sizeof(msg), "{\"status\":\"Step-response tuning started\",\"method\":\"step_response\",\"fan\":%d,\"tau_c_factor\":%.2f}",
+             setpointFanSpeed, tauCFactor);
+    request->send(200, "application/json", msg);
+  });
+
+  server.on("/api/calibrate-pid/cancel", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (roasterState != CALIBRATING) {
+      request->send(400, "application/json", "{\"error\":\"No calibration is currently running\"}");
+      return;
+    }
+
+    stepTuner.cancel();
+    request->send(200, "application/json", "{\"ok\":true,\"status\":\"cancel_requested\"}");
+  });
+
+  server.on("/api/calibrate-pid/trace", HTTP_GET, [](AsyncWebServerRequest *request) {
+    String out = "{";
+    out += "\"running\":";
+
+    out += stepTuner.isRunning() ? "true" : "false";
+    out += ",\"method\":\"step_response\"";
+    out += ",\"phase\":\"";
+    out += stepTuner.getPhaseName();
+      out += "\",\"bandIndex\":";
+      out += String(static_cast<int>(stepTuner.getActiveBandIndex()) + 1);
+      out += ",\"samples\":[";
+
+      uint16_t count = stepTuner.getTraceSampleCount();
+      for (uint16_t index = 0; index < count; index++) {
+        StepResponseTuner::TraceSample sample = stepTuner.getTraceSample(index);
+        if (index > 0) out += ',';
+        out += "{\"elapsedSeconds\":";
+        out += String(sample.elapsedMs / 1000.0f, 1);
+        out += ",\"actualTempF\":";
+        out += String(sample.actualTempF, 1);
+        out += ",\"setpointTempF\":";
+        out += String(sample.setpointTempF, 1);
+        out += ",\"heaterOutput\":";
+        out += String(sample.heaterOutput, 1);
+        out += ",\"phaseId\":";
+        out += String(sample.phaseId);
+        out += '}';
+      }
+    out += "]}";
+    request->send(200, "application/json", out);
+  });
+
+  server.on("/api/pid/validate", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (roasterState != IDLE) {
+      request->send(400, "application/json", "{\"error\":\"Roaster must be IDLE to start validation\"}");
+      return;
+    }
+
+    if (currentTemp > 180.0) {
+      request->send(400, "application/json", "{\"error\":\"Roaster must be below 180F to start validation\"}");
+      return;
+    }
+
+    double target = PIDValidationSession::VALIDATION_RAMP_END_TEMP_F;
+
+    int fanPercent = 70;
+    if (request->hasParam("fanPercent")) {
+      fanPercent = request->getParam("fanPercent")->value().toInt();
+    }
+
+    if (!startValidationRoast(target, constrain(fanPercent, 20, 100))) {
+      request->send(500, "application/json", "{\"error\":\"failed_to_start_validation\"}");
+      return;
+    }
+
+    StaticJsonDocument<256> doc;
+    doc["ok"] = true;
+    doc["target"] = target;
+    doc["fanPercent"] = constrain(fanPercent, 20, 100);
+    doc["message"] = "Validation roast started";
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+  });
+
   // API endpoint: Get current PID values
   server.on("/api/pid", HTTP_GET, [](AsyncWebServerRequest *request) {
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<512> doc;
     doc["kp"] = kp;
     doc["ki"] = ki;
     doc["kd"] = kd;
+    doc["scheduleEnabled"] = pidRuntimeController.isEnabled();
+    doc["activeBand"] = pidRuntimeController.getActiveBandIndex();
+    doc["validBandCount"] = pidRuntimeController.getValidBandCount();
     String out;
     serializeJson(doc, out);
     request->send(200, "application/json", out);
@@ -639,61 +898,19 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       double newKi = doc.containsKey("ki") ? doc["ki"].as<double>() : ki;
       double newKd = doc.containsKey("kd") ? doc["kd"].as<double>() : kd;
 
-      kp = newKp; ki = newKi; kd = newKd;
-      preferences.putDouble("kp", kp);
-      preferences.putDouble("ki", ki);
-      preferences.putDouble("kd", kd);
-      heaterPID.setGains(kp, ki, kd);
+      setManualPIDGains(newKp, newKi, newKd);
 
-      StaticJsonDocument<256> resp;
+      StaticJsonDocument<384> resp;
       resp["ok"] = true;
       resp["kp"] = kp;
       resp["ki"] = ki;
       resp["kd"] = kd;
+      resp["scheduleEnabled"] = pidRuntimeController.isEnabled();
       String out;
       serializeJson(resp, out);
       request->send(200, "application/json", out);
     }
   );
-
-  // API endpoint: Start PID Calibration
-  server.on("/api/calibrate-pid", HTTP_POST, [](AsyncWebServerRequest *request) {
-    LOG_INFO("API: /api/calibrate-pid requested");
-    
-    if (roasterState != IDLE) {
-        request->send(400, "application/json", "{\"error\":\"Roaster must be IDLE to start calibration\"}");
-        return;
-    }
-    
-    double target = 150.0;
-    if (request->hasParam("target")) {
-        target = request->getParam("target")->value().toDouble();
-    }
-    
-    // Start fan at full speed for calibration safety/consistency?
-    // Usually tuning is done with the system in normal operating conditions.
-    // For a roaster, fan speed affects thermal mass/response.
-    // We should probably allow setting fan speed too.
-    
-    int fanSpeed = 255; // Default to max fan
-    if (request->hasParam("fan")) {
-        fanSpeed = request->getParam("fan")->value().toInt();
-    }
-    
-    // Set fan
-    // digitalWrite(FAN, HIGH); // Removed: FAN pin not defined here, handled by main loop
-    
-    // We'll store the target fan speed in the global variable used by the loop
-    setpointFanSpeed = fanSpeed;
-    
-    // Start autotuner
-    autotuner.start(target);
-    roasterState = CALIBRATING;
-    
-    char msg[64];
-    snprintf(msg, sizeof(msg), "{\"status\":\"Calibration started\", \"target\":%.1f}", target);
-    request->send(200, "application/json", msg);
-  });
 
   // Debug Console UI
   server.on("/console", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -713,6 +930,34 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       color: #c9d1d9;
       padding: 20px;
       line-height: 1.5;
+    }
+    .topnav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      max-width: 1400px;
+      margin: 0 auto 20px;
+      padding: 14px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 14px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+    }
+    .topnav a {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 120px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: #21262d;
+      color: #c9d1d9;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .topnav a.active {
+      background: linear-gradient(135deg, #1f6feb, #58a6ff);
+      color: #fff;
     }
     .header {
       background: linear-gradient(135deg, #1f6feb 0%, #0969da 100%);
@@ -918,6 +1163,14 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   </style>
 </head>
 <body>
+  <nav class="topnav">
+    <a href="/">Home</a>
+    <a class="active" href="/console">Console</a>
+    <a href="/profile">Profiles</a>
+    <a href="/pid">PID</a>
+    <a href="/update">Update</a>
+    <a href="/systemlink">SystemLink</a>
+  </nav>
   <div class="header">
     <h1>☕ Coffee Roaster Debug Console</h1>
     <div class="subtitle">
@@ -1381,56 +1634,259 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PID Tuning</title>
+  <title>PID Workflow</title>
   <style>
     body { font-family: Arial, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
-    .card { max-width: 520px; margin: 0 auto; background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
-    h1 { margin-top: 0; color: #fff; }
+    .topnav { display: flex; flex-wrap: wrap; gap: 10px; max-width: 920px; margin: 0 auto 16px; padding: 14px; background: #161b22; border: 1px solid #30363d; border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); }
+    .topnav a { display: inline-flex; align-items: center; justify-content: center; min-width: 120px; padding: 10px 14px; border-radius: 999px; background: #21262d; color: #c9d1d9; text-decoration: none; font-weight: 600; }
+    .topnav a.active { background: linear-gradient(135deg, #1f6feb, #58a6ff); color: #fff; }
+    .page { max-width: 920px; margin: 0 auto; display: grid; gap: 16px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
+    h1, h2 { margin-top: 0; color: #fff; }
     label { display: block; margin: 12px 0 4px; color: #8b949e; }
     input { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #30363d; background: #0d1117; color: #c9d1d9; }
     button { margin-top: 14px; width: 100%; padding: 12px; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
     .primary { background: linear-gradient(135deg, #1f6feb, #58a6ff); color: #fff; }
     .secondary { background: linear-gradient(135deg, #3fb950, #2ea043); color: #fff; }
+    .tertiary { background: linear-gradient(135deg, #f0883e, #f85149); color: #fff; }
     .note { color: #8b949e; font-size: 13px; margin-top: 8px; }
     .row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+    .button-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 16px; }
+    .metric { background: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 12px; }
+    .metric-label { color: #8b949e; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .metric-value { color: #fff; font-size: 20px; font-weight: 700; margin-top: 6px; }
+    .chart { margin-top: 16px; background: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 12px; }
+    .chart canvas { width: 100%; height: 260px; display: block; }
+    .legend { display: flex; gap: 18px; margin-top: 10px; color: #8b949e; font-size: 12px; }
+    .legend span { display: inline-flex; align-items: center; gap: 8px; }
+    .legend span::before { content: ""; width: 18px; height: 3px; border-radius: 999px; display: inline-block; }
+    .legend .actual::before { background: #58a6ff; }
+    .legend .setpoint::before { background: #f2cc60; }
+    table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+    th, td { text-align: left; padding: 10px; border-bottom: 1px solid #30363d; font-size: 14px; }
+    th { color: #8b949e; }
+    .small { font-size: 12px; color: #8b949e; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>PID Tuning</h1>
-    <div class="row">
-      <div>
-        <label for="kp">Kp</label>
-        <input id="kp" type="number" step="0.01" />
+  <nav class="topnav">
+    <a href="/">Home</a>
+    <a href="/console">Console</a>
+    <a href="/profile">Profiles</a>
+    <a class="active" href="/pid">PID</a>
+    <a href="/update">Update</a>
+    <a href="/systemlink">SystemLink</a>
+  </nav>
+  <div class="page">
+    <div class="card">
+      <h1>PID Workflow</h1>
+      <p class="note">Apply manual gains directly, or run the step-response PID tuning workflow. The tuner applies open-loop step inputs at 2 temperature bands, fits FOPDT models, and calculates SIMC PID gains.</p>
+      <div class="row">
+        <div>
+          <label for="kp">Kp</label>
+          <input id="kp" type="number" step="0.01" />
+        </div>
+        <div>
+          <label for="ki">Ki</label>
+          <input id="ki" type="number" step="0.01" />
+        </div>
+        <div>
+          <label for="kd">Kd</label>
+          <input id="kd" type="number" step="0.01" />
+        </div>
       </div>
-      <div>
-        <label for="ki">Ki</label>
-        <input id="ki" type="number" step="0.01" />
-      </div>
-      <div>
-        <label for="kd">Kd</label>
-        <input id="kd" type="number" step="0.01" />
+      <button class="primary" onclick="applyPid()">Apply PID Values</button>
+      <p class="note" id="status">Loading current PID...</p>
+    </div>
+
+    <div class="two-col">
+      <div class="card">
+        <h2>PID Tuning</h2>
+        <label for="fan">Calibration Fan PWM (0-255)</label>
+        <input id="fan" type="number" value="255" />
+        <div id="stepOptions">
+          <label for="tauC">&tau;<sub>c</sub> Factor (0.3-3.0, lower = more aggressive)</label>
+          <input id="tauC" type="number" min="0.3" max="3.0" step="0.1" value="0.5" />
+        </div>
+        <div class="button-row">
+          <button id="startAutotuneButton" class="secondary" onclick="startAutotune()">Run Step-Response PID Tuning</button>
+          <button id="cancelAutotuneButton" class="tertiary" onclick="cancelAutotune()" disabled>Cancel Tuning</button>
+        </div>
+        <p class="note" id="methodNote">The step-response tuner stabilizes at 2 temperature bands (175, 275F), applies a heater step, records the open-loop response, fits a first-order-plus-dead-time model, and computes SIMC PID gains. Auto-validation runs after cooling.</p>
+        <div class="status-grid">
+          <div class="metric"><div class="metric-label">Phase</div><div class="metric-value" id="autotunePhase">--</div></div>
+          <div class="metric"><div class="metric-label">Progress</div><div class="metric-value" id="autotuneProgress">--</div></div>
+          <div class="metric"><div class="metric-label">Setpoint</div><div class="metric-value" id="autotuneSetpoint">--</div></div>
+          <div class="metric"><div class="metric-label">Best PID</div><div class="metric-value small" id="autotunePid">--</div></div>
+          <div class="metric"><div class="metric-label" id="autotuneBestLabel">Best Cycle</div><div class="metric-value" id="autotuneBest">--</div></div>
+          <div class="metric"><div class="metric-label">Outcome</div><div class="metric-value" id="autotuneOutcome">--</div></div>
+        </div>
+        <div class="note" id="autotuneSummary">No tuning run recorded yet.</div>
+        <div class="chart">
+          <canvas id="autotuneChart" width="760" height="260"></canvas>
+          <div class="legend">
+            <span class="actual">Actual Temp</span>
+            <span class="setpoint">Setpoint</span>
+          </div>
+        </div>
+        <table>
+          <thead id="cycleTableHeader">
+            <tr><th>Cycle</th><th>MAE</th><th>Overshoot</th><th>Oscillations</th><th>Score</th><th>PID</th></tr>
+          </thead>
+          <tbody id="cycleTableBody">
+            <tr><td colspan="6" class="small">No data yet.</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
-    <button class="primary" onclick="applyPid()">Apply PID Values</button>
-    <p class="note" id="status">Loading current PID...</p>
-    <hr style="margin:20px 0; border: 0; border-top: 1px solid #30363d;" />
-    <label for="target">Autotune Target (°F)</label>
-    <input id="target" type="number" value="150" />
-    <label for="fan">Fan PWM (0-255)</label>
-    <input id="fan" type="number" value="255" />
-    <button class="secondary" onclick="startAutotune()">Run Autotune</button>
-    <p class="note">Autotune runs the calibration routine, then auto-restarts the controller.</p>
   </div>
 
   <script>
+    const chartCanvas = document.getElementById('autotuneChart');
+    const chartCtx = chartCanvas.getContext('2d');
+    const pidInputIds = ['kp', 'ki', 'kd'];
+    let latestTraceSamples = [];
+    let pidInputsDirty = false;
+    let suppressPidDirty = false;
+
+    function formatNumber(value, digits = 2) {
+      return Number.isFinite(value) ? value.toFixed(digits) : '--';
+    }
+
+    function bindPidInputs() {
+      pidInputIds.forEach(id => {
+        const input = document.getElementById(id);
+        input.addEventListener('input', () => {
+          if (!suppressPidDirty) {
+            pidInputsDirty = true;
+          }
+        });
+      });
+    }
+
+    function setPidInputs(nextKp, nextKi, nextKd) {
+      suppressPidDirty = true;
+      document.getElementById('kp').value = Number.isFinite(nextKp) ? Number(nextKp).toFixed(2) : '';
+      document.getElementById('ki').value = Number.isFinite(nextKi) ? Number(nextKi).toFixed(3) : '';
+      document.getElementById('kd').value = Number.isFinite(nextKd) ? Number(nextKd).toFixed(2) : '';
+      suppressPidDirty = false;
+      pidInputsDirty = false;
+    }
+
+    function drawTracePlaceholder(message) {
+      chartCtx.clearRect(0, 0, chartCanvas.width, chartCanvas.height);
+      chartCtx.fillStyle = '#0d1117';
+      chartCtx.fillRect(0, 0, chartCanvas.width, chartCanvas.height);
+      chartCtx.fillStyle = '#8b949e';
+      chartCtx.font = '14px Arial';
+      chartCtx.textAlign = 'center';
+      chartCtx.fillText(message, chartCanvas.width / 2, chartCanvas.height / 2);
+    }
+
+    function renderTrace(samples) {
+      latestTraceSamples = Array.isArray(samples) ? samples : [];
+
+      const width = chartCanvas.width;
+      const height = chartCanvas.height;
+      const padLeft = 52;
+      const padRight = 18;
+      const padTop = 18;
+      const padBottom = 34;
+
+      chartCtx.clearRect(0, 0, width, height);
+      chartCtx.fillStyle = '#0d1117';
+      chartCtx.fillRect(0, 0, width, height);
+
+      if (!latestTraceSamples.length) {
+        drawTracePlaceholder('No trace data yet.');
+        return;
+      }
+
+      const maxTime = latestTraceSamples.reduce((maxValue, sample) => Math.max(maxValue, Number(sample.elapsedSeconds) || 0), 0);
+      const temperatureValues = latestTraceSamples.flatMap(sample => [Number(sample.actualTempF), Number(sample.setpointTempF)]).filter(Number.isFinite);
+
+      if (!temperatureValues.length) {
+        drawTracePlaceholder('Trace data unavailable.');
+        return;
+      }
+
+      let minTemp = Math.min(...temperatureValues);
+      let maxTemp = Math.max(...temperatureValues);
+      minTemp = Math.floor((minTemp - 5) / 5) * 5;
+      maxTemp = Math.ceil((maxTemp + 5) / 5) * 5;
+
+      if (maxTemp <= minTemp) {
+        maxTemp = minTemp + 10;
+      }
+
+      const plotWidth = width - padLeft - padRight;
+      const plotHeight = height - padTop - padBottom;
+      const xFor = time => padLeft + ((Number(time) || 0) / Math.max(maxTime, 1)) * plotWidth;
+      const yFor = temp => padTop + (1 - ((Number(temp) - minTemp) / (maxTemp - minTemp))) * plotHeight;
+
+      chartCtx.strokeStyle = '#21262d';
+      chartCtx.lineWidth = 1;
+      for (let row = 0; row <= 4; row++) {
+        const y = padTop + (plotHeight / 4) * row;
+        chartCtx.beginPath();
+        chartCtx.moveTo(padLeft, y);
+        chartCtx.lineTo(width - padRight, y);
+        chartCtx.stroke();
+      }
+
+      chartCtx.fillStyle = '#8b949e';
+      chartCtx.font = '11px Arial';
+      chartCtx.textAlign = 'right';
+      for (let row = 0; row <= 4; row++) {
+        const ratio = 1 - row / 4;
+        const labelTemp = minTemp + (maxTemp - minTemp) * ratio;
+        const y = padTop + (plotHeight / 4) * row + 4;
+        chartCtx.fillText(`${formatNumber(labelTemp, 0)}F`, padLeft - 8, y);
+      }
+
+      chartCtx.textAlign = 'center';
+      for (let column = 0; column <= 4; column++) {
+        const timeValue = (Math.max(maxTime, 1) / 4) * column;
+        const x = padLeft + (plotWidth / 4) * column;
+        chartCtx.fillText(`${formatNumber(timeValue, 0)}s`, x, height - 10);
+      }
+
+      function drawSeries(color, accessor) {
+        chartCtx.beginPath();
+        chartCtx.strokeStyle = color;
+        chartCtx.lineWidth = 2;
+        let started = false;
+        latestTraceSamples.forEach(sample => {
+          const value = Number(accessor(sample));
+          if (!Number.isFinite(value)) {
+            return;
+          }
+          const x = xFor(sample.elapsedSeconds);
+          const y = yFor(value);
+          if (!started) {
+            chartCtx.moveTo(x, y);
+            started = true;
+          } else {
+            chartCtx.lineTo(x, y);
+          }
+        });
+        if (started) {
+          chartCtx.stroke();
+        }
+      }
+
+      drawSeries('#58a6ff', sample => sample.actualTempF);
+      drawSeries('#f2cc60', sample => sample.setpointTempF);
+    }
+
     async function loadPid() {
       try {
         const res = await fetch('/api/pid');
         const data = await res.json();
-        document.getElementById('kp').value = data.kp ?? '';
-        document.getElementById('ki').value = data.ki ?? '';
-        document.getElementById('kd').value = data.kd ?? '';
+        setPidInputs(data.kp, data.ki, data.kd);
         document.getElementById('status').textContent = 'Current PID loaded.';
       } catch (e) {
         document.getElementById('status').textContent = 'Failed to load PID values.';
@@ -1441,34 +1897,140 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       const kp = parseFloat(document.getElementById('kp').value);
       const ki = parseFloat(document.getElementById('ki').value);
       const kd = parseFloat(document.getElementById('kd').value);
+      if (!Number.isFinite(kp) || !Number.isFinite(ki) || !Number.isFinite(kd)) {
+        document.getElementById('status').textContent = 'Enter valid numeric PID values before applying.';
+        return;
+      }
       document.getElementById('status').textContent = 'Applying PID...';
       try {
         const res = await fetch('/api/pid', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kp, ki, kd }) });
         const data = await res.json();
-        document.getElementById('status').textContent = data.ok ? 'PID applied and saved.' : 'Failed to apply PID.';
+        if (data.ok) {
+          setPidInputs(data.kp, data.ki, data.kd);
+          document.getElementById('status').textContent = 'PID applied and saved.';
+        } else {
+          document.getElementById('status').textContent = 'Failed to apply PID.';
+        }
       } catch (e) {
         document.getElementById('status').textContent = 'Failed to apply PID.';
       }
     }
 
+    let activeMethod = 'step_response';
+
     async function startAutotune() {
-      const target = parseFloat(document.getElementById('target').value) || 150;
       const fan = parseInt(document.getElementById('fan').value) || 255;
-      document.getElementById('status').textContent = 'Starting autotune...';
+      const tauC = parseFloat(document.getElementById('tauC').value) || 0.5;
+      let url = `/api/calibrate-pid?fan=${fan}&method=step_response&tau_c=${tauC}`;
+      document.getElementById('status').textContent = 'Starting step-response tuning...';
       try {
-        const res = await fetch(`/api/calibrate-pid?target=${target}&fan=${fan}`, { method: 'POST' });
+        const res = await fetch(url, { method: 'POST' });
         if (res.ok) {
-          document.getElementById('status').textContent = 'Autotune started. Device will restart when done.';
+          document.getElementById('status').textContent = 'Step-response tuning started.';
+          document.getElementById('autotuneSummary').textContent = 'Step-response tuning running...';
+          updateTableHeader('step_response');
+          loadAutotuneStatus();
+          loadAutotuneTrace();
         } else {
           const txt = await res.text();
-          document.getElementById('status').textContent = 'Failed to start autotune: ' + txt;
+          document.getElementById('status').textContent = 'Failed to start tuning: ' + txt;
         }
       } catch (e) {
-        document.getElementById('status').textContent = 'Failed to start autotune.';
+        document.getElementById('status').textContent = 'Failed to start tuning.';
       }
     }
 
+    async function cancelAutotune() {
+      document.getElementById('status').textContent = 'Cancelling tuning...';
+      try {
+        const res = await fetch('/api/calibrate-pid/cancel', { method: 'POST' });
+        const txt = await res.text();
+        document.getElementById('status').textContent = res.ok ? 'Tuning cancelled.' : 'Failed to cancel tuning.';
+        if (!res.ok && txt) {
+          document.getElementById('status').textContent += ' ' + txt;
+        }
+        loadAutotuneStatus();
+        loadAutotuneTrace();
+      } catch (e) {
+        document.getElementById('status').textContent = 'Failed to cancel tuning.';
+      }
+    }
+
+    async function loadAutotuneTrace() {
+      try {
+        const res = await fetch('/api/calibrate-pid/trace');
+        const data = await res.json();
+        renderTrace(data.samples || []);
+      } catch (e) {
+        if (!latestTraceSamples.length) {
+          drawTracePlaceholder('Trace unavailable.');
+        }
+      }
+    }
+
+    function updateTableHeader() {
+      const thead = document.getElementById('cycleTableHeader');
+      thead.innerHTML = '<tr><th>Band</th><th>Temp</th><th>Kp (process)</th><th>&tau; (s)</th><th>&theta; (s)</th><th>RMSE</th><th>PID</th></tr>';
+      document.getElementById('autotuneBestLabel').textContent = 'Bands';
+    }
+
+    async function loadAutotuneStatus() {
+      try {
+        const res = await fetch('/api/calibrate-pid/status');
+        const data = await res.json();
+        const model = data.model || {};
+
+        document.getElementById('startAutotuneButton').disabled = !!data.running;
+        document.getElementById('cancelAutotuneButton').disabled = !data.running;
+        document.getElementById('autotunePhase').textContent = data.phase || '--';
+        document.getElementById('autotuneProgress').textContent = `${formatNumber(data.progressPercent, 0)}%`;
+        document.getElementById('autotuneSetpoint').textContent = Number.isFinite(model.currentSetpoint) ? `${formatNumber(model.currentSetpoint, 1)}F` : '--';
+        document.getElementById('autotunePid').textContent = Number.isFinite(model.recommendedKp) ? `Kp ${formatNumber(model.recommendedKp, 2)} Ki ${formatNumber(model.recommendedKi, 3)} Kd ${formatNumber(model.recommendedKd, 2)}` : '--';
+
+        updateTableHeader();
+        document.getElementById('autotuneBest').textContent = `${model.completedBands || 0} / ${model.totalBands || 2}`;
+
+        if (data.running) {
+          document.getElementById('autotuneOutcome').textContent = 'running';
+          document.getElementById('autotuneSummary').textContent = `Step-response tuning in progress. Completed ${model.completedBands || 0} of ${model.totalBands || 2} bands. \u03C4c factor: ${formatNumber(model.tauCFactor, 1)}.`;
+        } else if (data.complete) {
+          document.getElementById('autotuneOutcome').textContent = model.passed ? 'passed' : 'best found';
+          document.getElementById('autotuneSummary').textContent = `Step-response tuning ${model.passed ? 'passed' : 'completed'}: PID Kp ${formatNumber(model.recommendedKp, 2)} Ki ${formatNumber(model.recommendedKi, 3)} Kd ${formatNumber(model.recommendedKd, 2)}, mean RMSE ${formatNumber(model.meanFitRmse, 2)}F.`;
+          if (Number.isFinite(model.recommendedKp) && !pidInputsDirty) {
+            setPidInputs(model.recommendedKp, model.recommendedKi, model.recommendedKd);
+          }
+        } else if (data.lastError === 'cancelled') {
+          document.getElementById('autotuneOutcome').textContent = 'cancelled';
+          document.getElementById('autotuneSummary').textContent = 'Step-response tuning cancelled. Recovery cooling is active.';
+        } else if (data.lastError && data.lastError !== 'none') {
+          document.getElementById('autotuneOutcome').textContent = 'failed';
+          document.getElementById('autotuneSummary').textContent = `Step-response tuning failed: ${data.lastError}.`;
+        } else {
+          document.getElementById('autotuneOutcome').textContent = 'idle';
+        }
+
+        const bands = (model.bands || []).filter(b => b.valid);
+        const rows = bands.map(b => {
+          return `<tr><td>${b.index}</td><td>${formatNumber(b.targetTemp, 0)}F</td><td>${formatNumber(b.processGain, 4)}</td><td>${formatNumber(b.timeConstant, 1)}</td><td>${formatNumber(b.deadTime, 1)}</td><td>${formatNumber(b.fitRmse, 2)}F</td><td class="small">Kp ${formatNumber(b.kp, 2)} Ki ${formatNumber(b.ki, 3)} Kd ${formatNumber(b.kd, 2)}</td></tr>`;
+        });
+        document.getElementById('cycleTableBody').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="7" class="small">No band data yet.</td></tr>';
+      } catch (e) {
+        document.getElementById('autotunePhase').textContent = 'offline';
+        document.getElementById('autotuneOutcome').textContent = 'offline';
+        document.getElementById('startAutotuneButton').disabled = false;
+        document.getElementById('cancelAutotuneButton').disabled = true;
+      }
+    }
+
+    drawTracePlaceholder('Loading trace...');
+  bindPidInputs();
     loadPid();
+    loadAutotuneStatus();
+    loadAutotuneTrace();
+    setInterval(() => {
+      loadAutotuneStatus();
+      loadAutotuneTrace();
+    }, 1500);
   </script>
 </body>
 </html>
@@ -1488,6 +2050,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 
   // Start ElegantOTA for over-the-air updates
   ElegantOTA.begin(&server);  // Start ElegantOTA in async mode
+  ElegantOTA.setAutoReboot(false);
   // ElegantOTA callbacks
   ElegantOTA.onStart(onOTAStart);
   ElegantOTA.onProgress(onOTAProgress);
