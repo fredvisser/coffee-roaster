@@ -13,6 +13,9 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
   <style>
     * { box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#0d1117; color:#c9d1d9; margin:0; padding:0; }
+    .topnav { max-width: 1100px; margin: 16px auto 0; padding: 14px; display:flex; flex-wrap:wrap; gap:10px; background:#161b22; border:1px solid #30363d; border-radius:14px; box-shadow:0 8px 24px rgba(0,0,0,0.2); }
+    .topnav a { display:inline-flex; align-items:center; justify-content:center; min-width:120px; padding:10px 14px; border-radius:999px; background:#21262d; color:#c9d1d9; text-decoration:none; font-weight:600; }
+    .topnav a.active { background:linear-gradient(135deg, #1f6feb, #58a6ff); color:#fff; }
     .container { max-width: 1100px; margin: 0 auto; padding: 16px; }
     .header { display:flex; flex-direction:column; gap:12px; margin-bottom:16px; }
     h1 { font-size: 24px; color:#fff; margin:0; }
@@ -61,6 +64,14 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
   </style>
 </head>
 <body>
+  <nav class="topnav">
+    <a href="/">Home</a>
+    <a href="/console">Console</a>
+    <a class="active" href="/profile">Profiles</a>
+    <a href="/pid">PID</a>
+    <a href="/update">Update</a>
+    <a href="/systemlink">SystemLink</a>
+  </nav>
   <div class="container">
     <div class="header">
       <h1>Roast Profile Editor</h1>

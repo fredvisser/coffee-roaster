@@ -22,6 +22,37 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
       min-height: 100vh;
       padding: 24px;
     }
+    .topnav {
+      max-width: 880px;
+      margin: 0 auto 18px;
+      padding: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      background: rgba(24, 21, 18, 0.92);
+      border: 1px solid rgba(242, 203, 117, 0.22);
+      border-radius: 16px;
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+    }
+    .topnav a {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 120px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(242, 203, 117, 0.14);
+      color: #f3eadb;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 14px;
+    }
+    .topnav a.active {
+      background: linear-gradient(135deg, #f2cb75, #c48337);
+      color: #22180e;
+      border-color: transparent;
+    }
     .shell {
       max-width: 880px;
       margin: 0 auto;
@@ -156,6 +187,14 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
   </style>
 </head>
 <body>
+  <nav class="topnav">
+    <a href="/">Home</a>
+    <a href="/console">Console</a>
+    <a href="/profile">Profiles</a>
+    <a href="/pid">PID</a>
+    <a href="/update">Update</a>
+    <a class="active" href="/systemlink">SystemLink</a>
+  </nav>
   <div class="shell">
     <div class="hero">
       <h1>SystemLink</h1>
