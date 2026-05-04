@@ -197,6 +197,7 @@ const char* getStateName(byte state) {
     case 2: return "ROASTING";
     case 3: return "COOLING";
     case 4: return "ERROR";
+    case 5: return "CALIBRATING";
     default: return "UNKNOWN";
   }
 }
@@ -897,6 +898,12 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       double newKp = doc.containsKey("kp") ? doc["kp"].as<double>() : kp;
       double newKi = doc.containsKey("ki") ? doc["ki"].as<double>() : ki;
       double newKd = doc.containsKey("kd") ? doc["kd"].as<double>() : kd;
+
+      // Bounds check: reject unreasonable PID gains
+      if (newKp < 0 || newKp > 100 || newKi < 0 || newKi > 10 || newKd < 0 || newKd > 50) {
+        request->send(400, "application/json", "{\"error\":\"pid_gains_out_of_range\",\"limits\":{\"kp\":\"0-100\",\"ki\":\"0-10\",\"kd\":\"0-50\"}}");
+        return;
+      }
 
       setManualPIDGains(newKp, newKi, newKd);
 

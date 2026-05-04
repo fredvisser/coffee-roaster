@@ -14,13 +14,13 @@
 
 using namespace aunit;
 
-// Safety thresholds
+// Safety thresholds (must match Types.hpp)
 #define MAX_SAFE_TEMP 500.0
 #define MAX_ROAST_TEMP 460.0
-#define COOLING_TARGET_TEMP 145.0
-#define SENSOR_FAULT_THRESHOLD 500.0
-#define THERMAL_RUNAWAY_THRESHOLD 20.0 // Degrees over setpoint
-#define THERMAL_RUNAWAY_TIME 30000     // 30 seconds
+#define COOLING_TARGET_TEMP 140
+#define SENSOR_FAULT_TEMP 600.0
+#define MAX_BAD_READINGS 5
+#define MAX_TEMP_JUMP 40.0
 
 // Test variables
 double testCurrentTemp = 150.0;
@@ -59,110 +59,11 @@ void resetSafetyState()
 }
 
 // ============================================================================
-// THERMAL RUNAWAY PROTECTION TESTS
-// ============================================================================
-
-test(Safety_ThermalRunaway_Detection)
-{
-  resetSafetyState();
-  testCurrentTemp = 350.0;
-  testSetpointTemp = 300.0; // Temp 50° above setpoint
-  testHeaterOutput = 255;
-
-  // Detect thermal runaway
-  if (testCurrentTemp > testSetpointTemp + THERMAL_RUNAWAY_THRESHOLD)
-  {
-    testSafetyShutdown = true;
-    testHeaterOutput = 0;
-    testFanSpeed = 255;
-  }
-
-  assertTrue(testSafetyShutdown);
-  assertEqual(0.0, testHeaterOutput);
-  assertEqual(255, testFanSpeed);
-}
-
-test(Safety_ThermalRunaway_HeaterCutoff)
-{
-  resetSafetyState();
-  testCurrentTemp = 325.0;
-  testSetpointTemp = 300.0;
-  testHeaterOutput = 200;
-
-  // Simulate thermal runaway condition
-  if (testCurrentTemp > testSetpointTemp + THERMAL_RUNAWAY_THRESHOLD)
-  {
-    testHeaterOutput = 0;
-  }
-
-  assertEqual(0.0, testHeaterOutput);
-}
-
-test(Safety_ThermalRunaway_NoFalsePositive)
-{
-  resetSafetyState();
-  testCurrentTemp = 310.0;
-  testSetpointTemp = 300.0; // Only 10° above (within tolerance)
-  testSafetyShutdown = false;
-
-  // Should NOT trigger runaway protection
-  if (testCurrentTemp > testSetpointTemp + THERMAL_RUNAWAY_THRESHOLD)
-  {
-    testSafetyShutdown = true;
-  }
-
-  assertFalse(testSafetyShutdown);
-}
-
-test(Safety_ThermalRunaway_RampingSetpoint)
-{
-  resetSafetyState();
-  testCurrentTemp = 300.0;
-  testSetpointTemp = 250.0;                // Setpoint lowered while temp still high
-  testLastTempIncrease = millis() - 15000; // Simulate 15 seconds without temp decrease
-
-  // This is thermal runaway - temp not following setpoint down
-  unsigned long stableTime = 10000; // 10 seconds
-  bool isRunaway = false;
-
-  if (testCurrentTemp > testSetpointTemp + THERMAL_RUNAWAY_THRESHOLD &&
-      millis() - testLastTempIncrease >= stableTime)
-  {
-    isRunaway = true;
-    testHeaterOutput = 0;
-    testFanSpeed = 255;
-  }
-
-  // Runaway should be detected
-  assertTrue(isRunaway);
-  assertEqual(0.0, testHeaterOutput);
-  assertEqual(255, testFanSpeed);
-}
-
-test(Safety_ThermalRunaway_TimedDetection)
-{
-  resetSafetyState();
-  testCurrentTemp = 330.0;
-  testSetpointTemp = 300.0;
-  testHeaterOutput = 255;
-  testLastTempIncrease = millis() - THERMAL_RUNAWAY_TIME - 1000;
-
-  // Temp has been high for too long
-  if (testCurrentTemp > testSetpointTemp + THERMAL_RUNAWAY_THRESHOLD &&
-      millis() - testLastTempIncrease > THERMAL_RUNAWAY_TIME)
-  {
-    testSafetyShutdown = true;
-    testHeaterOutput = 0;
-    testFanSpeed = 255;
-  }
-
-  assertTrue(testSafetyShutdown);
-  assertEqual(0.0, testHeaterOutput);
-}
-
-// ============================================================================
 // OVER-TEMPERATURE PROTECTION TESTS
 // ============================================================================
+// Note: The firmware uses absolute temperature limits (MAX_SAFE_TEMP = 500°F)
+// for over-temperature protection. There is no setpoint-relative thermal
+// runaway detection. Tests here verify the actual firmware behavior.
 
 test(Safety_OverTemp_AbsoluteLimit)
 {
@@ -231,7 +132,7 @@ test(Safety_OverTemp_FanMaximum)
   assertEqual(255, testFanSpeed);
 }
 
-test(Safety_OverTemp_Recovery)
+test(Safety_OverTemp_NoRecoveryWithoutReset)
 {
   resetSafetyState();
   testCurrentTemp = 510.0;
@@ -242,13 +143,10 @@ test(Safety_OverTemp_Recovery)
   // Cool down
   testCurrentTemp = 200.0;
 
-  // Can recover after cooling below safe threshold
-  if (testCurrentTemp < MAX_SAFE_TEMP - 50.0)
-  { // Hysteresis
-    testSafetyShutdown = false;
-  }
-
-  assertFalse(testSafetyShutdown);
+  // ERROR state should NOT auto-recover - requires hardware reset
+  // Safety shutdown flag remains set
+  assertTrue(testSafetyShutdown);
+  assertEqual(0.0, testHeaterOutput);
 }
 
 // ============================================================================
@@ -262,7 +160,7 @@ test(Safety_SensorFault_OpenThermocouple)
   testHeaterOutput = 200;
 
   // Detect sensor fault
-  if (testCurrentTemp > SENSOR_FAULT_THRESHOLD)
+  if (testCurrentTemp > SENSOR_FAULT_TEMP)
   {
     testSensorFault = true;
     testHeaterOutput = 0;
@@ -316,13 +214,13 @@ test(Safety_SensorFault_UnrealisticJump)
 {
   resetSafetyState();
   testLastTemp = 300.0;
-  testCurrentTemp = 450.0; // 150°F jump in 250ms (impossible)
+  testCurrentTemp = 350.0; // 50°F jump in one reading (exceeds MAX_TEMP_JUMP)
   testHeaterOutput = 200;
 
-  // Rate of change check
-  double rateOfChange = abs(testCurrentTemp - testLastTemp) / 0.25; // Per second
-  if (rateOfChange > 200.0)
-  { // Max realistic rate
+  // Spike check matches firmware logic
+  double tempJump = abs(testCurrentTemp - testLastTemp);
+  if (tempJump > MAX_TEMP_JUMP)
+  {
     testSensorFault = true;
     testHeaterOutput = 0;
   }
@@ -427,28 +325,20 @@ test(Safety_EmergencyShutdown_AllConditions)
 {
   resetSafetyState();
 
-  // Test multiple shutdown triggers
+  // Test multiple shutdown triggers that exist in firmware
   bool overTemp = false;
   bool sensorFault = false;
-  bool thermalRunaway = false;
 
   testCurrentTemp = 510.0;
   if (testCurrentTemp > MAX_SAFE_TEMP)
     overTemp = true;
 
   testCurrentTemp = 999.0;
-  if (testCurrentTemp > SENSOR_FAULT_THRESHOLD)
+  if (testCurrentTemp > SENSOR_FAULT_TEMP)
     sensorFault = true;
 
-  testCurrentTemp = 350.0;
-  testSetpointTemp = 300.0;
-  if (testCurrentTemp > testSetpointTemp + THERMAL_RUNAWAY_THRESHOLD)
-  {
-    thermalRunaway = true;
-  }
-
   // Any trigger should cause shutdown
-  if (overTemp || sensorFault || thermalRunaway)
+  if (overTemp || sensorFault)
   {
     testSafetyShutdown = true;
     testHeaterOutput = 0;
@@ -573,7 +463,7 @@ test(Safety_MultipleFaults_OverTempAndSensorFault)
   testHeaterOutput = 200;
 
   bool overTemp = testCurrentTemp > MAX_SAFE_TEMP;
-  bool sensorFault = testCurrentTemp > SENSOR_FAULT_THRESHOLD;
+  bool sensorFault = testCurrentTemp > SENSOR_FAULT_TEMP;
 
   if (overTemp || sensorFault)
   {
