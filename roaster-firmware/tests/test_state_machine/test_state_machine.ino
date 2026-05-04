@@ -32,6 +32,7 @@ bool testHeaterEnabled = false;
 bool testFanEnabled = false;
 bool testEmergencyStop = false;
 unsigned long testRoastStartTime = 0;
+unsigned long testCoolingStartTime = 0;
 
 void setup()
 {
@@ -58,6 +59,7 @@ void resetTestState()
   testFanEnabled = false;
   testEmergencyStop = false;
   testRoastStartTime = 0;
+  testCoolingStartTime = 0;
 }
 
 // ============================================================================
@@ -140,6 +142,31 @@ test(StateMachine_Transition_RoastingToCooling_Emergency)
   assertEqual(COOLING, testState);
   assertFalse(testHeaterEnabled);
   assertEqual(255, testFanSpeed);
+}
+
+test(StateMachine_Transition_RoastingToCooling_ManualStopResetsTimer)
+{
+  resetTestState();
+  testState = ROASTING;
+  testCoolingStartTime = 0;
+
+  const unsigned long simulatedNow = 296160000UL; // 4936 minutes uptime
+
+  // Manual stop should enter cooling and start a fresh cooling timer
+  testState = COOLING;
+  testHeaterEnabled = false;
+  testHeaterOutput = 0;
+  testFanSpeed = 255;
+  testCoolingStartTime = simulatedNow;
+
+  unsigned long coolingDuration = simulatedNow - testCoolingStartTime;
+
+  assertEqual(COOLING, testState);
+  assertFalse(testHeaterEnabled);
+  assertEqual(0.0, testHeaterOutput);
+  assertEqual(255, testFanSpeed);
+  assertEqual(simulatedNow, testCoolingStartTime);
+  assertEqual(0UL, coolingDuration);
 }
 
 test(StateMachine_Transition_CoolingToIdle)
