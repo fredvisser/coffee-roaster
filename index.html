@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DIY Hot Air Coffee Roaster</title>
+  <meta
+    name="description"
+    content="Build a polished, data-driven home coffee roaster with an ESP32 controller, Artisan integration, OTA updates, profile editing, and safety-first firmware."
+  >
+  <meta name="theme-color" content="#3f2418">
+  <meta property="og:title" content="DIY Hot Air Coffee Roaster">
+  <meta
+    property="og:description"
+    content="A practical open-source project for building a scientific, affordable, and great-looking home coffee roaster."
+  >
+  <meta property="og:type" content="website">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./site.css">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="site-header">
+      <a class="brand" href="#top">
+        <span class="brand-mark">CR</span>
+        <span class="brand-copy">
+          <strong>DIY Coffee Roaster</strong>
+          <small>Home roasting with real control</small>
+        </span>
+      </a>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="#why">Why Build</a>
+        <a href="#project">What You Get</a>
+        <a href="#build">Build Path</a>
+        <a href="#software">Software</a>
+        <a href="#safety">Safety</a>
+      </nav>
+      <a class="button button-ghost" href="https://github.com/fredvisser/coffee-roaster">GitHub</a>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Open-source coffee roasting for people who want better beans and better control</p>
+          <h1>Turn a humble popcorn popper into a serious home coffee roaster.</h1>
+          <p class="hero-lede">
+            This project combines a custom ESP32 controller, roast profiles, dual-sensor feedback,
+            Artisan connectivity, OTA updates, and a polished enclosure so building your own roaster
+            feels realistic instead of experimental.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="https://github.com/fredvisser/coffee-roaster">Explore the Project</a>
+            <a class="button button-secondary" href="#build">See the Build Path</a>
+          </div>
+          <ul class="feature-pills" aria-label="Project highlights">
+            <li>ESP32 control</li>
+            <li>Artisan streaming</li>
+            <li>OTA firmware</li>
+            <li>Web profile editor</li>
+            <li>Safety interlocks</li>
+          </ul>
+        </div>
+
+        <div class="hero-media card card-media">
+          <div class="media-stack">
+            <div class="video-frame">
+              <video autoplay muted loop playsinline controls poster="./images/Roaster%20-%20Front.jpeg">
+                <source src="./images/roaster-overview.mp4" type="video/mp4">
+              </video>
+            </div>
+            <div class="stat-grid">
+              <article class="stat-card">
+                <span class="stat-value">Profiles</span>
+                <span class="stat-copy">Time, temperature, and fan interpolation with a live editor</span>
+              </article>
+              <article class="stat-card">
+                <span class="stat-value">Wireless</span>
+                <span class="stat-copy">Artisan streaming, mDNS discovery, web console, and OTA updates</span>
+              </article>
+              <article class="stat-card">
+                <span class="stat-value">Safety-first</span>
+                <span class="stat-copy">Sensor validation, watchdog protection, over-temp cutoffs, and cooling logic</span>
+              </article>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="why" class="section reveal">
+        <div class="section-heading">
+          <p class="eyebrow">Why build your own?</p>
+          <h2>Because great roasting at home should feel repeatable, not mysterious.</h2>
+        </div>
+        <div class="three-up">
+          <article class="card insight-card">
+            <h3>Fresh coffee on your schedule</h3>
+            <p>Roast only what you need, tune the development level to your taste, and stop settling for stale bags on a shelf.</p>
+          </article>
+          <article class="card insight-card">
+            <h3>Data beats guesswork</h3>
+            <p>Profiles, telemetry, and Artisan integration let you learn from every roast instead of starting from zero every weekend.</p>
+          </article>
+          <article class="card insight-card">
+            <h3>Affordable hardware, premium behavior</h3>
+            <p>The design uses accessible parts and a modified hot-air popper, then adds the firmware and controls that make it feel like a real instrument.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="project" class="section split-section reveal">
+        <div class="section-heading compact">
+          <p class="eyebrow">What this project gives you</p>
+          <h2>A full build, not just a controller sketch.</h2>
+          <p>
+            The repository includes the mechanical, electrical, and software layers needed to go from parts to finished roaster.
+          </p>
+        </div>
+        <div class="project-grid">
+          <article class="card project-card accent-copper">
+            <h3>Physical build</h3>
+            <p>3D printed enclosure parts, custom PCB files, wiring references, popper modification steps, and assembly photos.</p>
+          </article>
+          <article class="card project-card accent-olive">
+            <h3>Firmware stack</h3>
+            <p>ESP32 firmware with PID control, roast-state management, dual fan control, a touchscreen HMI, and networked features.</p>
+          </article>
+          <article class="card project-card accent-sand">
+            <h3>Operator tools</h3>
+            <p>Browser-based profile editing, live debug console, OTA uploads, REST APIs, and wireless Artisan integration.</p>
+          </article>
+          <article class="card project-card accent-plum">
+            <h3>Recent capabilities</h3>
+            <p>Profile management by stable ids, richer web UI, validation and calibration support, CI-backed builds, and improved safety handling.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section gallery-section reveal">
+        <div class="section-heading compact">
+          <p class="eyebrow">A build people will actually want on their counter</p>
+          <h2>Designed to look intentional, not improvised.</h2>
+        </div>
+        <div class="gallery-grid">
+          <figure class="gallery-card tall">
+            <img src="./images/Roaster%20-%20Front.jpeg" alt="Front view of the completed coffee roaster">
+          </figure>
+          <figure class="gallery-card">
+            <img src="./images/Roaster%20-%20Back.jpeg" alt="Rear view of the coffee roaster enclosure">
+          </figure>
+          <figure class="gallery-card">
+            <img src="./images/Roaster%20-%20Bottom.jpeg" alt="Bottom view of the roaster showing the enclosure design">
+          </figure>
+          <figure class="gallery-card wide">
+            <img src="./images/Roaster%20-%20Apart.jpeg" alt="Coffee roaster enclosure opened to show internal components">
+          </figure>
+        </div>
+      </section>
+
+      <section id="build" class="section reveal">
+        <div class="section-heading">
+          <p class="eyebrow">Build path</p>
+          <h2>A clear route from printed parts to first roast.</h2>
+        </div>
+        <div class="timeline">
+          <article class="timeline-step card">
+            <span class="step-number">01</span>
+            <h3>Print and source the hardware</h3>
+            <p>Start with the enclosure, PCB, ESP32 Nano, Nextion display, popcorn popper, SSR, power supplies, connectors, and thermocouple hardware.</p>
+          </article>
+          <article class="timeline-step card">
+            <span class="step-number">02</span>
+            <h3>Modify the popper and wire the control stack</h3>
+            <p>Remove the stock thermostat path, add the thermocouple, route the heater and fan wiring, and mount everything into the printed case.</p>
+          </article>
+          <article class="timeline-step card">
+            <span class="step-number">03</span>
+            <h3>Flash the firmware and configure the UI</h3>
+            <p>Install dependencies, upload the Nextion firmware, flash the ESP32, and bring up the WiFi-enabled control surface.</p>
+          </article>
+          <article class="timeline-step card">
+            <span class="step-number">04</span>
+            <h3>Roast, observe, refine</h3>
+            <p>Use profiles, live telemetry, and Artisan recordings to iterate toward repeatable light, medium, or espresso-style roasts.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="software" class="section split-section reveal">
+        <div class="software-copy">
+          <div class="section-heading compact">
+            <p class="eyebrow">Software experience</p>
+            <h2>Modern control surfaces for an approachable DIY machine.</h2>
+          </div>
+          <div class="software-list">
+            <article class="card software-card">
+              <h3>On-device web tools</h3>
+              <p>Use the web console for live debug logs, update firmware over the air, and edit roast profiles in the browser.</p>
+            </article>
+            <article class="card software-card">
+              <h3>Wireless roast logging</h3>
+              <p>Stream roast data to Artisan so your roast curves and notes live in the same workflow you already know.</p>
+            </article>
+            <article class="card software-card">
+              <h3>Profile-driven roasting</h3>
+              <p>Drive temperature and fan targets from user-defined setpoints with interpolation between points, not fixed manual steps.</p>
+            </article>
+          </div>
+        </div>
+        <div class="software-visual card">
+          <img src="./images/Artisan%20-%20Start%20roast%20screen.png" alt="Artisan connected to the roaster during a roast">
+          <div class="visual-caption">
+            <strong>Artisan-ready</strong>
+            <span>WebSocket data streaming makes the roaster fit neatly into an existing roasting workflow.</span>
+          </div>
+        </div>
+      </section>
+
+      <section id="safety" class="section reveal safety-band">
+        <div class="section-heading compact light-on-dark">
+          <p class="eyebrow">Safety matters</p>
+          <h2>This is a project for high heat and line voltage, so the software is built to fail safer.</h2>
+        </div>
+        <div class="safety-grid">
+          <article class="safety-item">
+            <h3>Thermal limits</h3>
+            <p>Absolute and roast-specific over-temperature cutoffs push the machine into safe handling when readings exceed acceptable bounds.</p>
+          </article>
+          <article class="safety-item">
+            <h3>Sensor validation</h3>
+            <p>Thermocouple faults, implausible jumps, and fan-side sensing problems are treated as first-class failure modes.</p>
+          </article>
+          <article class="safety-item">
+            <h3>Cooling and watchdogs</h3>
+            <p>Cooling-state handling, emergency behavior, and a hardware watchdog reduce the chance of a silent bad state.</p>
+          </article>
+          <article class="safety-item">
+            <h3>Tested workflow</h3>
+            <p>There is an Arduino CI build, targeted test sketches, and explicit validation paths for the most safety-sensitive logic.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section reveal">
+        <div class="cta-card card">
+          <div>
+            <p class="eyebrow">Ready to build?</p>
+            <h2>Start with the repo, then decide how deep you want to go.</h2>
+            <p>
+              You can follow the full hardware build, just flash the firmware onto your own controller hardware, or borrow the ideas for your own roaster design.
+            </p>
+          </div>
+          <div class="cta-actions">
+            <a class="button button-primary" href="https://github.com/fredvisser/coffee-roaster">Open the Repository</a>
+            <a class="button button-secondary" href="https://github.com/fredvisser/coffee-roaster/tree/main/roaster-firmware">Read the Firmware Guide</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>Built for home roasters who want fresh coffee, clean roast curves, and hardware they can understand.</p>
+      <div class="footer-links">
+        <a href="https://github.com/fredvisser/coffee-roaster">GitHub</a>
+        <a href="https://artisan-scope.org">Artisan</a>
+        <a href="https://cad.onshape.com/documents/ee717da6534241d41072245e/w/709854c2acbee5e38b890bec/e/be6e653fbb47fc1f3247d478?renderMode=0&uiState=65b72c2e65c4bf7511b63553">OnShape Model</a>
+      </div>
+    </footer>
+  </div>
+
+  <script src="./site.js"></script>
+</body>
+</html>
