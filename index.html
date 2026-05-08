@@ -3,275 +3,229 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DIY Hot Air Coffee Roaster</title>
-  <meta
-    name="description"
-    content="An open-source home coffee roaster built around a modified hot-air popper, ESP32 firmware, Artisan integration, roast profiles, and practical safety systems."
-  >
-  <meta name="theme-color" content="#182026">
-  <meta property="og:title" content="DIY Hot Air Coffee Roaster">
-  <meta
-    property="og:description"
-    content="A straightforward open-source project for building a capable home coffee roaster with modern control software."
-  >
-  <meta property="og:type" content="website">
+  <title>DIY Coffee Roaster</title>
+  <meta name="description" content="Open-source coffee roaster built from a popcorn popper, ESP32, and 3D-printed enclosure. Includes PCB, firmware, roast profiles, and Artisan integration.">
+  <meta name="theme-color" content="#1a1a1a">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Newsreader:opsz,wght@6..72,500;6..72,700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./site.css">
 </head>
 <body>
-  <div class="page-shell">
-    <header class="site-header">
-      <a class="brand" href="#top">
-        <span class="brand-mark">CR</span>
-        <span class="brand-copy">
-          <strong>DIY Coffee Roaster</strong>
-          <small>ESP32-controlled hot air roaster</small>
-        </span>
-      </a>
-      <nav class="site-nav" aria-label="Primary">
-        <a href="#overview">Overview</a>
-        <a href="#included">Included</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="logo" href="#top">DIY Coffee Roaster</a>
+      <nav>
+        <a href="#whats-included">What's included</a>
         <a href="#build">Build</a>
         <a href="#software">Software</a>
-        <a href="#safety">Safety</a>
-      </nav>
-      <a class="button button-secondary" href="https://github.com/fredvisser/coffee-roaster">GitHub</a>
-    </header>
-
-    <main id="top">
-      <section class="hero">
-        <div class="hero-copy">
-          <p class="eyebrow">Open-source home coffee roasting</p>
-          <h1>A practical project for building your own coffee roaster.</h1>
-          <p class="hero-lede">
-            This repository shows how to turn a modified popcorn popper into a more capable home roaster
-            with an ESP32 controller, profile-based roasting, Artisan integration, web tools, and
-            documented hardware files.
-          </p>
-          <div class="hero-actions">
-            <a class="button button-primary" href="https://github.com/fredvisser/coffee-roaster">View Repository</a>
-            <a class="button button-secondary" href="#build">See Build Steps</a>
-          </div>
-          <ul class="feature-pills" aria-label="Project highlights">
-            <li>Roast profiles</li>
-            <li>PID control</li>
-            <li>Artisan support</li>
-            <li>OTA updates</li>
-            <li>Custom enclosure</li>
-          </ul>
-        </div>
-      </section>
-
-      <section class="section reveal section-tight">
-        <div class="stat-grid stat-grid-wide">
-          <article class="stat-card">
-            <span class="stat-label">Hardware</span>
-            <span class="stat-copy">3D printed parts, custom PCB, wiring references, and popper modifications.</span>
-          </article>
-          <article class="stat-card">
-            <span class="stat-label">Firmware</span>
-            <span class="stat-copy">ESP32 control, dual thermocouples, state machine, network tools, and OTA.</span>
-          </article>
-          <article class="stat-card">
-            <span class="stat-label">Workflow</span>
-            <span class="stat-copy">Profile editing, live telemetry, and Artisan logging for repeatable roasts.</span>
-          </article>
-        </div>
-      </section>
-
-      <section id="overview" class="section reveal">
-        <div class="section-heading compact">
-          <p class="eyebrow">Overview</p>
-          <h2>What this project is</h2>
-          <p>
-            It is a complete DIY roaster project, not just a firmware sketch. The repository includes the enclosure,
-            PCB files, popper modification notes, firmware, web interfaces, and operating documentation.
-          </p>
-        </div>
-        <div class="three-up">
-          <article class="surface info-card">
-            <h3>Use accessible parts</h3>
-            <p>The build is based on off-the-shelf components including an ESP32 Nano, Nextion display, SSR, power supplies, and a hot-air popcorn popper.</p>
-          </article>
-          <article class="surface info-card">
-            <h3>Control the roast</h3>
-            <p>Temperature and fan targets are driven by interpolated setpoints instead of only manual adjustment during the roast.</p>
-          </article>
-          <article class="surface info-card">
-            <h3>Record and refine</h3>
-            <p>Stream roast data to Artisan, tune profiles over time, and use the built-in software tools to repeat successful batches.</p>
-          </article>
-        </div>
-      </section>
-
-      <section id="included" class="section reveal">
-        <div class="section-heading compact">
-          <p class="eyebrow">Included in the repository</p>
-          <h2>A full set of build resources</h2>
-        </div>
-        <div class="project-grid">
-          <article class="surface project-card">
-            <h3>Mechanical</h3>
-            <p>Printable enclosure parts, case assembly photos, and an OnShape model for the main housing.</p>
-          </article>
-          <article class="surface project-card">
-            <h3>Electrical</h3>
-            <p>Custom PCB design files, wiring references, thermocouple placement, and controller hardware documentation.</p>
-          </article>
-          <article class="surface project-card">
-            <h3>Firmware</h3>
-            <p>ESP32 firmware with roast-state control, PID temperature management, fan control, OTA, and web interfaces.</p>
-          </article>
-          <article class="surface project-card">
-            <h3>Operations</h3>
-            <p>Profile management, REST endpoints, a browser-based editor, a debug console, and Artisan configuration files.</p>
-          </article>
-        </div>
-      </section>
-
-      <section class="section reveal gallery-section">
-        <div class="section-heading compact">
-          <p class="eyebrow">Build result</p>
-          <h2>Reference hardware and enclosure</h2>
-        </div>
-        <div class="video-panel surface">
-          <div class="video-frame">
-            <video autoplay muted loop playsinline controls poster="./images/Roaster%20-%20Front.jpeg">
-              <source src="./images/roaster-overview.mp4" type="video/mp4">
-            </video>
-          </div>
-        </div>
-        <div class="gallery-grid">
-          <figure class="gallery-card tall">
-            <img src="./images/Roaster%20-%20Front.jpeg" alt="Front view of the completed coffee roaster">
-          </figure>
-          <figure class="gallery-card">
-            <img src="./images/Roaster%20-%20Back.jpeg" alt="Rear view of the coffee roaster enclosure">
-          </figure>
-          <figure class="gallery-card">
-            <img src="./images/Roaster%20-%20Bottom.jpeg" alt="Bottom view of the roaster showing the enclosure design">
-          </figure>
-          <figure class="gallery-card wide">
-            <img src="./images/Roaster%20-%20Apart.jpeg" alt="Coffee roaster enclosure opened to show internal components">
-          </figure>
-        </div>
-      </section>
-
-      <section id="build" class="section reveal">
-        <div class="section-heading compact">
-          <p class="eyebrow">Build process</p>
-          <h2>Main steps</h2>
-        </div>
-        <div class="timeline">
-          <article class="surface timeline-step">
-            <span class="step-number">01</span>
-            <h3>Print and source parts</h3>
-            <p>Print the enclosure, order the PCB, and gather the display, controller, sensors, popper, and power hardware.</p>
-          </article>
-          <article class="surface timeline-step">
-            <span class="step-number">02</span>
-            <h3>Modify the popper</h3>
-            <p>Rework the heater and fan wiring, remove the stock thermostat behavior, and install the roasting chamber thermocouple.</p>
-          </article>
-          <article class="surface timeline-step">
-            <span class="step-number">03</span>
-            <h3>Assemble the controller</h3>
-            <p>Mount the PCB, display, power hardware, and wiring harnesses into the case and connect the popper hardware.</p>
-          </article>
-          <article class="surface timeline-step">
-            <span class="step-number">04</span>
-            <h3>Flash and configure</h3>
-            <p>Install firmware, upload the Nextion UI, configure WiFi if needed, and begin creating or editing roast profiles.</p>
-          </article>
-        </div>
-      </section>
-
-      <section id="software" class="section split-section reveal">
-        <div>
-          <div class="section-heading compact">
-            <p class="eyebrow">Software</p>
-            <h2>Control and monitoring features</h2>
-          </div>
-          <div class="software-list">
-            <article class="surface software-card">
-              <h3>Profile editor</h3>
-              <p>Edit roast profiles in the browser with time, temperature, and fan setpoints stored on the device.</p>
-            </article>
-            <article class="surface software-card">
-              <h3>Console and OTA</h3>
-              <p>Use the web console for live information and update firmware over the network without opening the enclosure.</p>
-            </article>
-            <article class="surface software-card">
-              <h3>Artisan integration</h3>
-              <p>Send roast data wirelessly to Artisan so the machine fits into a standard roast logging workflow.</p>
-            </article>
-          </div>
-        </div>
-        <div class="software-visual surface">
-          <img src="./images/Artisan%20-%20Start%20roast%20screen.png" alt="Artisan connected to the roaster during a roast">
-          <div class="visual-caption">
-            <strong>Artisan support</strong>
-            <span>Roast telemetry can be recorded and reviewed with the existing Artisan tools included in the repo.</span>
-          </div>
-        </div>
-      </section>
-
-      <section id="safety" class="section reveal safety-section">
-        <div class="section-heading compact">
-          <p class="eyebrow">Safety</p>
-          <h2>Built for a high-heat project</h2>
-          <p>
-            The roaster handles line voltage and high temperatures, so the firmware includes explicit safety checks and controlled failure modes.
-          </p>
-        </div>
-        <div class="safety-grid">
-          <article class="surface safety-item">
-            <h3>Temperature limits</h3>
-            <p>Absolute and roast-specific cutoffs stop heating when temperatures exceed defined bounds.</p>
-          </article>
-          <article class="surface safety-item">
-            <h3>Sensor checks</h3>
-            <p>Thermocouple faults, implausible jumps, and fan-side sensing problems are handled as error conditions.</p>
-          </article>
-          <article class="surface safety-item">
-            <h3>State-machine handling</h3>
-            <p>Cooling, error, and watchdog behavior are designed to move the machine toward a safer state when something goes wrong.</p>
-          </article>
-          <article class="surface safety-item">
-            <h3>Build validation</h3>
-            <p>The repository includes targeted compile checks and test sketches for profiles, PID, the state machine, and safety logic.</p>
-          </article>
-        </div>
-      </section>
-
-      <section class="section reveal">
-        <div class="cta-card surface">
-          <div>
-            <p class="eyebrow">Get started</p>
-            <h2>Use the repo as a full build guide or as a reference for your own controller.</h2>
-            <p>
-              The repository can be followed directly, or adapted if you already have your own hardware and only want the control software or UI ideas.
-            </p>
-          </div>
-          <div class="cta-actions">
-            <a class="button button-primary" href="https://github.com/fredvisser/coffee-roaster">Open the Repository</a>
-            <a class="button button-secondary" href="https://github.com/fredvisser/coffee-roaster/tree/main/roaster-firmware">Read Firmware Documentation</a>
-          </div>
-        </div>
-      </section>
-    </main>
-
-    <footer class="site-footer">
-      <p>DIY Hot Air Coffee Roaster</p>
-      <div class="footer-links">
+        <a href="#parts">Parts</a>
         <a href="https://github.com/fredvisser/coffee-roaster">GitHub</a>
-        <a href="https://artisan-scope.org">Artisan</a>
-        <a href="https://cad.onshape.com/documents/ee717da6534241d41072245e/w/709854c2acbee5e38b890bec/e/be6e653fbb47fc1f3247d478?renderMode=0&uiState=65b72c2e65c4bf7511b63553">OnShape</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+
+    <section class="hero">
+      <div class="hero-text">
+        <h1>A home coffee roaster you can build yourself.</h1>
+        <p>Modified popcorn popper. ESP32 controller. PID temperature control. Roast profiles. Artisan logging. All open source.</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="https://github.com/fredvisser/coffee-roaster">View on GitHub</a>
+          <a class="btn btn-ghost" href="#whats-included">What's included</a>
+        </div>
       </div>
-    </footer>
-  </div>
+      <div class="hero-image">
+        <img src="./images/Roaster%20-%20Front.jpeg" alt="Completed coffee roaster with 3D-printed red enclosure, Nextion display, and popcorn popper roasting chamber" width="600" height="800">
+      </div>
+    </section>
+
+    <section class="video-section reveal">
+      <video autoplay muted loop playsinline poster="./images/Roaster%20-%20Front.jpeg">
+        <source src="./images/roaster-overview.mp4" type="video/mp4">
+      </video>
+    </section>
+
+    <section id="whats-included" class="section reveal">
+      <h2>What's in the repo</h2>
+      <p class="section-desc">This isn't just firmware. The repository covers the full build — enclosure, electronics, software, and operating docs.</p>
+
+      <div class="card-grid">
+        <article class="card">
+          <div class="card-label">3D Printing</div>
+          <h3>Enclosure and hardware</h3>
+          <p>Printable case (top, bottom, handle, feet, standoffs), power supply mount, and an <a href="https://cad.onshape.com/documents/ee717da6534241d41072245e/w/709854c2acbee5e38b890bec/e/be6e653fbb47fc1f3247d478?renderMode=0&uiState=65b72c2e65c4bf7511b63553">OnShape CAD model</a> you can modify. PLA works fine; paint for a finished look.</p>
+          <img src="./images/Roaster%20-%20Bottom.jpeg" alt="Bottom of the 3D-printed enclosure" loading="lazy">
+        </article>
+
+        <article class="card">
+          <div class="card-label">PCB</div>
+          <h3>Custom control board</h3>
+          <p>Eagle schematic and board files for the interface PCB. Hosts an Arduino Nano ESP32, fan speed controller, and JST connectors for the display, thermocouples, and SSR. Order from JLCPCB, PCBWay, or similar.</p>
+          <img src="./images/wiring-3.jpeg" alt="Custom PCB installed in the enclosure with wiring connected" loading="lazy">
+        </article>
+
+        <article class="card">
+          <div class="card-label">Firmware</div>
+          <h3>ESP32 control software</h3>
+          <p>State machine for roast lifecycle. PID temperature control. Dual thermocouple monitoring. Profile-based setpoint interpolation. WiFi with WebSocket streaming. OTA updates. REST API.</p>
+          <img src="./images/Artisan%20-%20Start%20roast%20screen.png" alt="Artisan roast logging software connected to the roaster" loading="lazy">
+        </article>
+
+        <article class="card">
+          <div class="card-label">Popper Mod</div>
+          <h3>Roasting chamber</h3>
+          <p>Step-by-step guide to disassemble a 1200W popcorn popper, rewire the heater and fan, remove the stock thermostat, and install a thermocouple in the roasting chamber.</p>
+          <img src="./images/popper-mod-7.jpeg" alt="Thermocouple installed in the roasting chamber" loading="lazy">
+        </article>
+      </div>
+    </section>
+
+    <section id="build" class="section section-alt reveal">
+      <h2>How the build works</h2>
+      <p class="section-desc">Four phases — printing, popper mod, assembly, and software setup.</p>
+
+      <div class="steps">
+        <div class="step">
+          <span class="step-num">1</span>
+          <div>
+            <h3>Print the enclosure</h3>
+            <p>Print the case parts in PLA. Optionally sand, prime, and paint for a finished appliance look. The 3MF file is in the repo.</p>
+          </div>
+        </div>
+        <div class="step">
+          <span class="step-num">2</span>
+          <div>
+            <h3>Modify the popper</h3>
+            <p>Disassemble the popcorn popper. Rewire heater and fan. Remove the bimetallic thermostat strip. Drill and install the thermocouple.</p>
+          </div>
+        </div>
+        <div class="step">
+          <span class="step-num">3</span>
+          <div>
+            <h3>Wire and assemble</h3>
+            <p>Mount the PCB, Nextion display, power supply, and SSR in the case. Build the wire harnesses and connect everything.</p>
+          </div>
+        </div>
+        <div class="step">
+          <span class="step-num">4</span>
+          <div>
+            <h3>Flash and roast</h3>
+            <p>Upload firmware via USB or OTA. Load Nextion display firmware from SD card. Connect WiFi, create a profile, and go.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="build-photos">
+        <figure>
+          <img src="./images/IMG_6463.jpeg" alt="Inside the enclosure showing PCB, power supply, SSR, and wiring" loading="lazy">
+          <figcaption>Internals</figcaption>
+        </figure>
+        <figure>
+          <img src="./images/Roaster%20-%20Apart.jpeg" alt="Enclosure opened showing all internal components" loading="lazy">
+          <figcaption>Case open</figcaption>
+        </figure>
+        <figure>
+          <img src="./images/popper-mod-3.jpeg" alt="Popper disassembled showing heater and fan motor wiring" loading="lazy">
+          <figcaption>Popper wiring</figcaption>
+        </figure>
+        <figure>
+          <img src="./images/wiring-1.jpeg" alt="Power supply and solid-state relay mounted in the enclosure" loading="lazy">
+          <figcaption>PSU and SSR</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="software" class="section reveal">
+      <h2>Software</h2>
+      <p class="section-desc">The firmware runs on an Arduino Nano ESP32. It includes a touchscreen UI, web interface, and Artisan integration.</p>
+
+      <div class="features-list">
+        <div class="feature">
+          <h3>Roast profiles</h3>
+          <p>Define time / temperature / fan setpoints. The firmware interpolates between them during the roast. Profiles are stored on-device and editable from the browser.</p>
+        </div>
+        <div class="feature">
+          <h3>PID temperature control</h3>
+          <p>Closed-loop PID keeps the roasting chamber on target. Dual thermocouples monitor chamber and exhaust temperatures.</p>
+        </div>
+        <div class="feature">
+          <h3>Nextion touchscreen</h3>
+          <p>3.5" display shows real-time temps, profile progress, and settings. Start/stop roasts and edit profiles on the device.</p>
+        </div>
+        <div class="feature">
+          <h3>Web interface</h3>
+          <p>Profile editor, debug console, and live status at <code>roaster.local</code>. OTA firmware updates without opening the case.</p>
+        </div>
+        <div class="feature">
+          <h3>Artisan integration</h3>
+          <p>Streams roast data over WebSocket to <a href="https://artisan-scope.org">Artisan</a> for real-time curves, logging, and analysis. Config files included.</p>
+        </div>
+        <div class="feature">
+          <h3>REST API</h3>
+          <p>Full API for profiles, PID tuning, roast control, and system status. <a href="https://github.com/fredvisser/coffee-roaster/blob/main/roaster-firmware/openapi.yaml">OpenAPI spec</a> in the repo.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-alt safety-callout reveal">
+      <h2>Safety</h2>
+      <p class="section-desc">This project controls line voltage and high temperatures. The firmware has safety systems, but understand the risks before building.</p>
+      <div class="safety-items">
+        <div><strong>Over-temperature cutoff</strong> — heater shuts off if chamber temp exceeds safe limits.</div>
+        <div><strong>Sensor validation</strong> — thermocouple faults and implausible readings trigger error state.</div>
+        <div><strong>Fail-safe defaults</strong> — heater OFF, fan ON. Unknown states enter ERROR, not IDLE.</div>
+        <div><strong>Cooling lockout</strong> — can't skip cooling until chamber is below a safe threshold.</div>
+      </div>
+    </section>
+
+    <section id="parts" class="section reveal">
+      <h2>Parts list</h2>
+      <p class="section-desc">Everything needed for the build. Most parts ship from Amazon and AliExpress.</p>
+
+      <div class="parts-table-wrap">
+        <table class="parts-table">
+          <thead>
+            <tr><th>Part</th><th>Source</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>1200W Popcorn Popper</td><td><a href="https://www.amazon.com/gp/product/B091GGYCQW">Amazon</a></td></tr>
+            <tr><td>Arduino Nano ESP32</td><td><a href="https://www.amazon.com/dp/B0C947BHK5">Amazon</a></td></tr>
+            <tr><td>Nextion 3.5" Display</td><td><a href="https://www.aliexpress.us/item/3256803271061345.html">AliExpress</a> · <a href="https://www.amazon.com/gp/product/B0BBLB54XM">Amazon</a></td></tr>
+            <tr><td>Custom PCB (Rev I)</td><td>Eagle files in repo</td></tr>
+            <tr><td>24V Power Supply</td><td><a href="https://www.amazon.com/gp/product/B018RE4CWW">Amazon</a></td></tr>
+            <tr><td>DC-DC Buck Converter</td><td><a href="https://www.amazon.com/gp/product/B01MQGMOKI">Amazon</a></td></tr>
+            <tr><td>Solid-State Relay (SSR-40DA)</td><td><a href="https://www.aliexpress.us/item/2255800713623525.html">AliExpress</a></td></tr>
+            <tr><td>K-Type Thermocouple + MAX6675</td><td><a href="https://a.co/d/eH93XEv">Amazon</a></td></tr>
+            <tr><td>Motor Dimmer Module</td><td><a href="https://www.aliexpress.com/item/2251832615710334.html">AliExpress</a></td></tr>
+            <tr><td>Power Inlet Socket</td><td><a href="https://www.amazon.com/gp/product/B07PVP8CLT">Amazon</a></td></tr>
+            <tr><td>JST XH2.54 Connector Kit</td><td><a href="https://www.amazon.com/gp/product/B09DBGVX5C">Amazon</a></td></tr>
+            <tr><td>Silicone Wire (22ga + 16ga)</td><td><a href="https://www.aliexpress.us/item/2255800441309579.html">AliExpress</a></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section cta reveal">
+      <h2>Get started</h2>
+      <p>Clone the repo, print the case, order the PCB, and start building.</p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="https://github.com/fredvisser/coffee-roaster">View on GitHub</a>
+        <a class="btn btn-ghost" href="https://github.com/fredvisser/coffee-roaster/tree/main/roaster-firmware">Firmware docs</a>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <span>DIY Coffee Roaster — open source</span>
+    <nav>
+      <a href="https://github.com/fredvisser/coffee-roaster">GitHub</a>
+      <a href="https://artisan-scope.org">Artisan</a>
+      <a href="https://cad.onshape.com/documents/ee717da6534241d41072245e/w/709854c2acbee5e38b890bec/e/be6e653fbb47fc1f3247d478?renderMode=0&uiState=65b72c2e65c4bf7511b63553">CAD</a>
+    </nav>
+  </footer>
 
   <script src="./site.js"></script>
 </body>
