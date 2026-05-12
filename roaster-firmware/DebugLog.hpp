@@ -17,7 +17,7 @@ enum LogLevel {
 struct LogEntry {
   unsigned long timestamp;
   LogLevel level;
-  char message[80];  // Fixed size for predictable memory usage
+  char message[160];  // Keep bounded but large enough for HTTP/API diagnostics
 };
 
 // Ring buffer for log entries
@@ -35,8 +35,8 @@ public:
   void log(LogLevel level, const char* message) {
     logs[writeIndex].timestamp = millis();
     logs[writeIndex].level = level;
-    strncpy(logs[writeIndex].message, message, 79);
-    logs[writeIndex].message[79] = '\0';  // Ensure null termination
+    strncpy(logs[writeIndex].message, message, 159);
+    logs[writeIndex].message[159] = '\0';  // Ensure null termination
     
     writeIndex = (writeIndex + 1) % MAX_LOGS;
     if (count < MAX_LOGS) count++;
@@ -84,7 +84,7 @@ public:
       json += "\"message\":\"";
       
       // Escape special characters in message
-      for (int j = 0; j < 80 && logs[index].message[j] != '\0'; j++) {
+      for (int j = 0; j < 160 && logs[index].message[j] != '\0'; j++) {
         char c = logs[index].message[j];
         if (c == '"' || c == '\\') json += '\\';
         json += c;
@@ -120,10 +120,10 @@ DebugLogger debugLogger;
 
 // Formatted logging helpers
 void logf(LogLevel level, const char* format, ...) {
-  char buffer[80];
+  char buffer[160];
   va_list args;
   va_start(args, format);
-  vsnprintf(buffer, 80, format, args);
+  vsnprintf(buffer, 160, format, args);
   va_end(args);
   debugLogger.log(level, buffer);
 }

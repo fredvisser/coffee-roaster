@@ -1578,6 +1578,7 @@ static bool systemLinkCreatePhaseSteps(const String &resultId, const SystemLinkR
 
     JsonObject step = steps.createNestedObject();
     step["resultId"] = resultId;
+    step["workspace"] = systemLinkConfig.workspaceId;
     step["name"] = stepSpecs[index].name;
     step["stepType"] = stepSpecs[index].stepType;
     step["totalTimeInSeconds"] = stepSpecs[index].seconds;
@@ -1611,15 +1612,43 @@ static bool systemLinkCreatePhaseSteps(const String &resultId, const SystemLinkR
 
   String responseBody;
   int statusCode = -1;
-  bool ok = systemLinkPostJson(systemLinkBaseUrl("/nitestmonitor/v2/steps"), body, responseBody, statusCode);
-  if (!ok) {
-    LOG_ERRORF("SystemLink: Step publish failed (status=%d, heap=%u): %s",
-               statusCode, static_cast<unsigned>(ESP.getFreeHeap()), responseBody.c_str());
-    return false;
+  static const uint8_t MAX_ATTEMPTS = 3;
+  for (uint8_t attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    responseBody = "";
+    statusCode = -1;
+
+    bool ok = systemLinkPostJson(systemLinkBaseUrl("/nitestmonitor/v2/steps"), body, responseBody, statusCode);
+    if (ok) {
+      LOG_INFOF("SystemLink: Published %u roast phase steps (status=%d, attempt=%u)",
+                static_cast<unsigned>(steps.size()),
+                statusCode,
+                static_cast<unsigned>(attempt));
+      return true;
+    }
+
+    String apiError;
+    bool hasApiError = systemLinkResponseContainsError(responseBody, apiError);
+    LOG_ERRORF("SystemLink: Step publish failed (status=%d, attempt=%u, heap=%u)",
+               statusCode,
+               static_cast<unsigned>(attempt),
+               static_cast<unsigned>(ESP.getFreeHeap()));
+    if (hasApiError && apiError.length() > 0) {
+      LOG_ERRORF("SystemLink: Step publish API error: %s", apiError.c_str());
+    }
+    if (responseBody.length() > 0) {
+      String snippet = responseBody.substring(0, 120);
+      LOG_ERRORF("SystemLink: Step publish response: %s", snippet.c_str());
+    }
+
+    if (statusCode >= 400 && statusCode < 500 && statusCode != 429) {
+      break;
+    }
+
+    delay(300);
+    esp_task_wdt_reset();
   }
 
-  LOG_INFOF("SystemLink: Published %u roast phase steps (status=%d)", static_cast<unsigned>(steps.size()), statusCode);
-  return true;
+  return false;
 }
 
 static bool systemLinkCreateResult(SystemLinkRoastSession &session, const String &fileId, String &resultId) {
@@ -1738,6 +1767,12 @@ static void processPendingSystemLinkPublish() {
   systemLinkPersistBreadcrumb(systemLinkPublishSession, false, true, "creating_result");
   String resultId;
   bool published = systemLinkCreateResult(systemLinkPublishSession, fileId, resultId);
+  bool stepsPublished = true;
+  if (published && resultId.length() > 0) {
+    systemLinkUpdatePublishStatus("creating_steps");
+    systemLinkPersistBreadcrumb(systemLinkPublishSession, false, true, "creating_steps");
+    stepsPublished = systemLinkCreatePhaseSteps(resultId, systemLinkPublishSession);
+  }
   bool highRatePublished = true;
   String highRateTableId;
   if (published && resultId.length() > 0) {
@@ -1747,11 +1782,6 @@ static void processPendingSystemLinkPublish() {
     // Allow TCP stack to clean up connections from high-rate chunk uploads
     delay(500);
     esp_task_wdt_reset();
-  }
-  bool stepsPublished = true;
-  if (published && resultId.length() > 0) {
-    systemLinkUpdatePublishStatus("creating_steps");
-    stepsPublished = systemLinkCreatePhaseSteps(resultId, systemLinkPublishSession);
   }
 
   HighRateTraceSample *completedPublishBuffer = nullptr;
@@ -1771,7 +1801,9 @@ static void processPendingSystemLinkPublish() {
   }
 
   if (published) {
-    if (!highRatePublished) {
+    if (!highRatePublished && !stepsPublished) {
+      systemLinkUpdatePublishStatus("published_high_rate_and_steps_failed");
+    } else if (!highRatePublished) {
       systemLinkUpdatePublishStatus("published_high_rate_failed");
     } else {
       systemLinkUpdatePublishStatus(stepsPublished ? "published" : "published_steps_failed");
