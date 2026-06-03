@@ -4,12 +4,14 @@
 #include "Types.hpp"
 #include <WiFi.h>
 #include <esp_task_wdt.h>
+#include <esp_heap_caps.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <ElegantOTA.h>  // v3.1.7+ with async mode enabled for ESPAsyncWebServer compatibility
 #include "DebugLog.hpp"
+#include "DisplayAdapter.hpp"
 #include "PIDController.hpp"
 #include "StepResponseTuner.hpp"
 #include "PIDRuntimeController.hpp"
@@ -26,6 +28,209 @@ String json;
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
 AsyncWebSocket ws("/WebSocket");
+bool webSocketInitialized = false;
+bool networkServicesInitialized = false;
+bool mdnsInitialized = false;
+unsigned long mdnsRetryAtMs = 0;
+bool wifiConnectAttemptActive = false;
+unsigned long wifiConnectAttemptStartedAtMs = 0;
+String lastReportedNetworkAddress;
+String lastRequestedWifiSsid;
+unsigned long lastWifiVisibilityScanAtMs = 0;
+bool wifiEventLoggingInitialized = false;
+bool wifiTargetResolved = false;
+uint8_t wifiTargetBssid[6] = {0, 0, 0, 0, 0, 0};
+int32_t wifiTargetChannel = 0;
+
+constexpr size_t MdnsMinInternalFreeHeap = 16 * 1024;
+constexpr unsigned long MdnsStartupDelayMs = 3000;
+constexpr unsigned long MdnsRetryDelayMs = 10000;
+constexpr unsigned long WifiConnectAttemptWindowMs = 20000;
+constexpr unsigned long WifiVisibilityScanCooldownMs = 30000;
+
+String trimWifiField(const String &value) {
+  String trimmed = value;
+  trimmed.trim();
+  return trimmed;
+}
+
+WifiCredentials normalizeWifiCredentials(const WifiCredentials &wifiCredentials) {
+  WifiCredentials normalized = wifiCredentials;
+  normalized.ssid = trimWifiField(normalized.ssid);
+  return normalized;
+}
+
+const char *wifiStatusName(wl_status_t status) {
+  switch (status) {
+  case WL_NO_SHIELD:
+    return "WL_NO_SHIELD";
+  case WL_IDLE_STATUS:
+    return "WL_IDLE_STATUS";
+  case WL_NO_SSID_AVAIL:
+    return "WL_NO_SSID_AVAIL";
+  case WL_SCAN_COMPLETED:
+    return "WL_SCAN_COMPLETED";
+  case WL_CONNECTED:
+    return "WL_CONNECTED";
+  case WL_CONNECT_FAILED:
+    return "WL_CONNECT_FAILED";
+  case WL_CONNECTION_LOST:
+    return "WL_CONNECTION_LOST";
+  case WL_DISCONNECTED:
+    return "WL_DISCONNECTED";
+  default:
+    return "WL_UNKNOWN";
+  }
+}
+
+void logWifiVisibilityForSsid(const String &targetSsid) {
+  unsigned long now = millis();
+  if (targetSsid.length() == 0 || now - lastWifiVisibilityScanAtMs < WifiVisibilityScanCooldownMs) {
+    return;
+  }
+
+  lastWifiVisibilityScanAtMs = now;
+  LOG_WARNF("Scanning for target SSID '%s' after WL_NO_SSID_AVAIL", targetSsid.c_str());
+
+  int networkCount = WiFi.scanNetworks(false, true);
+  if (networkCount < 0) {
+    LOG_WARNF("WiFi scan failed with code %d", networkCount);
+    return;
+  }
+
+  bool foundTarget = false;
+  LOG_INFOF("WiFi scan found %d networks", networkCount);
+
+  const int maxNetworksToLog = 8;
+  for (int index = 0; index < networkCount; ++index) {
+    String visibleSsid = WiFi.SSID(index);
+    int32_t rssi = WiFi.RSSI(index);
+    int32_t channel = WiFi.channel(index);
+    wifi_auth_mode_t encryption = WiFi.encryptionType(index);
+
+    if (visibleSsid == targetSsid) {
+      foundTarget = true;
+      LOG_INFOF("Target SSID visible: '%s' RSSI=%d channel=%d auth=%d", visibleSsid.c_str(), static_cast<int>(rssi), static_cast<int>(channel), static_cast<int>(encryption));
+    } else if (index < maxNetworksToLog) {
+      LOG_INFOF("Visible SSID[%d]: '%s' RSSI=%d channel=%d auth=%d", index, visibleSsid.c_str(), static_cast<int>(rssi), static_cast<int>(channel), static_cast<int>(encryption));
+    }
+  }
+
+  if (!foundTarget) {
+    LOG_WARNF("Target SSID '%s' not visible in scan results", targetSsid.c_str());
+  }
+
+  WiFi.scanDelete();
+}
+
+bool resolveWifiTarget(const String &targetSsid) {
+  if (targetSsid.length() == 0) {
+    wifiTargetResolved = false;
+    wifiTargetChannel = 0;
+    return false;
+  }
+
+  LOG_INFOF("Scanning for WiFi target '%s' before connect", targetSsid.c_str());
+  int networkCount = WiFi.scanNetworks(false, true);
+  if (networkCount < 0) {
+    LOG_WARNF("Pre-connect WiFi scan failed with code %d", networkCount);
+    wifiTargetResolved = false;
+    wifiTargetChannel = 0;
+    return false;
+  }
+
+  int bestIndex = -1;
+  int32_t bestRssi = INT32_MIN;
+  for (int index = 0; index < networkCount; ++index) {
+    String visibleSsid = WiFi.SSID(index);
+    if (visibleSsid != targetSsid) {
+      continue;
+    }
+
+    int32_t rssi = WiFi.RSSI(index);
+    int32_t channel = WiFi.channel(index);
+    wifi_auth_mode_t encryption = WiFi.encryptionType(index);
+    LOG_INFOF("Matching SSID[%d]: '%s' RSSI=%d channel=%d auth=%d", index, visibleSsid.c_str(), static_cast<int>(rssi), static_cast<int>(channel), static_cast<int>(encryption));
+
+    if (bestIndex < 0 || rssi > bestRssi) {
+      bestIndex = index;
+      bestRssi = rssi;
+    }
+  }
+
+  if (bestIndex < 0) {
+    LOG_WARNF("Requested SSID '%s' was not found in pre-connect scan", targetSsid.c_str());
+    wifiTargetResolved = false;
+    wifiTargetChannel = 0;
+    WiFi.scanDelete();
+    return false;
+  }
+
+  uint8_t *bssid = WiFi.BSSID(bestIndex);
+  if (bssid == nullptr) {
+    LOG_WARNF("Requested SSID '%s' matched but BSSID was unavailable", targetSsid.c_str());
+    wifiTargetResolved = false;
+    wifiTargetChannel = 0;
+    WiFi.scanDelete();
+    return false;
+  }
+
+  memcpy(wifiTargetBssid, bssid, sizeof(wifiTargetBssid));
+  wifiTargetChannel = WiFi.channel(bestIndex);
+  wifiTargetResolved = true;
+  LOG_INFOF(
+    "Resolved WiFi target '%s' to BSSID %02X:%02X:%02X:%02X:%02X:%02X channel=%d RSSI=%d",
+    targetSsid.c_str(),
+    wifiTargetBssid[0], wifiTargetBssid[1], wifiTargetBssid[2],
+    wifiTargetBssid[3], wifiTargetBssid[4], wifiTargetBssid[5],
+    static_cast<int>(wifiTargetChannel),
+    static_cast<int>(WiFi.RSSI(bestIndex))
+  );
+  WiFi.scanDelete();
+  return true;
+}
+
+void updateDisplayedNetworkAddress();
+extern WifiCredentials wifiCredentials;
+extern Preferences preferences;
+
+void ensureWifiEventLogging() {
+  if (wifiEventLoggingInitialized) {
+    return;
+  }
+
+  WiFi.onEvent([](arduino_event_id_t event, arduino_event_info_t info) {
+    switch (event) {
+    case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+      LOG_INFOF("WiFi event: STA connected on channel %u auth=%d", static_cast<unsigned int>(info.wifi_sta_connected.channel), static_cast<int>(info.wifi_sta_connected.authmode));
+      break;
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      LOG_WARNF(
+        "WiFi event: STA disconnected reason=%s (%d)",
+        WiFi.disconnectReasonName(static_cast<wifi_err_reason_t>(info.wifi_sta_disconnected.reason)),
+        static_cast<int>(info.wifi_sta_disconnected.reason)
+      );
+      break;
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      LOG_INFOF("WiFi event: STA got IP %s", WiFi.localIP().toString().c_str());
+      updateDisplayedNetworkAddress();
+      preferences.putString("ssid", wifiCredentials.ssid);
+      preferences.putString("password", wifiCredentials.password);
+      break;
+    case ARDUINO_EVENT_WIFI_SCAN_DONE:
+      LOG_INFOF(
+        "WiFi event: scan done status=%u results=%u",
+        static_cast<unsigned int>(info.wifi_scan_done.status),
+        static_cast<unsigned int>(info.wifi_scan_done.number)
+      );
+      break;
+    default:
+      break;
+    }
+  });
+
+  wifiEventLoggingInitialized = true;
+}
 
 // External variables from main firmware
 extern double currentTemp;
@@ -42,11 +247,11 @@ extern double kp;
 extern double ki;
 extern double kd;
 extern RoasterState roasterState;  // Defined in Types.hpp
+extern WifiCredentials wifiCredentials;
 extern Profiles profile;  // Profile configuration
 extern ProfileManager profileManager;
 extern Preferences preferences; // NVS preferences from main firmware
 extern uint8_t profileBuffer[200];
-extern EasyNex myNex;
 extern StepResponseTuner stepTuner;
 extern PIDRuntimeController pidRuntimeController;
 extern PIDValidationSession pidValidation;
@@ -65,17 +270,17 @@ void updateNextionActiveProfile() {
     String activeName;
     if (activeId.length() > 0) profileManager.loadProfileMeta(activeId, activeName);
     
-    myNex.writeStr("page ProfileActive");
+  displayShowScreen(DisplayScreen::ProfileActive);
     delay(100);
     
     if (activeName.length() > 0) {
         String displayName = activeName;
-        myNex.writeStr("ProfileActive.t1.txt", displayName);
+    displaySetActiveProfileLabel(displayName);
     }
     
     // Update global setpoint variable on Nextion
     uint32_t finalTemp = profile.getFinalTargetTemp();
-    myNex.writeNum("globals.setTempNum.val", finalTemp);
+  displaySetFinalTargetTemp(finalTemp);
 
     plotProfileOnWaveform();
 }
@@ -279,18 +484,138 @@ void broadcastLogs(int maxEntries = 10) {
 }
 
 void initWebSocket() {
+  if (webSocketInitialized) {
+    return;
+  }
+
   ws.onEvent(onEvent);
   server.addHandler(&ws);
+  webSocketInitialized = true;
+}
+
+String networkAccessAddress() {
+  if (mdnsInitialized) {
+    return "roaster-dev.local";
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    return WiFi.localIP().toString();
+  }
+
+  if (wifiConnectAttemptActive) {
+    return "Connecting...";
+  }
+
+  return "No WiFi";
+}
+
+void updateDisplayedNetworkAddress() {
+  String currentAddress = networkAccessAddress();
+  if (currentAddress == lastReportedNetworkAddress) {
+    return;
+  }
+
+  displaySetWifiIp(currentAddress);
+  lastReportedNetworkAddress = currentAddress;
+}
+
+bool mdnsHasSufficientInternalHeap(size_t &freeInternalHeap, size_t &largestInternalBlock) {
+  freeInternalHeap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  largestInternalBlock = 0;
+
+  return freeInternalHeap >= MdnsMinInternalFreeHeap;
+}
+
+void tryStartMdns(bool verboseLogging) {
+  if (mdnsInitialized || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  unsigned long now = millis();
+  if (now < MdnsStartupDelayMs || now < mdnsRetryAtMs) {
+    return;
+  }
+
+  size_t freeInternalHeap = 0;
+  size_t largestInternalBlock = 0;
+  if (!mdnsHasSufficientInternalHeap(freeInternalHeap, largestInternalBlock)) {
+    if (verboseLogging) {
+      LOG_WARNF("mDNS delayed: internalFree=%u largestInternal=%u", static_cast<unsigned int>(freeInternalHeap), static_cast<unsigned int>(largestInternalBlock));
+    }
+    mdnsRetryAtMs = now + MdnsRetryDelayMs;
+    return;
+  }
+
+  if (!MDNS.begin("roaster-dev")) {
+    if (verboseLogging) {
+      LOG_WARNF("mDNS start failed: internalFree=%u largestInternal=%u", static_cast<unsigned int>(freeInternalHeap), static_cast<unsigned int>(largestInternalBlock));
+    }
+    mdnsRetryAtMs = now + MdnsRetryDelayMs;
+    return;
+  }
+
+  mdnsInitialized = true;
+  LOG_INFOF("mDNS responder started at roaster-dev.local (internalFree=%u largestInternal=%u)", static_cast<unsigned int>(freeInternalHeap), static_cast<unsigned int>(largestInternalBlock));
+}
+
+void updateWifiConnectAttemptState() {
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnectAttemptActive = false;
+    return;
+  }
+
+  if (wifiConnectAttemptActive && millis() - wifiConnectAttemptStartedAtMs >= WifiConnectAttemptWindowMs) {
+    wl_status_t currentStatus = WiFi.status();
+    LOG_WARNF("WiFi connect window expired with status %s (%d)", wifiStatusName(currentStatus), static_cast<int>(currentStatus));
+    if (currentStatus == WL_NO_SSID_AVAIL) {
+      logWifiVisibilityForSsid(lastRequestedWifiSsid);
+    }
+    wifiConnectAttemptActive = false;
+  }
+}
+
+bool wifiConnectAttemptInProgress() {
+  updateWifiConnectAttemptState();
+  return wifiConnectAttemptActive;
+}
+
+bool beginWifiConnection(const WifiCredentials& wifiCredentials, bool forceReset) {
+  WifiCredentials normalizedCredentials = normalizeWifiCredentials(wifiCredentials);
+  ensureWifiEventLogging();
+  updateWifiConnectAttemptState();
+
+  if (!forceReset && wifiConnectAttemptActive) {
+    return false;
+  }
+
+  if (normalizedCredentials.ssid.length() == 0) {
+    LOG_WARN("WiFi connect requested with empty SSID after normalization");
+    wifiConnectAttemptActive = false;
+    return false;
+  }
+
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(false);
+
+  wifiConnectAttemptActive = true;
+  wifiConnectAttemptStartedAtMs = millis();
+  lastRequestedWifiSsid = normalizedCredentials.ssid;
+  LOG_INFOF("Starting WiFi connect: ssidLen=%u passwordLen=%u", static_cast<unsigned int>(normalizedCredentials.ssid.length()), static_cast<unsigned int>(normalizedCredentials.password.length()));
+  WiFi.begin(normalizedCredentials.ssid.c_str(), normalizedCredentials.password.c_str());
+  return true;
 }
 
 String initializeWifi(const WifiCredentials& wifiCredentials) {
-  if (wifiCredentials.ssid.length() == 0) {
+  WifiCredentials normalizedCredentials = normalizeWifiCredentials(wifiCredentials);
+
+  if (normalizedCredentials.ssid.length() == 0) {
     Serial.println("No WiFi credentials - skipping WiFi setup");
     return "No WiFi";
   }
 
-  // Connect to Wi-Fi
-  WiFi.begin(wifiCredentials.ssid, wifiCredentials.password);
+  beginWifiConnection(normalizedCredentials, true);
   int attempts = 0;
   // Reduced blocking wait to 3 seconds to allow faster boot
   while (WiFi.status() != WL_CONNECTED && attempts < 3) {
@@ -299,6 +624,8 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     Serial.println("Connecting to WiFi..");
     attempts++;
   }
+
+  updateWifiConnectAttemptState();
   
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi not connected yet - continuing boot (will retry in background)");
@@ -306,14 +633,20 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     Serial.println(WiFi.localIP());
   }
 
-  // Initialize mDNS regardless of current connection state (it might connect later)
-  if (!MDNS.begin("roaster")) {
-    Serial.println("Error setting up MDNS responder!");
-  } else {
-    Serial.println("mDNS responder started - device accessible at roaster.local");
+  if (WiFi.status() == WL_CONNECTED) {
+    mdnsRetryAtMs = millis() + MdnsStartupDelayMs;
+    tryStartMdns(true);
   }
 
+  updateDisplayedNetworkAddress();
+
   initWebSocket();
+
+  if (networkServicesInitialized) {
+    return networkAccessAddress();
+  }
+
+  networkServicesInitialized = true;
 
   // Route for root / web page
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -325,22 +658,37 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Roaster Links</title>
   <style>
-    body { font-family: Arial, sans-serif; background: #0d1117; color: #c9d1d9; margin: 0; padding: 24px; }
+    body { font-family: 'Segoe UI', Inter, -apple-system, sans-serif; background: #333333; color: #FFFFFF; margin: 0; padding: 24px; }
     .page { max-width: 960px; margin: 0 auto; }
-    .topnav { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 auto 20px; padding: 14px; background: #161b22; border: 1px solid #30363d; border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); }
-    .topnav a { display: inline-flex; align-items: center; justify-content: center; min-width: 120px; padding: 10px 14px; border-radius: 999px; background: #21262d; color: #c9d1d9; text-decoration: none; font-weight: 600; }
-    .topnav a.active { background: linear-gradient(135deg, #1f6feb, #58a6ff); color: #fff; }
-    .card { max-width: 420px; margin: 0 auto; background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 24px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
-    h1 { margin-top: 0; font-size: 24px; color: #fff; }
-    p { color: #8b949e; }
-    a { display: block; margin: 12px 0; padding: 12px 16px; border-radius: 8px; text-decoration: none; color: #fff; font-weight: 600; text-align: center; background: linear-gradient(135deg, #1f6feb, #58a6ff); }
-    a.secondary { background: linear-gradient(135deg, #3fb950, #2ea043); }
-    a.tertiary { background: linear-gradient(135deg, #f0883e, #f85149); }
+    .topnav { max-width: 1100px; margin: 0 auto 20px; padding: 14px; display:flex; flex-wrap:wrap; gap:10px; background:#2D2D2D; border-bottom:2px solid #444; align-items:center; }
+    .topnav-logo { display:flex; align-items:center; gap:10px; margin-right:auto; font-weight:900; font-size:20px; color:#009944; text-transform:uppercase; letter-spacing:1px; }
+    .topnav a { display:inline-flex; align-items:center; justify-content:center; min-width:100px; padding:12px 16px; border-radius:0; background:#3A3A3A; color:#CCCCCC; text-decoration:none; font-weight:700; text-transform:uppercase; font-size:14px; transition: 0.2s; }
+    .topnav a:hover { background:#444444; color:#FFF; }
+    .topnav a.active { background:#009944; color:#fff; }
+    .card { max-width: 420px; margin: 0 auto; background: #2D2D2D; border: none; border-top: 4px solid #009944; padding: 24px; }
+    h1 { margin-top: 0; font-size: 24px; color: #fff; text-transform:uppercase; font-weight:900; }
+    p { color: #AAA; font-weight:bold; }
+    a { display: block; margin: 12px 0; padding: 14px 16px; text-decoration: none; color: #fff; font-weight: 700; text-transform:uppercase; text-align: center; background: #444444; }
+    a:hover { background: #555555; }
+    a.secondary { background: #009944; }
+    a.secondary:hover { background: #007A36; }
+    a.tertiary { background: #0050FF; }
+    a.tertiary:hover { background: #0030AA; }
   </style>
 </head>
 <body>
   <div class="page">
     <nav class="topnav">
+      <div class="topnav-logo">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4.5,10 C2.5,15 9,17 12,17 C15,17 21.5,15 19.5,10 C17.5,5 11,3 8,3 C5,3 6.5,5 4.5,10 Z" fill="#009944" />
+          <path d="M5,10 Q12,14 19,9" stroke="#2D2D2D" stroke-width="1.5" fill="none" />
+          <path d="M9,18 Q8,20 10,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
+          <path d="M12,19 Q11,21 13,23" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
+          <path d="M15,18 Q14,20 16,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
+        </svg>
+        Roaster Control
+      </div>
       <a class="active" href="/">Home</a>
       <a href="/console">Console</a>
       <a href="/profile">Profiles</a>
@@ -1636,43 +1984,61 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PID Workflow</title>
   <style>
-    body { font-family: Arial, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
-    .topnav { display: flex; flex-wrap: wrap; gap: 10px; max-width: 920px; margin: 0 auto 16px; padding: 14px; background: #161b22; border: 1px solid #30363d; border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); }
-    .topnav a { display: inline-flex; align-items: center; justify-content: center; min-width: 120px; padding: 10px 14px; border-radius: 999px; background: #21262d; color: #c9d1d9; text-decoration: none; font-weight: 600; }
-    .topnav a.active { background: linear-gradient(135deg, #1f6feb, #58a6ff); color: #fff; }
-    .page { max-width: 920px; margin: 0 auto; display: grid; gap: 16px; }
-    .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
-    h1, h2 { margin-top: 0; color: #fff; }
-    label { display: block; margin: 12px 0 4px; color: #8b949e; }
-    input { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #30363d; background: #0d1117; color: #c9d1d9; }
-    button { margin-top: 14px; width: 100%; padding: 12px; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', Inter, -apple-system, sans-serif; background: #333333; color: #FFFFFF; padding: 20px; line-height: 1.5; }
+    .topnav { max-width: 1100px; margin: 0 auto 20px; padding: 14px; display:flex; flex-wrap:wrap; gap:10px; background:#2D2D2D; border-bottom:2px solid #444; align-items:center; }
+    .topnav-logo { display:flex; align-items:center; gap:10px; margin-right:auto; font-weight:900; font-size:20px; color:#009944; text-transform:uppercase; letter-spacing:1px; }
+    .topnav a { display:inline-flex; align-items:center; justify-content:center; min-width:100px; padding:12px 16px; border-radius:0; background:#3A3A3A; color:#CCCCCC; text-decoration:none; font-weight:700; text-transform:uppercase; font-size:14px; transition: 0.2s; }
+    .topnav a:hover { background:#444444; color:#FFF; }
+    .topnav a.active { background:#009944; color:#fff; }
+    .page { max-width: 1100px; margin: 0 auto; display: grid; gap: 16px; }
+    .card { background: #2D2D2D; border: none; border-top: 4px solid #444; padding: 20px; }
+    h1, h2 { margin-top: 0; color: #fff; text-transform: uppercase; font-weight: 800; font-size: 20px; }
+    h1 { font-size: 24px; font-weight: 900; }
+    label { display: block; margin: 12px 0 4px; color: #AAA; font-size: 13px; font-weight: bold; text-transform: uppercase; }
+    input { width: 100%; padding: 12px; border-radius: 0; border: 1px solid #444; background: #222222; color: #FFF; font-weight: bold; }
+    input:focus { outline: none; border-color: #009944; }
+    button { margin-top: 14px; width: 100%; padding: 14px; border: none; border-radius: 0; font-weight: 700; cursor: pointer; text-transform: uppercase; transition: 0.2s; }
     button:disabled { opacity: 0.45; cursor: not-allowed; }
-    .primary { background: linear-gradient(135deg, #1f6feb, #58a6ff); color: #fff; }
-    .secondary { background: linear-gradient(135deg, #3fb950, #2ea043); color: #fff; }
-    .tertiary { background: linear-gradient(135deg, #f0883e, #f85149); color: #fff; }
-    .note { color: #8b949e; font-size: 13px; margin-top: 8px; }
+    .primary { background: #009944; color: #fff; }
+    .primary:hover { background: #007A36; }
+    .secondary { background: #444444; color: #fff; }
+    .secondary:hover { background: #555555; }
+    .tertiary { background: #CC0000; color: #fff; }
+    .tertiary:hover { background: #A30000; }
+    .note { color: #AAA; font-size: 13px; margin-top: 8px; font-weight: bold; }
     .row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
     .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
     .button-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 16px; }
-    .metric { background: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 12px; }
-    .metric-label { color: #8b949e; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
-    .metric-value { color: #fff; font-size: 20px; font-weight: 700; margin-top: 6px; }
-    .chart { margin-top: 16px; background: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 12px; }
+    .metric { background: #222222; border: 1px solid #444; padding: 12px; }
+    .metric-label { color: #AAA; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: bold; }
+    .metric-value { color: #fff; font-size: 20px; font-weight: 900; margin-top: 6px; }
+    .chart { margin-top: 16px; background: #222222; border: 1px solid #444; padding: 12px; }
     .chart canvas { width: 100%; height: 260px; display: block; }
-    .legend { display: flex; gap: 18px; margin-top: 10px; color: #8b949e; font-size: 12px; }
+    .legend { display: flex; gap: 18px; margin-top: 10px; color: #AAA; font-size: 12px; font-weight: bold; text-transform: uppercase; }
     .legend span { display: inline-flex; align-items: center; gap: 8px; }
-    .legend span::before { content: ""; width: 18px; height: 3px; border-radius: 999px; display: inline-block; }
-    .legend .actual::before { background: #58a6ff; }
-    .legend .setpoint::before { background: #f2cc60; }
+    .legend span::before { content: ""; width: 18px; height: 3px; border-radius: 0; display: inline-block; }
+    .legend .actual::before { background: #0050FF; }
+    .legend .setpoint::before { background: #FFFFFF; }
     table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-    th, td { text-align: left; padding: 10px; border-bottom: 1px solid #30363d; font-size: 14px; }
-    th { color: #8b949e; }
-    .small { font-size: 12px; color: #8b949e; }
+    th, td { text-align: left; padding: 10px; border-bottom: 1px solid #444; font-size: 14px; font-weight: bold; }
+    th { color: #AAA; text-transform: uppercase; font-size: 12px; }
+    .small { font-size: 12px; color: #AAA; }
   </style>
 </head>
 <body>
   <nav class="topnav">
+    <div class="topnav-logo">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M4.5,10 C2.5,15 9,17 12,17 C15,17 21.5,15 19.5,10 C17.5,5 11,3 8,3 C5,3 6.5,5 4.5,10 Z" fill="#009944" />
+        <path d="M5,10 Q12,14 19,9" stroke="#2D2D2D" stroke-width="1.5" fill="none" />
+        <path d="M9,18 Q8,20 10,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
+        <path d="M12,19 Q11,21 13,23" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
+        <path d="M15,18 Q14,20 16,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
+      </svg>
+      Roaster Control
+    </div>
     <a href="/">Home</a>
     <a href="/console">Console</a>
     <a href="/profile">Profiles</a>
@@ -2058,7 +2424,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 
   // Start server
   server.begin();
-  return "roaster.local";
+  return networkAccessAddress();
   // return WiFi.localIP().toString();
 }
 
@@ -2096,8 +2462,16 @@ void checkWiFiConnection(const WifiCredentials& wifiCredentials) {
   }
   
   lastCheck = millis();
+  updateWifiConnectAttemptState();
   
   if (WiFi.status() != WL_CONNECTED) {
+    updateDisplayedNetworkAddress();
+
+    if (wifiConnectAttemptInProgress()) {
+      DEBUG_PRINTLN("WiFi connection already in progress - waiting");
+      return;
+    }
+
     // If we've exceeded max attempts, reset counter but don't try this time
     // This creates a "cool down" period of one CHECK_INTERVAL
     if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
@@ -2111,10 +2485,12 @@ void checkWiFiConnection(const WifiCredentials& wifiCredentials) {
     
     // Non-blocking reconnect: just start the process and return
     // The next check (in 10s) will verify if it worked
-    WiFi.disconnect();
-    WiFi.begin(wifiCredentials.ssid.c_str(), wifiCredentials.password.c_str());
+    beginWifiConnection(wifiCredentials, false);
     
   } else {
+    tryStartMdns(reconnectAttempts > 0);
+    updateDisplayedNetworkAddress();
+
     if (reconnectAttempts > 0) {
       DEBUG_PRINTF("WiFi reconnected! IP: %s\n", WiFi.localIP().toString().c_str());
       reconnectAttempts = 0;

@@ -12,59 +12,71 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
   <title>Roast Profile Editor</title>
   <style>
     * { box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#0d1117; color:#c9d1d9; margin:0; padding:0; }
-    .topnav { max-width: 1100px; margin: 16px auto 0; padding: 14px; display:flex; flex-wrap:wrap; gap:10px; background:#161b22; border:1px solid #30363d; border-radius:14px; box-shadow:0 8px 24px rgba(0,0,0,0.2); }
-    .topnav a { display:inline-flex; align-items:center; justify-content:center; min-width:120px; padding:10px 14px; border-radius:999px; background:#21262d; color:#c9d1d9; text-decoration:none; font-weight:600; }
-    .topnav a.active { background:linear-gradient(135deg, #1f6feb, #58a6ff); color:#fff; }
+    body { font-family: 'Segoe UI', Inter, -apple-system, sans-serif; background:#333333; color:#FFFFFF; margin:0; padding:0; }
+    .topnav { max-width: 1100px; margin: 0 auto; padding: 14px; display:flex; flex-wrap:wrap; gap:10px; background:#2D2D2D; border-bottom:2px solid #444; align-items:center; }
+    .topnav-logo { display:flex; align-items:center; gap:10px; margin-right:auto; font-weight:900; font-size:20px; color:#009944; text-transform:uppercase; letter-spacing:1px; }
+    .topnav a { display:inline-flex; align-items:center; justify-content:center; min-width:100px; padding:12px 16px; border-radius:0; background:#3A3A3A; color:#CCCCCC; text-decoration:none; font-weight:700; text-transform:uppercase; font-size:14px; transition: 0.2s; }
+    .topnav a:hover { background:#444444; color:#FFF; }
+    .topnav a.active { background:#009944; color:#fff; }
     .container { max-width: 1100px; margin: 0 auto; padding: 16px; }
     .header { display:flex; flex-direction:column; gap:12px; margin-bottom:16px; }
-    h1 { font-size: 24px; color:#fff; margin:0; }
+    h1 { font-size: 24px; color:#fff; margin:0; text-transform:uppercase; font-weight:900; }
     .controls { display:flex; gap:8px; flex-wrap: wrap; align-items: center; }
-    .control-group { display:flex; gap:8px; padding:8px; background:#161b22; border-radius:6px; border:1px solid #30363d; flex-wrap: wrap; }
-    .control-group.primary { border-color:#1f6feb; }
-    .btn { padding:10px 14px; background:#21262d; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; cursor:pointer; font-size:14px; white-space:nowrap; transition: all 0.2s; }
-    .btn:hover { background:#30363d; border-color:#1f6feb; }
-    .btn:active { background:#30363d; }
-    .btn.primary { background:#1f6feb; border-color:#1f6feb; color:#fff; font-weight:600; }
-    .btn.primary:hover { background:#1a56db; }
-    .btn.danger { background:#da3633; border-color:#da3633; color:#fff; }
-    .btn.danger:hover { background:#b62324; }
-    .input { padding:10px; background:#0d1117; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; font-size:14px; min-width:150px; }
-    .input:focus { outline:none; border-color:#1f6feb; }
+    .control-group { display:flex; gap:8px; padding:12px; background:#2D2D2D; border:none; flex-wrap: wrap; align-items:center; }
+    .control-group.primary { border-top: 4px solid #009944; }
+    .btn { padding:14px 20px; background:#444444; border:none; border-radius:0; color:#FFFFFF; cursor:pointer; font-size:14px; font-weight:700; text-transform:uppercase; white-space:nowrap; transition: all 0.2s; }
+    .btn:hover { background:#555555; }
+    .btn:active { background:#222222; }
+    .btn.primary { background:#009944; color:#fff; }
+    .btn.primary:hover { background:#007A36; }
+    .btn.danger { background:#CC0000; color:#fff; }
+    .btn.danger:hover { background:#A30000; }
+    .input { padding:12px; background:#222222; border:1px solid #444; border-radius:0; color:#FFFFFF; font-size:14px; min-width:150px; font-weight:bold; }
+    .input:focus { outline:none; border-color:#009944; }
     .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:16px; }
-    .card { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:16px; }
-    .card h2 { margin:0 0 12px; font-size:18px; color:#fff; }
-    .graph-wrapper { position:relative; width:100%; overflow:visible; border:1px solid #21262d; border-radius:8px; background:#0d1117; padding:4px; }
+    .card { background:#2D2D2D; border:none; border-top:4px solid #444; padding:16px; }
+    .card h2 { margin:0 0 12px; font-size:18px; color:#fff; text-transform:uppercase; font-weight:800; }
+    .graph-wrapper { position:relative; width:100%; overflow:visible; border:1px solid #444; background:#222222; padding:4px; }
     .graph-wrapper svg { display:block; touch-action:none; }
     #graph { width:100%; min-height:300px; }
-    .axis { stroke:#30363d; stroke-width:1; }
-    .gridline { stroke:#21262d; stroke-width:1; }
-    .sp-line { stroke:#58a6ff; stroke-width:2; fill:none; }
-    .fan-line { stroke:#a371f7; stroke-width:2; fill:none; stroke-dasharray:5,3; }
-    .sp-point { fill:#3fb950; stroke:#fff; stroke-width:1; cursor:grab; touch-action:none; }
-    .sp-point.selected { fill:#f0883e; }
+    .axis { stroke:#555; stroke-width:1; }
+    .gridline { stroke:#333; stroke-width:1; }
+    .sp-line { stroke:#FFFFFF; stroke-width:3; fill:none; }
+    .fan-line { stroke:#0050FF; stroke-width:2; fill:none; stroke-dasharray:5,5; }
+    .sp-point { fill:#009944; stroke:#fff; stroke-width:2; cursor:grab; touch-action:none; }
+    .sp-point.selected { fill:#FFFFFF; stroke:#009944; }
     .sp-point:active { cursor:grabbing; }
-    .fan-point { fill:#a371f7; stroke:#fff; stroke-width:1; cursor:grab; touch-action:none; opacity:0.6; }
+    .fan-point { fill:#0050FF; stroke:#fff; stroke-width:1; cursor:grab; touch-action:none; opacity:0.6; }
     .fan-point:hover { opacity:1; }
-    .fan-point.selected { fill:#d29ff7; opacity:1; }
+    .fan-point.selected { fill:#FFFFFF; stroke:#0050FF; opacity:1; }
     .fan-point:active { cursor:grabbing; }
-    .legend { font-size:12px; color:#8b949e; margin-top:8px; display:flex; gap:20px; }
+    .legend { font-size:12px; color:#AAA; margin-top:8px; display:flex; gap:20px; font-weight:600; text-transform:uppercase; }
     .list { display:flex; flex-direction:column; gap:8px; }
     .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-    label { font-size:13px; color:#8b949e; }
-    input[type="checkbox"] { width:18px; height:18px; cursor:pointer; }
-    .spinner { display:inline-block; width:14px; height:14px; border:2px solid #30363d; border-top-color:#1f6feb; border-radius:50%; animation:spin 0.6s linear infinite; margin-left:8px; }
+    label { font-size:13px; color:#AAA; font-weight:700; text-transform:uppercase; min-width:70px; }
+    input[type="checkbox"] { width:20px; height:20px; cursor:pointer; accent-color:#009944; }
+    .spinner { display:inline-block; width:14px; height:14px; border:2px solid #555; border-top-color:#009944; border-radius:50%; animation:spin 0.6s linear infinite; margin-left:8px; }
     @keyframes spin { to { transform:rotate(360deg); } }
-    #debugInfo { position:fixed; top:10px; right:10px; background:rgba(0,0,0,0.95); border:1px solid #f85149; border-radius:6px; padding:12px; font-family:monospace; font-size:11px; max-width:450px; z-index:1000; display:none; max-height:600px; overflow-y:auto; pointer-events:none; }
+    #debugInfo { position:fixed; top:10px; right:10px; background:rgba(0,0,0,0.95); border:1px solid #CC0000; border-radius:0; padding:12px; font-family:monospace; font-size:11px; max-width:450px; z-index:1000; display:none; max-height:600px; overflow-y:auto; pointer-events:none; }
     #debugInfo.visible { display:block; }
-    #debugInfo pre { margin:0; color:#58a6ff; line-height:1.5; white-space:pre-wrap; word-wrap:break-word; }
-    #debugInfo strong { color:#f85149; display:block; margin-bottom:8px; font-size:13px; }
-    .debug-section { margin:10px 0; padding:8px; background:#161b22; border-radius:4px; border:1px solid #30363d; }
-    .debug-section h3 { margin:0 0 6px 0; color:#3fb950; font-size:11px; }
+    #debugInfo pre { margin:0; color:#FFFFFF; line-height:1.5; white-space:pre-wrap; word-wrap:break-word; }
+    #debugInfo strong { color:#CC0000; display:block; margin-bottom:8px; font-size:13px; text-transform:uppercase; }
+    .debug-section { margin:10px 0; padding:8px; background:#2D2D2D; border-radius:0; border:1px solid #444; }
+    .debug-section h3 { margin:0 0 6px 0; color:#009944; font-size:11px; text-transform:uppercase; }
   </style>
 </head>
 <body>
   <nav class="topnav">
+    <div class="topnav-logo">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M4.5,10 C2.5,15 9,17 12,17 C15,17 21.5,15 19.5,10 C17.5,5 11,3 8,3 C5,3 6.5,5 4.5,10 Z" fill="#009944" />
+        <path d="M5,10 Q12,14 19,9" stroke="#2D2D2D" stroke-width="1.5" fill="none" />
+        <path d="M9,18 Q8,20 10,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
+        <path d="M12,19 Q11,21 13,23" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
+        <path d="M15,18 Q14,20 16,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
+      </svg>
+      Roaster Control
+    </div>
     <a href="/">Home</a>
     <a href="/console">Console</a>
     <a class="active" href="/profile">Profiles</a>

@@ -1,5 +1,4 @@
 #include "Arduino.h"
-#include <EasyNextionLibrary.h>
 #include <max6675.h>
 #include <SimpleTimer.h>
 #include <PWMrelay.h>
@@ -26,7 +25,13 @@
 #endif
 
 #include "Types.hpp"
+#include "BoardConfig.hpp"
+#include "DisplayBackendConfig.hpp"
+#if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_NEXTION
+#include <EasyNextionLibrary.h>
+#endif
 #include "DebugLog.hpp"
+#include "DisplayAdapter.hpp"
 #include "PIDController.hpp"
 #include "Profiles.hpp"
 #include "ProfileManager.hpp"
@@ -42,11 +47,13 @@ Preferences preferences;
 #define HW_SERIAL Serial0
 
 // Pin definitions
-#define TC1_CS 10
-#define TC2_CS 9
-#define HEATER A0
-#define FAN A1
-#define BDCFAN D5
+constexpr int TC1_CS = BoardConfig::BeanThermocoupleChipSelectPin;
+constexpr int TC2_CS = BoardConfig::FanThermocoupleChipSelectPin;
+constexpr int THERMOCOUPLE_SCK = BoardConfig::ThermocoupleClockPin;
+constexpr int THERMOCOUPLE_MISO = BoardConfig::ThermocoupleDataPin;
+constexpr int HEATER = BoardConfig::HeaterPwmPin;
+constexpr int FAN = BoardConfig::FanPwmPin;
+constexpr int BDCFAN = BoardConfig::BdcFanServoPin;
 
 // PID settings and gains
 double kp = 8.0;
@@ -106,8 +113,8 @@ WifiCredentials wifiCredentials;
 // Roaster state variable (enum defined in Types.hpp)
 RoasterState roasterState = IDLE;
 
-MAX6675 thermocouple(SCK, TC1_CS, MISO);
-MAX6675 thermocoupleFan(SCK, TC2_CS, MISO);
+MAX6675 thermocouple(THERMOCOUPLE_SCK, TC1_CS, THERMOCOUPLE_MISO);
+MAX6675 thermocoupleFan(THERMOCOUPLE_SCK, TC2_CS, THERMOCOUPLE_MISO);
 PIDController heaterPID(&currentTemp, &setpointTemp, &heaterPidTrimVal, 0, 255, kp, ki, kd);
 StepResponseTuner stepTuner;
 bool autoValidateAfterCooling = false;
@@ -115,7 +122,9 @@ PIDRuntimeController pidRuntimeController;
 PIDValidationSession pidValidation;
 
 // Create a Nextion display connection
+#if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_NEXTION
 EasyNex myNex(HW_SERIAL);
+#endif
 
 uint8_t profileBuffer[200];
 int finalTempOverride = -1; // Nextion override for final target temp (F)
@@ -135,7 +144,7 @@ int readNextionWithRetry(const char *component, int retries = 2)
 {
   for (int i = 0; i < retries; i++)
   {
-    int value = myNex.readNumber(component);
+    int value = displayReadNumber(component);
     if (value != NEXTION_READ_ERROR)
     {
       return value;
@@ -348,8 +357,8 @@ void startRoastSession()
   roastStartedAtMs = 0;
   roasterState = START_ROAST;
   systemLinkMarkRoastStarted();
-  myNex.writeNum("globals.nextSetTempNum.val", setpointTemp);
-  myNex.writeStr("page Roasting");
+  displaySetTargetTemp((int)lround(setpointTemp));
+  displayShowScreen(DisplayScreen::Roasting);
 }
 
 bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent)
@@ -385,8 +394,131 @@ void enterCoolingState()
   bdcFan.writeMicroseconds(2000);
   bdcFanMs = 2000;
 
-  myNex.writeNum("globals.nextSetTempNum.val", COOLING_TARGET_TEMP);
-  myNex.writeStr("page Cooling");
+  displaySetTargetTemp(COOLING_TARGET_TEMP);
+  displayShowScreen(DisplayScreen::Cooling);
+}
+
+DisplayScreen displayScreenForCurrentState()
+{
+  switch (roasterState)
+  {
+  case START_ROAST:
+  case ROASTING:
+    return DisplayScreen::Roasting;
+  case COOLING:
+    return DisplayScreen::Cooling;
+  case ERROR:
+    return DisplayScreen::Error;
+  case IDLE:
+  case CALIBRATING:
+  default:
+    return DisplayScreen::Start;
+  }
+}
+
+bool cycleActiveProfile(int direction)
+{
+  if (roasterState != IDLE)
+  {
+    LOG_WARN("Ignoring profile change request while roaster is not idle");
+    return false;
+  }
+
+  std::vector<String> profileIds = getProfileIds();
+  if (profileIds.empty())
+  {
+    LOG_WARN("No profiles available to cycle");
+    return false;
+  }
+
+  String activeId = getActiveProfileId();
+  size_t activeIndex = 0;
+  bool foundActive = false;
+  for (size_t index = 0; index < profileIds.size(); ++index)
+  {
+    if (profileIds[index] == activeId)
+    {
+      activeIndex = index;
+      foundActive = true;
+      break;
+    }
+  }
+
+  if (!foundActive)
+  {
+    activeIndex = 0;
+  }
+
+  int nextIndex = static_cast<int>(activeIndex) + direction;
+  if (nextIndex < 0)
+  {
+    nextIndex = static_cast<int>(profileIds.size()) - 1;
+  }
+  else if (nextIndex >= static_cast<int>(profileIds.size()))
+  {
+    nextIndex = 0;
+  }
+
+  String nextId = profileIds[nextIndex];
+  if (!profileManager.loadProfile(nextId))
+  {
+    LOG_WARNF("Failed to load profile id=%s", nextId.c_str());
+    return false;
+  }
+
+  setActiveProfileId(nextId);
+  finalTempOverride = profile.getFinalTargetTemp();
+  displaySetFinalTargetTemp(getEffectiveFinalTargetTemp());
+  onProfileActivePageEnter();
+  displayShowScreen(DisplayScreen::ProfileActive);
+  LOG_INFOF("Cycled active profile to id=%s", nextId.c_str());
+  return true;
+}
+
+void handleDisplayAction(DisplayAction action)
+{
+  switch (action)
+  {
+  case DisplayAction::StartRoast:
+    trigger0();
+    break;
+  case DisplayAction::OpenNetwork:
+    displayShowScreen(DisplayScreen::Network);
+    break;
+  case DisplayAction::StopRoast:
+    trigger1();
+    break;
+  case DisplayAction::StopCooling:
+    trigger2();
+    break;
+  case DisplayAction::ApplyWifi:
+    trigger3();
+    break;
+  case DisplayAction::OpenActiveProfile:
+    trigger4();
+    break;
+  case DisplayAction::PreviousProfile:
+    cycleActiveProfile(-1);
+    break;
+  case DisplayAction::NextProfile:
+    cycleActiveProfile(1);
+    break;
+  case DisplayAction::ReturnToStateScreen:
+    displayShowScreen(displayScreenForCurrentState());
+    break;
+  case DisplayAction::None:
+  default:
+    break;
+  }
+}
+
+void handleDisplayActions()
+{
+  DisplayAction action = DisplayAction::None;
+  while (displayPopAction(action))
+  {
+    handleDisplayAction(action);
+  }
 }
 
 void setup()
@@ -394,7 +526,7 @@ void setup()
   DEBUG_SERIALBEGIN(115200);
   delay(1000); // Give Serial Monitor time to connect
   Serial.println("\n\n--- ROASTER BOOTING ---");
-  myNex.begin(115200);
+  displayBegin(BoardConfig::DisplayBaudRate);
 
   // Set heater and fan control pins to output
   pinMode(HEATER, OUTPUT);
@@ -417,8 +549,8 @@ void setup()
 
   // Explicitly enable the pinMode for the SPI pins because the library doesn't appear to do this correctly when running on an ESP32
   pinMode(TC1_CS, OUTPUT);
-  pinMode(SCK, OUTPUT);
-  pinMode(MISO, INPUT);
+  pinMode(THERMOCOUPLE_SCK, OUTPUT);
+  pinMode(THERMOCOUPLE_MISO, INPUT);
 
   // Set output pins to safe state (LOW)
   digitalWrite(HEATER, LOW);
@@ -452,8 +584,6 @@ void setup()
   ki = preferences.getDouble("ki", 0.46);
   kd = preferences.getDouble("kd", 0.0);
   loadSystemLinkConfig();
-  initSystemLinkTagTask();
-  initSystemLinkPublishTask();
   pidRuntimeController.setFallbackGains(kp, ki, kd);
   pidRuntimeController.loadFromPreferences(preferences);
   pidScheduleConfigured = pidRuntimeController.isEnabled();
@@ -514,15 +644,17 @@ void setup()
   // Update Nextion display with current profile values
   // Send final target temp override (moved from reloadActiveProfile to avoid blocking)
   // If no override is set (-1), this will send the profile's default final target
-  LOG_INFOF("Original globals.setTempNum.val value is %dF", myNex.readNumber("globals.setTempNum.val"));
-  myNex.writeNum("globals.setTempNum.val", getEffectiveFinalTargetTemp());
+  LOG_INFOF("Original globals.setTempNum.val value is %dF", displayReadNumber("globals.setTempNum.val"));
+  displaySetFinalTargetTemp(getEffectiveFinalTargetTemp());
   LOG_INFOF("Set Nextion final target temp to %dF", getEffectiveFinalTargetTemp());
-  LOG_INFOF("Final globals.setTempNum.val value is %dF", myNex.readNumber("globals.setTempNum.val"));
+  LOG_INFOF("Final globals.setTempNum.val value is %dF", displayReadNumber("globals.setTempNum.val"));
 
-  myNex.writeStr("ConfigWifi.ip.txt", ipAddress);
-  myNex.writeStr("ConfigNav.rev.txt", VERSION);
+  displaySetWifiIp(ipAddress);
+  displaySetRevision(VERSION);
 
-  myNex.writeStr("page Start");
+  displayShowScreen(DisplayScreen::Start);
+  initSystemLinkTagTask();
+  initSystemLinkPublishTask();
   LOG_INFO("Setup complete - entering main loop");
 }
 
@@ -545,7 +677,8 @@ void loop()
 
   if (tickTimer.isReady())
   {
-    myNex.NextionListen();
+    displayTick();
+    handleDisplayActions();
     heaterRelay.tick();
     fanRelay.tick();
     wsCleanup();
@@ -594,8 +727,7 @@ void loop()
           systemLinkUpdateLastFault("sensor_failed");
           systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "sensor_failed");
           DEBUG_PRINTLN("EMERGENCY: Thermocouple failure detected!");
-          myNex.writeStr("page Error");
-          myNex.writeStr("Error.message.txt", "Sensor Failed");
+          displayShowErrorMessage("Sensor Failed");
         }
       }
       else
@@ -619,8 +751,7 @@ void loop()
           systemLinkUpdateLastFault("over_temperature");
           systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "over_temperature");
           DEBUG_PRINTLN("EMERGENCY: Thermal runaway detected!");
-          myNex.writeStr("page Error");
-          myNex.writeStr("Error.message.txt", "Over Temp");
+          displayShowErrorMessage("Over Temp");
         }
       }
     }
@@ -645,8 +776,7 @@ void loop()
           systemLinkUpdateLastFault("fan_over_temperature");
           systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "fan_over_temperature");
           DEBUG_PRINTLN("EMERGENCY: Fan/Exhaust Over Temp!");
-          myNex.writeStr("page Error");
-          myNex.writeStr("Error.message.txt", "Exhaust Over Temp");
+          displayShowErrorMessage("Exhaust Over Temp");
         }
       }
     }
@@ -767,17 +897,32 @@ void loop()
         setpointProgress = 0;
         LOG_INFOF("Roast complete at %.1fF - entering cooling phase", currentTemp);
       }
-      myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
-      myNex.writeNum("globals.nextSetTempNum.val", setpointTemp);
-      myNex.writeNum("globals.setpointFan.val", round(setpointFanSpeed * 100 / 255));
-      myNex.writeNum("globals.setpointProg.val", setpointProgress);
+
+      DisplayTelemetry telemetry;
+      telemetry.roasterState = roasterState;
+      telemetry.currentTempF = (int)currentTemp;
+      telemetry.targetTempF = (int)lround(setpointTemp);
+      telemetry.fanPercent = (int)round(setpointFanSpeed * 100 / 255);
+      telemetry.progressSeconds = setpointProgress;
+      telemetry.elapsedSeconds = roastStartedAtMs > 0 ? static_cast<int>((millis() - roastStartedAtMs) / 1000UL) : -1;
+      telemetry.heaterOutput = (int)lround(heaterOutputVal);
+      telemetry.bdcFanMicros = bdcFanMs;
+      telemetry.fanTempF = (int)lround(fanTemp);
+      displayUpdateTelemetry(telemetry);
       break;
     }
 
     case COOLING:
     {
       digitalWrite(HEATER, LOW);
-      myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
+
+      DisplayTelemetry telemetry;
+      telemetry.roasterState = roasterState;
+      telemetry.currentTempF = (int)currentTemp;
+      telemetry.targetTempF = COOLING_TARGET_TEMP;
+      telemetry.fanPercent = 100;
+      telemetry.bdcFanMicros = bdcFanMs;
+      displayUpdateTelemetry(telemetry);
 
       // Check for cooling timeout (30 minutes max)
       unsigned long coolingDuration = millis() - coolingStartTime;
@@ -792,7 +937,7 @@ void loop()
         digitalWrite(FAN, LOW);
         roasterState = IDLE;
         sendWsMessage("{ \"pushMessage\": \"endRoasting\" }");
-        myNex.writeStr("page Start");
+        displayShowScreen(DisplayScreen::Start);
         break;
       }
 
@@ -807,7 +952,7 @@ void loop()
 
         LOG_INFOF("Cooling complete at %.1fF - returning to IDLE", currentTemp);
         sendWsMessage("{ \"pushMessage\": \"endRoasting\" }");
-        myNex.writeStr("page Start");
+        displayShowScreen(DisplayScreen::Start);
 
         // Auto-validate after step-response tuning
         if (autoValidateAfterCooling) {
@@ -824,6 +969,7 @@ void loop()
     }
 
     case ERROR:
+    {
       finalizeValidationIfRunning(false, "error_state");
       // ERROR state: Keep system in safe mode until manual reset
       // Heater must stay OFF, cooling fan at safe speed
@@ -837,13 +983,19 @@ void loop()
       bdcFanMs = 1500;
 
       // Update display with current temperature
-      myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
+      DisplayTelemetry telemetry;
+      telemetry.roasterState = roasterState;
+      telemetry.currentTempF = (int)currentTemp;
+      telemetry.fanPercent = (int)round(200.0 * 100.0 / 255.0);
+      telemetry.bdcFanMicros = bdcFanMs;
+      displayUpdateTelemetry(telemetry);
 
       // ERROR state logged when entered, not every loop iteration
 
       // Only exit ERROR state through hardware reset
       // No automatic recovery to ensure user acknowledges the fault
       break;
+    }
 
     case CALIBRATING:
     {
@@ -884,9 +1036,14 @@ void loop()
       bdcFanMs = calibrationBdcValue;
 
       // Update UI
-      myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
       double calSetpoint = stepTuner.getSetpoint();
-      myNex.writeNum("globals.nextSetTempNum.val", (int)round(calSetpoint));
+      DisplayTelemetry telemetry;
+      telemetry.roasterState = roasterState;
+      telemetry.currentTempF = (int)currentTemp;
+      telemetry.targetTempF = (int)round(calSetpoint);
+      telemetry.fanPercent = (int)round(setpointFanSpeed * 100.0 / 255.0);
+      telemetry.bdcFanMicros = bdcFanMs;
+      displayUpdateTelemetry(telemetry);
       break;
     }
 
@@ -938,8 +1095,7 @@ void trigger0()
   
   if (spCount == 0) {
     LOG_ERROR("Cannot start roast - profile has no setpoints!");
-    myNex.writeStr("page Error");
-    myNex.writeStr("Error.message.txt", "No Profile");
+    displayShowErrorMessage("No Profile");
     return;
   }
   
@@ -975,18 +1131,21 @@ void trigger2()
   finalizeValidationIfRunning(false, "cooling_skipped");
   restoreValidationProfileIfNeeded();
   roasterState = IDLE;
-  myNex.writeStr("page Start");
+  displayShowScreen(DisplayScreen::Start);
 }
 
 void trigger3()
 { // Apply WiFi credentials
   // Update global WiFi credentials
-  wifiCredentials.ssid = myNex.readStr("ConfigWifi.ssid.txt");
-  wifiCredentials.password = myNex.readStr("ConfigWifi.password.txt");
-  myNex.writeStr("ConfigWifi.ip.txt", "Connecting...");
+  DisplayWifiFormState form = displayReadWifiFormState();
+  WifiCredentials requestedCredentials;
+  requestedCredentials.ssid = form.ssid;
+  requestedCredentials.password = form.password;
+  wifiCredentials = normalizeWifiCredentials(requestedCredentials);
+  displaySetWifiIp("Connecting...");
   String ip = initializeWifi(wifiCredentials);
-  myNex.writeStr("ConfigWifi.ip.txt", ip);
-  if (ip != "Failed to connect to WiFi")
+  displaySetWifiIp(ip);
+  if (WiFi.status() == WL_CONNECTED)
   {
     preferences.putString("ssid", wifiCredentials.ssid);
     preferences.putString("password", wifiCredentials.password);
@@ -997,5 +1156,5 @@ void trigger4()
 { // ProfileActive page button - plot current profile
   LOG_INFO("trigger4() called - ProfileActive plot button");
   onProfileActivePageEnter();
-  myNex.writeStr("page ProfileActive");
+  displayShowScreen(DisplayScreen::ProfileActive);
 }

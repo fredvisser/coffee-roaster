@@ -2,14 +2,16 @@
 # Coffee Roaster - Test Build & Upload Script
 # Compiles, uploads, and monitors tests on ESP32
 
-set -e
+set -eo pipefail
 
 # Configuration
-BOARD_FQBN="esp32:esp32:nano_nora"
+TARGET_BOARD="${ROASTER_TARGET_BOARD:-current}"
+DEFAULT_BOARD_FQBN="esp32:esp32:nano_nora"
+BOARD_FQBN="${BOARD_FQBN:-$DEFAULT_BOARD_FQBN}"
 SERIAL_PORT="${SERIAL_PORT:-auto}"
 BAUD_RATE=115200
 OTA_SCHEME="${OTA_SCHEME:-http}"
-OTA_HOST="${OTA_HOST:-roaster.local}"
+OTA_HOST="${OTA_HOST:-roaster-dev.local}"
 OTA_PORT="${OTA_PORT:-80}"
 OTA_USER="${OTA_USER:-}"
 OTA_PASS="${OTA_PASS:-}"
@@ -17,6 +19,24 @@ OTA_RESOLVED_HOST=""
 OTA_CACHE_FILE="${OTA_CACHE_FILE:-${TMPDIR:-/tmp}/coffee-roaster-ota-host.cache}"
 FIRMWARE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTS_DIR="$FIRMWARE_DIR/tests"
+
+BUILD_EXTRA_FLAGS="-DROASTER_TARGET_BOARD=ROASTER_BOARD_CURRENT -DROASTER_DISPLAY_BACKEND=ROASTER_DISPLAY_BACKEND_NEXTION"
+
+case "$TARGET_BOARD" in
+    jc4827w543c)
+        if [[ "$BOARD_FQBN" == "$DEFAULT_BOARD_FQBN" ]]; then
+            BOARD_FQBN="esp32:esp32:esp32s3:UploadSpeed=921600,USBMode=hwcdc,CDCOnBoot=cdc,MSCOnBoot=default,DFUOnBoot=default,UploadMode=default,CPUFreq=240,FlashMode=dio,FlashSize=4M,PartitionScheme=huge_app,DebugLevel=none,PSRAM=opi,LoopCore=1,EventsCore=1,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default"
+        fi
+        BUILD_EXTRA_FLAGS="-DROASTER_TARGET_BOARD=ROASTER_BOARD_JC4827W543C -DROASTER_DISPLAY_BACKEND=ROASTER_DISPLAY_BACKEND_LVGL"
+        ;;
+    current)
+        BUILD_EXTRA_FLAGS=""
+        ;;
+    *)
+        echo "Unknown ROASTER_TARGET_BOARD: $TARGET_BOARD" >&2
+        exit 1
+        ;;
+esac
 
 # Colors for output
 RED='\033[0;31m'
@@ -82,7 +102,15 @@ compile_sketch() {
     
     print_info "Compiling $sketch_name..."
     
-    if arduino-cli compile --fqbn "$BOARD_FQBN" "$sketch_path" 2>&1 | tee /tmp/compile.log; then
+    print_info "Target board: $TARGET_BOARD ($BOARD_FQBN)"
+
+    local build_args=(--fqbn "$BOARD_FQBN")
+    if [[ -n "$BUILD_EXTRA_FLAGS" ]]; then
+        build_args+=(--build-property "compiler.cpp.extra_flags=$BUILD_EXTRA_FLAGS")
+        build_args+=(--build-property "compiler.c.extra_flags=$BUILD_EXTRA_FLAGS")
+    fi
+
+    if arduino-cli compile "${build_args[@]}" "$sketch_path" 2>&1 | tee /tmp/compile.log; then
         print_success "$sketch_name compiled successfully"
         copy_build_artifacts "$sketch_path" "$sketch_name"
         return 0
@@ -131,7 +159,18 @@ upload_sketch() {
     
     print_info "Uploading $sketch_name to $SERIAL_PORT..."
     
-    if arduino-cli upload -p "$SERIAL_PORT" --fqbn "$BOARD_FQBN" "$sketch_path" 2>&1 | tee /tmp/upload.log; then
+    print_info "Target board: $TARGET_BOARD ($BOARD_FQBN)"
+
+    local upload_args=(-p "$SERIAL_PORT" --fqbn "$BOARD_FQBN")
+
+    local cache_dir="$HOME/Library/Caches/arduino/sketches"
+    local bin_file
+    bin_file=$(find "$cache_dir" -name "$sketch_name.ino.bin" -type f -mmin -10 2>/dev/null | head -1)
+    if [[ -n "$bin_file" ]] && [[ -f "$bin_file" ]]; then
+        upload_args+=(--build-path "$(dirname "$bin_file")")
+    fi
+
+    if arduino-cli upload "${upload_args[@]}" "$sketch_path" 2>&1 | tee /tmp/upload.log; then
         print_success "$sketch_name uploaded successfully"
         sleep 2  # Wait for board to reboot
         return 0
@@ -421,7 +460,7 @@ list_tests() {
     echo "Usage: $0 [1-8] [compile|upload|monitor|all]"
     echo "Example: $0 2 all     # Compile, upload, and monitor PID tests"
     echo "Example: $0 1 compile # Just compile main firmware"
-    echo "Example: OTA_HOST=roaster.local $0 1 ota        # Compile and upload main firmware over ElegantOTA"
+    echo "Example: OTA_HOST=roaster-dev.local $0 1 ota        # Compile and upload main firmware over ElegantOTA"
     echo ""
     echo "To run all unit tests (2-5,8): for i in 2 3 4 5 8; do $0 \$i all; done"
 }

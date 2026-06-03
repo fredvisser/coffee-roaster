@@ -14,7 +14,7 @@ ESP32-based coffee roaster control system with PID temperature control, dual fan
   - WiFi connectivity
   - WebSocket real-time monitoring
   - OTA firmware updates
-  - mDNS discovery (roaster.local)
+  - mDNS discovery (roaster-dev.local)
 - **Safety Systems**:
   - Thermal runaway protection
   - Over-temperature cutoff (500°F absolute, 460°F roasting)
@@ -127,7 +127,7 @@ After initial USB flash, firmware can be updated wirelessly without physical acc
 ### Accessing OTA Interface
 
 1. Connect to the same WiFi network as the roaster
-2. Navigate to: **`http://roaster.local/update`**
+2. Navigate to: **`http://roaster-dev.local/update`**
    - Alternative: Use device IP address if mDNS doesn't work
 
 ### Uploading New Firmware
@@ -137,7 +137,7 @@ After initial USB flash, firmware can be updated wirelessly without physical acc
    ./run_tests.sh 1 compile
    ```
 
-2. **Access OTA interface** at `http://roaster.local/update`
+2. **Access OTA interface** at `http://roaster-dev.local/update`
 
 3. **Upload firmware**:
    - Click "Choose File" and select `build/roaster-firmware.bin`
@@ -212,7 +212,7 @@ See `tests/README.md` for complete testing documentation.
 
 ## Web Profile Editor
 
-- Access at: `http://roaster.local/profile`
+- Access at: `http://roaster-dev.local/profile`
 - Features:
   - Drag-and-drop points on an interactive graph (time vs temperature)
   - Up to 10 setpoints, each with time (seconds), temperature (°F), fan (%)

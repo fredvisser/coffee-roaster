@@ -76,6 +76,10 @@ LIBRARIES=(
     "ElegantOTA@3.1.7"
     "PWMrelay"
     "ArduinoJson"
+    "lvgl"
+    "GFX Library for Arduino"
+    "Dev Device Pins"
+    "TAMC_GT911"
 )
 
 for lib in "${LIBRARIES[@]}"; do
@@ -163,6 +167,8 @@ echo ""
 echo "Next steps:"
 echo "1. Compile firmware: arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/roaster-firmware.ino"
 echo "2. Upload to device: arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora roaster-firmware/roaster-firmware.ino"
+echo "3. Build for JC4827W543C: ROASTER_TARGET_BOARD=jc4827w543c ./run_tests.sh 1 compile"
+echo "   Uses ESP32S3 Dev Module with: USB CDC on boot enabled, Hardware CDC + JTAG, DIO 80MHz, 4MB flash, Huge APP, OPI PSRAM, 240MHz WiFi, Core 1 loop/events"
 echo ""
 echo "For OTA updates after initial flash, see OTA_SETUP.md"
 echo ""

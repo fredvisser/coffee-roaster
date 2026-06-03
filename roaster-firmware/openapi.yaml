@@ -24,7 +24,7 @@ info:
     name: MIT
 
 servers:
-  - url: http://roaster.local
+  - url: http://roaster-dev.local
     description: mDNS hostname (requires Bonjour/Avahi)
   - url: http://192.168.1.100
     description: Direct IP address (replace with actual IP)

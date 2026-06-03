@@ -3,7 +3,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <EasyNextionLibrary.h>
+#include "DisplayAdapter.hpp"
 #include "Types.hpp"
 #include "Profiles.hpp"
 #include "DebugLog.hpp"
@@ -15,7 +15,6 @@
 extern Profiles profile;  // Profile configuration from main firmware
 extern Preferences preferences;  // NVS preferences from main firmware
 extern uint8_t profileBuffer[200];
-extern EasyNex myNex;  // Nextion display from main firmware
 extern int finalTempOverride;  // Final temperature override from Nextion
 
 // Forward declarations for helper functions
@@ -335,7 +334,7 @@ void plotProfileOnWaveform() {
   }
   
   // Clear the waveform (component-specific, not whole page)
-  myNex.writeStr("s0.clr");
+  displayClearProfileWaveform();
   delay(50);  // Give Nextion time to process clear, keep UI responsive
   LOG_DEBUG("plotProfileOnWaveform: Cleared waveform");
   
@@ -358,9 +357,7 @@ void plotProfileOnWaveform() {
     
     // Send to waveform: add <componentID>,<channel>,<value>
     // Component ID 2 = s0, channel 0
-    char cmd[32];
-    snprintf(cmd, sizeof(cmd), "add 2,0,%lu", (unsigned long)scaledTemp32);
-    myNex.writeStr(cmd);
+    displayAddProfileWaveformPoint(scaledTemp32);
     
     // No delay needed - yield() at loop start is sufficient
     pointsSent++;
@@ -374,7 +371,7 @@ void plotProfileOnWaveform() {
   LOG_INFOF("plotProfileOnWaveform: Sent %d data points to waveform", pointsSent);
   
   // Refresh the button to ensure it stays visible
-  myNex.writeStr("ref b1");
+  displayRefreshProfilePlotButton();
 }
 
 /**
@@ -393,7 +390,7 @@ void onProfileActivePageEnter() {
   if (activeId.length() > 0) loadProfileMeta(activeId, activeName);
   if (activeName.length() > 0) {
     String displayName = activeName + " active";
-    myNex.writeStr("ProfileActive.t1.txt", displayName);
+    displaySetActiveProfileLabel(displayName);
   }
   plotProfileOnWaveform();
 }
@@ -679,17 +676,17 @@ String activateProfileById(const String& id) {
 
   profile.unflattenProfile(buf);
   finalTempOverride = profile.getFinalTargetTemp();
-  myNex.writeNum("globals.setTempNum.val", finalTempOverride);
+  displaySetFinalTargetTemp(finalTempOverride);
   setActiveProfileId(id);
 
   String name; loadProfileMeta(id, name);
   LOG_INFOF("Activated profile id=%s name='%s' (final target %dF)", id.c_str(), name.c_str(), finalTempOverride);
 
-  myNex.writeStr("page ProfileActive");
+  displayShowScreen(DisplayScreen::ProfileActive);
   delay(100);
   if (name.length() > 0) {
     String displayName = name + " active";
-    myNex.writeStr("ProfileActive.t1.txt", displayName);
+    displaySetActiveProfileLabel(displayName);
   }
   LOG_INFO("activateProfileById: plotting profile on waveform");
   plotProfileOnWaveform();

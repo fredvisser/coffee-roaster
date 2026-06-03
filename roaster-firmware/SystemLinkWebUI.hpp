@@ -12,86 +12,51 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
   <title>SystemLink Configuration</title>
   <style>
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: Georgia, 'Times New Roman', serif;
-      background:
-        radial-gradient(circle at top left, rgba(245, 208, 66, 0.16), transparent 28%),
-        linear-gradient(160deg, #1d1a15 0%, #30261d 48%, #111214 100%);
-      color: #f3eadb;
-      min-height: 100vh;
-      padding: 24px;
-    }
-    .topnav {
-      max-width: 880px;
-      margin: 0 auto 18px;
-      padding: 14px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      background: rgba(24, 21, 18, 0.92);
-      border: 1px solid rgba(242, 203, 117, 0.22);
-      border-radius: 16px;
-      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
-    }
-    .topnav a {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 120px;
-      padding: 10px 14px;
-      border-radius: 999px;
-      background: rgba(255, 255, 255, 0.06);
-      border: 1px solid rgba(242, 203, 117, 0.14);
-      color: #f3eadb;
-      text-decoration: none;
-      font-weight: 700;
-      font-size: 14px;
-    }
-    .topnav a.active {
-      background: linear-gradient(135deg, #f2cb75, #c48337);
-      color: #22180e;
-      border-color: transparent;
-    }
+    body { font-family: 'Segoe UI', Inter, -apple-system, sans-serif; background: #333333; color: #FFFFFF; margin: 0; padding: 24px; min-height: 100vh; }
+    .topnav { max-width: 1100px; margin: 0 auto 20px; padding: 14px; display:flex; flex-wrap:wrap; gap:10px; background:#2D2D2D; border-bottom:2px solid #444; align-items:center; }
+    .topnav-logo { display:flex; align-items:center; gap:10px; margin-right:auto; font-weight:900; font-size:20px; color:#009944; text-transform:uppercase; letter-spacing:1px; }
+    .topnav a { display:inline-flex; align-items:center; justify-content:center; min-width:100px; padding:12px 16px; border-radius:0; background:#3A3A3A; color:#CCCCCC; text-decoration:none; font-weight:700; text-transform:uppercase; font-size:14px; transition: 0.2s; }
+    .topnav a:hover { background:#444444; color:#FFF; }
+    .topnav a.active { background:#009944; color:#fff; }
     .shell {
-      max-width: 880px;
+      max-width: 1100px;
       margin: 0 auto;
-      background: rgba(24, 21, 18, 0.92);
-      border: 1px solid rgba(242, 203, 117, 0.22);
-      border-radius: 20px;
-      overflow: hidden;
-      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+      background: #2D2D2D;
+      border: none;
+      border-top: 4px solid #009944;
     }
     .hero {
-      padding: 28px;
-      background: linear-gradient(135deg, rgba(191, 128, 44, 0.35), rgba(73, 42, 19, 0.15));
-      border-bottom: 1px solid rgba(242, 203, 117, 0.15);
+      padding: 24px;
+      background: #222222;
+      border-bottom: 1px solid #444;
     }
     h1 {
       margin: 0 0 8px;
-      font-size: 34px;
-      letter-spacing: 0.02em;
+      font-size: 28px;
+      text-transform: uppercase;
+      font-weight: 900;
     }
     .subtitle {
-      color: #dbcab6;
-      font-size: 15px;
+      color: #AAA;
+      font-size: 14px;
       line-height: 1.5;
-      max-width: 620px;
+      font-weight: bold;
     }
     .content {
-      padding: 28px;
+      padding: 24px;
       display: grid;
       gap: 20px;
     }
     .card {
-      background: rgba(255, 255, 255, 0.03);
-      border: 1px solid rgba(242, 203, 117, 0.12);
-      border-radius: 16px;
+      background: #3A3A3A;
+      border: none;
       padding: 20px;
     }
     .card h2 {
       margin: 0 0 12px;
       font-size: 18px;
+      text-transform: uppercase;
+      font-weight: 800;
     }
     .grid {
       display: grid;
@@ -102,34 +67,37 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
       display: block;
       margin-bottom: 8px;
       font-size: 13px;
-      color: #dbcab6;
+      color: #AAA;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+      font-weight: 700;
     }
     input[type="text"],
     input[type="password"] {
       width: 100%;
       padding: 12px 14px;
-      border: 1px solid rgba(242, 203, 117, 0.18);
-      border-radius: 12px;
-      background: #181614;
-      color: #f7f0e4;
-      font-size: 15px;
+      border: 1px solid #444;
+      border-radius: 0;
+      background: #222222;
+      color: #FFF;
+      font-size: 14px;
+      font-weight: bold;
     }
     input:focus {
       outline: none;
-      border-color: #f2cb75;
-      box-shadow: 0 0 0 3px rgba(242, 203, 117, 0.14);
+      border-color: #009944;
     }
     .toggle {
       display: flex;
       align-items: center;
       gap: 12px;
-      font-size: 16px;
+      font-size: 14px;
+      font-weight: bold;
+      text-transform: uppercase;
     }
     .toggle input {
       width: 20px;
       height: 20px;
+      accent-color: #009944;
     }
     .actions {
       display: flex;
@@ -141,13 +109,24 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
       appearance: none;
       border: none;
       cursor: pointer;
-      padding: 12px 18px;
-      border-radius: 999px;
+      padding: 14px 20px;
+      border-radius: 0;
+      color: #fff;
       text-decoration: none;
       font-weight: 700;
+      text-transform: uppercase;
       font-size: 14px;
-      transition: transform 0.18s ease, opacity 0.18s ease;
+      background: #444444;
+      transition: background 0.2s;
     }
+    button:hover, a.button:hover { background: #555555; }
+    button.primary, a.button.primary {
+      background: #009944;
+    }
+    button.primary:hover, a.button.primary:hover {
+      background: #007A36;
+    }
+
     button:hover, a.button:hover {
       transform: translateY(-1px);
       opacity: 0.95;
@@ -188,6 +167,16 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
 </head>
 <body>
   <nav class="topnav">
+    <div class="topnav-logo">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M4.5,10 C2.5,15 9,17 12,17 C15,17 21.5,15 19.5,10 C17.5,5 11,3 8,3 C5,3 6.5,5 4.5,10 Z" fill="#009944" />
+        <path d="M5,10 Q12,14 19,9" stroke="#2D2D2D" stroke-width="1.5" fill="none" />
+        <path d="M9,18 Q8,20 10,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
+        <path d="M12,19 Q11,21 13,23" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
+        <path d="M15,18 Q14,20 16,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
+      </svg>
+      Roaster Control
+    </div>
     <a href="/">Home</a>
     <a href="/console">Console</a>
     <a href="/profile">Profiles</a>
