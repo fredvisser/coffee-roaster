@@ -1,5 +1,5 @@
-#ifndef TYPES_HPP
-#define TYPES_HPP
+#ifndef ROASTER_TYPES_HPP
+#define ROASTER_TYPES_HPP
 
 #include <Arduino.h>
 
@@ -48,8 +48,8 @@ enum RoasterState
 #define BDC_FAN_MIN 800
 #define BDC_FAN_MAX 2000
 
-// Nextion display error value
-#define NEXTION_READ_ERROR 777777
+// Generic display read error value
+#define DISPLAY_READ_ERROR 777777
 
 // ============================================================================
 // NETWORK TYPES
@@ -61,4 +61,4 @@ struct WifiCredentials {
   String password;
 };
 
-#endif // TYPES_HPP
+#endif // ROASTER_TYPES_HPP

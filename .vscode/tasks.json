@@ -2,9 +2,9 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"label": "Compile roaster-firmware",
+			"label": "Build firmware",
 			"type": "shell",
-			"command": "cd \"${workspaceFolder}/roaster-firmware\" && ./run_tests.sh 1 compile",
+			"command": "cd \"${workspaceFolder}/roaster-firmware\" && ./tools/firmware.sh build",
 			"args": [],
 			"isBackground": false,
 			"group": "build"

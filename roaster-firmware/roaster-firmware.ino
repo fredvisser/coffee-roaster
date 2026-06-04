@@ -8,7 +8,7 @@
 #include <ESP32Servo.h>
 #include <esp_task_wdt.h> // Hardware watchdog timer
 
-// Debug macros (must be defined before including Network.hpp)
+// Debug macros (must be defined before including src/network/Network.hpp)
 #define DEBUG
 
 #ifdef DEBUG
@@ -24,27 +24,25 @@
 #define DEBUG_PRINTF(...)    // blank line
 #endif
 
-#include "Types.hpp"
-#include "BoardConfig.hpp"
-#include "DisplayBackendConfig.hpp"
-#if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_NEXTION
-#include <EasyNextionLibrary.h>
-#endif
-#include "DebugLog.hpp"
-#include "DisplayAdapter.hpp"
-#include "PIDController.hpp"
-#include "Profiles.hpp"
-#include "ProfileManager.hpp"
-#include "ProfileEditor.hpp"
-#include "StepResponseTuner.hpp"
-#include "PIDRuntimeController.hpp"
-#include "PIDValidation.hpp"
-#include "SystemLink.hpp"
-#include "Network.hpp"
+#include "src/platform/RoasterTypes.hpp"
+#include "src/platform/BoardConfig.hpp"
+#include "src/display/DisplayBackendConfig.hpp"
+#include "src/support/DebugLog.hpp"
+#include "src/display/DisplayAdapter.hpp"
+#include "src/display/DisplayActionRouter.hpp"
+#include "src/control/PIDController.hpp"
+#include "src/profiles/RoastProfile.hpp"
+#include "src/profiles/ProfileManager.hpp"
+#include "src/profiles/ProfileEditor.hpp"
+#include "src/control/StepResponseTuner.hpp"
+#include "src/control/PIDRuntimeController.hpp"
+#include "src/control/PIDValidation.hpp"
+#include "src/control/RoastControlLoop.hpp"
+#include "src/control/RoastSessionLifecycle.hpp"
+#include "src/integrations/SystemLink.hpp"
+#include "src/network/Network.hpp"
 
 Preferences preferences;
-
-#define HW_SERIAL Serial0
 
 // Pin definitions
 constexpr int TC1_CS = BoardConfig::BeanThermocoupleChipSelectPin;
@@ -80,7 +78,7 @@ PWMrelay fanRelay(FAN, HIGH);
 Servo bdcFan;
 
 // Create a roast profile object
-Profiles profile;
+RoastProfile profile;
 ProfileManager profileManager;
 
 // Roaster state variables
@@ -110,7 +108,7 @@ unsigned long coolingStartTime = 0; // Track cooling duration
 // WiFi credentials (loaded from preferences in setup())
 WifiCredentials wifiCredentials;
 
-// Roaster state variable (enum defined in Types.hpp)
+// Roaster state variable (enum defined in RoasterTypes.hpp)
 RoasterState roasterState = IDLE;
 
 MAX6675 thermocouple(THERMOCOUPLE_SCK, TC1_CS, THERMOCOUPLE_MISO);
@@ -121,14 +119,9 @@ bool autoValidateAfterCooling = false;
 PIDRuntimeController pidRuntimeController;
 PIDValidationSession pidValidation;
 
-// Create a Nextion display connection
-#if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_NEXTION
-EasyNex myNex(HW_SERIAL);
-#endif
-
 uint8_t profileBuffer[200];
-int finalTempOverride = -1; // Nextion override for final target temp (F)
-Profiles validationSavedProfile;
+int finalTempOverride = -1; // UI override for final target temp (F)
+RoastProfile validationSavedProfile;
 bool validationProfileLoaded = false;
 int savedValidationFinalTempOverride = -1;
 unsigned long roastStartedAtMs = 0;
@@ -139,100 +132,30 @@ bool pidScheduleConfigured = false;
 bool pidScheduleActive = false;
 int activePidBandIndex = -1;
 
-// Helper function for reliable Nextion reads with retry logic
-int readNextionWithRetry(const char *component, int retries = 2)
+// Helper function for reliable final-target reads from the active display.
+int readDisplayFinalTargetTempWithRetry(int retries = 2)
 {
   for (int i = 0; i < retries; i++)
   {
-    int value = displayReadNumber(component);
-    if (value != NEXTION_READ_ERROR)
+    int value = displayReadFinalTargetTemp();
+    if (value != DISPLAY_READ_ERROR)
     {
       return value;
     }
     delay(10); // Small delay before retry
   }
-  LOG_WARNF("Nextion read failed: %s", component);
-  return NEXTION_READ_ERROR;
+  LOG_WARN("Display final target read failed");
+  return DISPLAY_READ_ERROR;
 }
 
 uint32_t getEffectiveFinalTargetTemp()
 {
-  // Use Nextion override if set; otherwise fall back to profile final target
+  // Use the UI override if set; otherwise fall back to the profile final target.
   if (finalTempOverride > 0)
   {
     return constrain(finalTempOverride, 0, 500);
   }
   return profile.getFinalTargetTemp();
-}
-
-void applyHeaterPIDGains(double newKp, double newKi, double newKd)
-{
-  if (fabs(appliedKp - newKp) < 0.0001 && fabs(appliedKi - newKi) < 0.0001 && fabs(appliedKd - newKd) < 0.0001)
-  {
-    return;
-  }
-
-  heaterPID.setGains(newKp, newKi, newKd);
-  appliedKp = newKp;
-  appliedKi = newKi;
-  appliedKd = newKd;
-}
-
-void resetRoastControllerState()
-{
-  heaterPID.stop();
-  heaterPidTrimVal = 0;
-  heaterFeedforwardVal = 0;
-  heaterOutputVal = 0;
-  pidScheduleActive = false;
-  activePidBandIndex = -1;
-  pidRuntimeController.resetForRoast();
-  applyHeaterPIDGains(kp, ki, kd);
-}
-
-void setManualPIDGains(double newKp, double newKi, double newKd)
-{
-  kp = newKp;
-  ki = newKi;
-  kd = newKd;
-
-  preferences.putDouble("kp", kp);
-  preferences.putDouble("ki", ki);
-  preferences.putDouble("kd", kd);
-
-  pidRuntimeController.setFallbackGains(kp, ki, kd);
-  pidRuntimeController.clearPreferences(preferences);
-  pidScheduleConfigured = false;
-  resetRoastControllerState();
-}
-
-void updateRoastControl(unsigned long now)
-{
-  if (roasterState != ROASTING)
-  {
-    return;
-  }
-
-  setpointTemp = profile.getTargetTemp(now);
-  setpointFanSpeed = profile.getTargetFanSpeed(now);
-  setpointProgress = profile.getProfileProgress(now);
-
-  PIDRuntimeController::ControlDecision decision = pidRuntimeController.decide(now, currentTemp, setpointTemp, fanTemp);
-  pidScheduleActive = decision.scheduleActive;
-  activePidBandIndex = decision.bandIndex;
-  applyHeaterPIDGains(decision.kp, decision.ki, decision.kd);
-
-  heaterPID.run();
-
-  heaterFeedforwardVal = decision.feedforward;
-  heaterOutputVal = constrain(heaterPidTrimVal + heaterFeedforwardVal, 0.0, 255.0);
-  fanRelay.setPWM(setpointFanSpeed);
-
-  int bdcValue = constrain(5 * setpointFanSpeed + 700, 800, 2000);
-  bdcFan.writeMicroseconds(bdcValue);
-  bdcFanMs = bdcValue;
-
-  heaterRelay.setPWM(heaterOutputVal);
 }
 
 void updateCalibrationControl(unsigned long now)
@@ -305,219 +228,6 @@ void updateStepResponseCalibration(unsigned long now)
     {
       sendWsMessage("{ \"pushMessage\": \"pidTuningFailed\" }");
     }
-  }
-}
-
-bool currentRoastUsesValidationProfile()
-{
-  return validationProfileLoaded;
-}
-
-void restoreValidationProfileIfNeeded()
-{
-  if (!validationProfileLoaded)
-  {
-    return;
-  }
-
-  profile = validationSavedProfile;
-  finalTempOverride = savedValidationFinalTempOverride;
-  validationProfileLoaded = false;
-}
-
-void finalizeValidationIfRunning(bool completed, const char *reason)
-{
-  if (!pidValidation.isActive())
-  {
-    return;
-  }
-
-  double durationSeconds = 0.0;
-  if (roastStartedAtMs > 0)
-  {
-    durationSeconds = (millis() - roastStartedAtMs) / 1000.0;
-  }
-
-  pidValidation.finish(completed, durationSeconds, reason);
-  restoreValidationProfileIfNeeded();
-}
-
-bool roastShouldCompleteNow()
-{
-  if (currentRoastUsesValidationProfile())
-  {
-    return profile.getProfileProgress(millis()) >= 100;
-  }
-
-  return currentTemp >= getEffectiveFinalTargetTemp();
-}
-
-void startRoastSession()
-{
-  roastStartedAtMs = 0;
-  roasterState = START_ROAST;
-  systemLinkMarkRoastStarted();
-  displaySetTargetTemp((int)lround(setpointTemp));
-  displayShowScreen(DisplayScreen::Roasting);
-}
-
-bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent)
-{
-  if (roasterState != IDLE)
-  {
-    return false;
-  }
-
-  if (currentTemp > 180.0)
-  {
-    return false;
-  }
-
-  validationSavedProfile = profile;
-  savedValidationFinalTempOverride = finalTempOverride;
-  pidValidation.start(profile, currentTemp, finalTargetTemp, fanPercent);
-  validationProfileLoaded = true;
-  finalTempOverride = constrain((int)lround(finalTargetTemp), 0, 500);
-  startRoastSession();
-  return true;
-}
-
-void enterCoolingState()
-{
-  setpointTemp = COOLING_TARGET_TEMP;
-  roasterState = COOLING;
-  coolingStartTime = millis();
-  resetRoastControllerState();
-
-  setpointFanSpeed = 255;
-  fanRelay.setPWM(setpointFanSpeed);
-  bdcFan.writeMicroseconds(2000);
-  bdcFanMs = 2000;
-
-  displaySetTargetTemp(COOLING_TARGET_TEMP);
-  displayShowScreen(DisplayScreen::Cooling);
-}
-
-DisplayScreen displayScreenForCurrentState()
-{
-  switch (roasterState)
-  {
-  case START_ROAST:
-  case ROASTING:
-    return DisplayScreen::Roasting;
-  case COOLING:
-    return DisplayScreen::Cooling;
-  case ERROR:
-    return DisplayScreen::Error;
-  case IDLE:
-  case CALIBRATING:
-  default:
-    return DisplayScreen::Start;
-  }
-}
-
-bool cycleActiveProfile(int direction)
-{
-  if (roasterState != IDLE)
-  {
-    LOG_WARN("Ignoring profile change request while roaster is not idle");
-    return false;
-  }
-
-  std::vector<String> profileIds = getProfileIds();
-  if (profileIds.empty())
-  {
-    LOG_WARN("No profiles available to cycle");
-    return false;
-  }
-
-  String activeId = getActiveProfileId();
-  size_t activeIndex = 0;
-  bool foundActive = false;
-  for (size_t index = 0; index < profileIds.size(); ++index)
-  {
-    if (profileIds[index] == activeId)
-    {
-      activeIndex = index;
-      foundActive = true;
-      break;
-    }
-  }
-
-  if (!foundActive)
-  {
-    activeIndex = 0;
-  }
-
-  int nextIndex = static_cast<int>(activeIndex) + direction;
-  if (nextIndex < 0)
-  {
-    nextIndex = static_cast<int>(profileIds.size()) - 1;
-  }
-  else if (nextIndex >= static_cast<int>(profileIds.size()))
-  {
-    nextIndex = 0;
-  }
-
-  String nextId = profileIds[nextIndex];
-  if (!profileManager.loadProfile(nextId))
-  {
-    LOG_WARNF("Failed to load profile id=%s", nextId.c_str());
-    return false;
-  }
-
-  setActiveProfileId(nextId);
-  finalTempOverride = profile.getFinalTargetTemp();
-  displaySetFinalTargetTemp(getEffectiveFinalTargetTemp());
-  onProfileActivePageEnter();
-  displayShowScreen(DisplayScreen::ProfileActive);
-  LOG_INFOF("Cycled active profile to id=%s", nextId.c_str());
-  return true;
-}
-
-void handleDisplayAction(DisplayAction action)
-{
-  switch (action)
-  {
-  case DisplayAction::StartRoast:
-    trigger0();
-    break;
-  case DisplayAction::OpenNetwork:
-    displayShowScreen(DisplayScreen::Network);
-    break;
-  case DisplayAction::StopRoast:
-    trigger1();
-    break;
-  case DisplayAction::StopCooling:
-    trigger2();
-    break;
-  case DisplayAction::ApplyWifi:
-    trigger3();
-    break;
-  case DisplayAction::OpenActiveProfile:
-    trigger4();
-    break;
-  case DisplayAction::PreviousProfile:
-    cycleActiveProfile(-1);
-    break;
-  case DisplayAction::NextProfile:
-    cycleActiveProfile(1);
-    break;
-  case DisplayAction::ReturnToStateScreen:
-    displayShowScreen(displayScreenForCurrentState());
-    break;
-  case DisplayAction::None:
-  default:
-    break;
-  }
-}
-
-void handleDisplayActions()
-{
-  DisplayAction action = DisplayAction::None;
-  while (displayPopAction(action))
-  {
-    handleDisplayAction(action);
   }
 }
 
@@ -641,13 +351,12 @@ void setup()
   
   LOG_INFOF("Profile system initialized - using profile with %d setpoints", profile.getSetpointCount());
 
-  // Update Nextion display with current profile values
-  // Send final target temp override (moved from reloadActiveProfile to avoid blocking)
-  // If no override is set (-1), this will send the profile's default final target
-  LOG_INFOF("Original globals.setTempNum.val value is %dF", displayReadNumber("globals.setTempNum.val"));
+  // Update the active display with current profile values.
+  // If no override is set (-1), this sends the profile's default final target.
+  LOG_INFOF("Original display final target value is %dF", displayReadFinalTargetTemp());
   displaySetFinalTargetTemp(getEffectiveFinalTargetTemp());
-  LOG_INFOF("Set Nextion final target temp to %dF", getEffectiveFinalTargetTemp());
-  LOG_INFOF("Final globals.setTempNum.val value is %dF", displayReadNumber("globals.setTempNum.val"));
+  LOG_INFOF("Set display final target temp to %dF", getEffectiveFinalTargetTemp());
+  LOG_INFOF("Final display final target value is %dF", displayReadFinalTargetTemp());
 
   displaySetWifiIp(ipAddress);
   displaySetRevision(VERSION);
@@ -1084,12 +793,11 @@ void loop()
 
 
 
-void trigger0()
-{ // Start roast command received
-  LOG_INFO("trigger0() called - Start button pressed");
+void handleStartRoastCommand()
+{
+  LOG_INFO("Start roast command received");
   
   // Use the currently active profile (managed by web UI)
-  // Nextion display values are for display only, not for modifying the profile
   int spCount = profile.getSetpointCount();
   LOG_INFOF("Starting roast with active profile (%d setpoints)", spCount);
   
@@ -1099,23 +807,23 @@ void trigger0()
     return;
   }
   
-  int uiFinalTemp = readNextionWithRetry("globals.setTempNum.val");
-  if (uiFinalTemp != NEXTION_READ_ERROR && uiFinalTemp > 0) {
+  int uiFinalTemp = readDisplayFinalTargetTempWithRetry();
+  if (uiFinalTemp != DISPLAY_READ_ERROR && uiFinalTemp > 0) {
     finalTempOverride = constrain(uiFinalTemp, 0, 500);
-    LOG_INFOF("Using Nextion final target override: %dF", finalTempOverride);
+    LOG_INFOF("Using display final target override: %dF", finalTempOverride);
     // Also update the active profile's final setpoint so heater control uses the override
     profile.setFinalTargetTemp(finalTempOverride);
   } else {
     finalTempOverride = profile.getFinalTargetTemp();
-    LOG_WARN("Nextion final target not available - using profile final temp");
+    LOG_WARN("Display final target not available - using profile final temp");
   }
   
   startRoastSession();
-  LOG_INFO("trigger0() complete - state set to START_ROAST");
+  LOG_INFO("Start roast command complete - state set to START_ROAST");
 }
 
-void trigger1()
-{ // Stop roast command received
+void handleStopRoastCommand()
+{
   finalizeValidationIfRunning(false, "user_stop");
   systemLinkMarkCoolingPhaseStarted(SYSTEMLINK_OUTCOME_TERMINATED, "user_stop");
 
@@ -1126,16 +834,16 @@ void trigger1()
   enterCoolingState();
 }
 
-void trigger2()
-{ // Stop cooling command received
+void handleStopCoolingCommand()
+{
   finalizeValidationIfRunning(false, "cooling_skipped");
   restoreValidationProfileIfNeeded();
   roasterState = IDLE;
   displayShowScreen(DisplayScreen::Start);
 }
 
-void trigger3()
-{ // Apply WiFi credentials
+void handleApplyWifiCommand()
+{
   // Update global WiFi credentials
   DisplayWifiFormState form = displayReadWifiFormState();
   WifiCredentials requestedCredentials;
@@ -1152,9 +860,9 @@ void trigger3()
   }
 }
 
-void trigger4()
-{ // ProfileActive page button - plot current profile
-  LOG_INFO("trigger4() called - ProfileActive plot button");
+void handleOpenActiveProfileCommand()
+{
+  LOG_INFO("Open active profile command received");
   onProfileActivePageEnter();
   displayShowScreen(DisplayScreen::ProfileActive);
 }

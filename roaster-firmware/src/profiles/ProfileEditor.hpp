@@ -3,19 +3,19 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include "DisplayAdapter.hpp"
-#include "Types.hpp"
-#include "Profiles.hpp"
-#include "DebugLog.hpp"
+#include "../display/DisplayAdapter.hpp"
+#include "../platform/RoasterTypes.hpp"
+#include "RoastProfile.hpp"
+#include "../support/DebugLog.hpp"
 #include <vector>
 
 // Profile editor backend logic
 // Handles saving, loading, activating, deleting profiles
 
-extern Profiles profile;  // Profile configuration from main firmware
+extern RoastProfile profile;  // Profile configuration from main firmware
 extern Preferences preferences;  // NVS preferences from main firmware
 extern uint8_t profileBuffer[200];
-extern int finalTempOverride;  // Final temperature override from Nextion
+extern int finalTempOverride;  // Final temperature override from the active UI
 
 // Forward declarations for helper functions
 std::vector<String> splitNames(const String& csv);
@@ -230,7 +230,7 @@ void ensureDefaultProfile() {
 
   // Save default profile and set active
   String defaultId = generateProfileId();
-  Profiles tempProfile;
+  RoastProfile tempProfile;
   tempProfile.clearSetpoints();
   for (JsonObject spObj : setpoints) {
     uint32_t timeMs = spObj["time"].as<uint32_t>() * 1000UL;
@@ -288,8 +288,7 @@ bool reloadActiveProfile() {
   profile.unflattenProfile(buf);
   int count = profile.getSetpointCount();
   finalTempOverride = profile.getFinalTargetTemp();
-  // Removed blocking Nextion call from here to prevent WDT timeouts during setup
-  // myNex.writeNum("globals.setTempNum.val", finalTempOverride);
+  // Removed direct display writes from here to prevent setup-time blocking.
 
   String activeName;
   loadProfileMeta(activeId, activeName);
@@ -304,7 +303,7 @@ bool reloadActiveProfile() {
 }
 
 /**
- * Plot the active profile on the Nextion waveform (s0 control on ProfileActive page)
+ * Plot the active profile on the active display waveform view.
  * Scales time (x-axis) and temperature (y-axis) to fit waveform dimensions
  */
 void plotProfileOnWaveform() {
@@ -322,7 +321,7 @@ void plotProfileOnWaveform() {
   LOG_INFOF("plotProfileOnWaveform: Plotting %d setpoints, duration=%dms, maxTemp=%d", 
             count, maxTime, maxTemp);
   
-  // Nextion waveform: s0 is 480 pixels wide, 170 pixels tall
+  // The waveform renderer uses a 480x170 logical plot area.
   // Component ID is 2, channel 0
   const int WAVEFORM_WIDTH = 480;  // Number of data points to send (matches pixel width)
   const int WAVEFORM_HEIGHT = 170; // Y-axis range (0-170 pixels)
@@ -335,7 +334,7 @@ void plotProfileOnWaveform() {
   
   // Clear the waveform (component-specific, not whole page)
   displayClearProfileWaveform();
-  delay(50);  // Give Nextion time to process clear, keep UI responsive
+  delay(50);  // Give the display pipeline time to process the clear.
   LOG_DEBUG("plotProfileOnWaveform: Cleared waveform");
   
   // Send interpolated data points at regular time intervals
@@ -376,7 +375,7 @@ void plotProfileOnWaveform() {
 
 /**
  * Plot the current active profile when ProfileActive page is navigated to
- * Called via Nextion preinit event or trigger
+ * Called when the active profile page is entered.
  */
 void onProfileActivePageEnter() {
   if (profile.getSetpointCount() < 2) {
@@ -446,7 +445,7 @@ String getProfileById(const String& id) {
     return output;
   }
 
-  Profiles tempProfile;
+  RoastProfile tempProfile;
   tempProfile.unflattenProfile(buf);
 
   String name;
@@ -519,7 +518,7 @@ String saveProfileById(const String& id, const JsonDocument& requestDoc, bool al
   if (profileName.length() == 0) profileName = "Unnamed";
   bool activate = requestDoc["activate"].as<bool>();
 
-  Profiles tempProfile;
+  RoastProfile tempProfile;
   tempProfile.clearSetpoints();
 
   for (size_t i = 0; i < spCount; i++) {
@@ -746,7 +745,7 @@ String createNewProfile(const String& name) {
   String profileName = name.length() ? name : String("New Profile");
   String id = generateProfileId();
 
-  Profiles tempProfile;
+  RoastProfile tempProfile;
   tempProfile.clearSetpoints();
   tempProfile.addSetpoint(0,   200, 30);
   tempProfile.addSetpoint(150000, 300, 100);

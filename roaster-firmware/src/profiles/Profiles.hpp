@@ -4,7 +4,7 @@
 #include <stdio.h>
 
 // NOTE: All temperature values in this file are in Fahrenheit (°F)
-class Profiles
+class RoastProfile
 {
 private:
     typedef struct
@@ -20,7 +20,7 @@ private:
 
 public:
     // Constructor
-    Profiles();
+    RoastProfile();
 
     // Start the profile
     void startProfile(uint32_t currentTemp, uint32_t tickTime);
@@ -63,12 +63,12 @@ public:
     void unflattenProfile(uint8_t *buffer);
 };
 
-Profiles::Profiles()
+RoastProfile::RoastProfile()
 {
     this->addSetpoint(0, 0, 0);
 }
 
-void Profiles::startProfile(uint32_t currentTemp, uint32_t tickTime)
+void RoastProfile::startProfile(uint32_t currentTemp, uint32_t tickTime)
 {
     _startTime = tickTime;
     // startTime = (tickTime == 0) ? millis() : tickTime;
@@ -76,7 +76,7 @@ void Profiles::startProfile(uint32_t currentTemp, uint32_t tickTime)
     _setpoints[0].fanSpeed = (_setpointCount > 1) ? _setpoints[1].fanSpeed : 100;
 }
 
-uint32_t Profiles::getTargetTemp(uint32_t tickTime) const
+uint32_t RoastProfile::getTargetTemp(uint32_t tickTime) const
 {
     uint32_t currentTime = tickTime - _startTime;
     for (int i = 0; i < _setpointCount; i++)
@@ -109,7 +109,7 @@ uint32_t Profiles::getTargetTemp(uint32_t tickTime) const
     return _setpoints[_setpointCount - 1].temp;
 }
 
-uint32_t Profiles::getTargetTempAtTime(uint32_t timeMs) const
+uint32_t RoastProfile::getTargetTempAtTime(uint32_t timeMs) const
 {
     uint32_t currentTime = timeMs;
     for (int i = 0; i < _setpointCount; i++)
@@ -142,19 +142,19 @@ uint32_t Profiles::getTargetTempAtTime(uint32_t timeMs) const
     return _setpoints[_setpointCount - 1].temp;
 }
 
-uint32_t Profiles::getFinalTargetTemp() const
+uint32_t RoastProfile::getFinalTargetTemp() const
 {
     return _setpoints[_setpointCount - 1].temp;
 }
 
-void Profiles::setFinalTargetTemp(uint32_t temp)
+void RoastProfile::setFinalTargetTemp(uint32_t temp)
 {
     if (_setpointCount == 0) return;
     uint32_t clamped = (temp > 500U) ? 500U : temp;
     _setpoints[_setpointCount - 1].temp = clamped;
 }
 
-uint32_t Profiles::getTargetFanSpeed(uint32_t tickTime) const
+uint32_t RoastProfile::getTargetFanSpeed(uint32_t tickTime) const
 {
     uint32_t currentTime = tickTime - _startTime;
     for (int i = 0; i < _setpointCount; i++)
@@ -192,7 +192,7 @@ uint32_t Profiles::getTargetFanSpeed(uint32_t tickTime) const
     return (pwm > 255U) ? 255U : pwm;
 }
 
-uint32_t Profiles::getProfileProgress(uint32_t tickTime) const
+uint32_t RoastProfile::getProfileProgress(uint32_t tickTime) const
 {
     // tickTime = (tickTime == 0) ? millis() : tickTime;
     uint32_t currentTime = tickTime - _startTime;
@@ -206,18 +206,18 @@ uint32_t Profiles::getProfileProgress(uint32_t tickTime) const
     }
 }
 
-int Profiles::getSetpointCount() const
+int RoastProfile::getSetpointCount() const
 {
     return _setpointCount;
 }
 
-void Profiles::clearSetpoints()
+void RoastProfile::clearSetpoints()
 {
     _setpointCount = 0;
     this->addSetpoint(0, 0, 0);
 }
 
-void Profiles::addSetpoint(uint32_t time, uint32_t temp, uint32_t fanSpeed)
+void RoastProfile::addSetpoint(uint32_t time, uint32_t temp, uint32_t fanSpeed)
 {
     if (_setpointCount < 10)
     {
@@ -232,19 +232,19 @@ void Profiles::addSetpoint(uint32_t time, uint32_t temp, uint32_t fanSpeed)
     }
 }
 
-bool Profiles::validateSetpoint(uint32_t temp, uint32_t fanSpeed) const
+bool RoastProfile::validateSetpoint(uint32_t temp, uint32_t fanSpeed) const
 {
     // Validate temperature (0-500°F) and fan speed (0-100%)
     // Note: uint32_t is always >= 0, so only check upper bounds
     return (temp <= 500 && fanSpeed <= 100);
 }
 
-Profiles::Setpoint Profiles::getSetpoint(int index) const
+RoastProfile::Setpoint RoastProfile::getSetpoint(int index) const
 {
     return _setpoints[index];
 }
 
-void Profiles::flattenProfile(uint8_t *buffer)
+void RoastProfile::flattenProfile(uint8_t *buffer)
 {
     // Version byte at position 0 for future compatibility
     buffer[0] = _profileVersion;
@@ -272,7 +272,7 @@ void Profiles::flattenProfile(uint8_t *buffer)
     }
 }
 
-void Profiles::unflattenProfile(uint8_t *buffer)
+void RoastProfile::unflattenProfile(uint8_t *buffer)
 {
     // Read and validate version byte
     _profileVersion = buffer[0];

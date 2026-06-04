@@ -1,7 +1,7 @@
 #ifndef NETWORK_HPP
 #define NETWORK_HPP
 
-#include "src/platform/Types.hpp"
+#include "../platform/RoasterTypes.hpp"
 #include <WiFi.h>
 #include <esp_task_wdt.h>
 #include <esp_heap_caps.h>
@@ -10,15 +10,15 @@
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <ElegantOTA.h>  // v3.1.7+ with async mode enabled for ESPAsyncWebServer compatibility
-#include "DebugLog.hpp"
-#include "src/display/DisplayAdapter.hpp"
-#include "PIDController.hpp"
-#include "StepResponseTuner.hpp"
-#include "PIDRuntimeController.hpp"
-#include "PIDValidation.hpp"
-#include "src/profiles/ProfileManager.hpp"    // Profile backend logic
+#include "../support/DebugLog.hpp"
+#include "../display/DisplayAdapter.hpp"
+#include "../control/PIDController.hpp"
+#include "../control/StepResponseTuner.hpp"
+#include "../control/PIDRuntimeController.hpp"
+#include "../control/PIDValidation.hpp"
+#include "../profiles/ProfileManager.hpp"    // Profile backend logic
 #include "ProfileWebUI.hpp"     // Profile UI HTML/CSS/JS
-#include "SystemLinkWebUI.hpp"
+#include "../integrations/SystemLinkWebUI.hpp"
 #include <vector>
 
 // Removed global JsonDocument to prevent heap fragmentation
@@ -246,9 +246,9 @@ extern int badReadingCount;
 extern double kp;
 extern double ki;
 extern double kd;
-extern RoasterState roasterState;  // Defined in Types.hpp
+extern RoasterState roasterState;  // Defined in RoasterTypes.hpp
 extern WifiCredentials wifiCredentials;
-extern Profiles profile;  // Profile configuration
+extern RoastProfile profile;  // Profile configuration
 extern ProfileManager profileManager;
 extern Preferences preferences; // NVS preferences from main firmware
 extern uint8_t profileBuffer[200];
@@ -259,14 +259,14 @@ extern PIDController heaterPID;
 extern bool restartRequested;
 extern unsigned long restartAt;
 
-// Helper to update Nextion display with active profile
+// Helper to refresh the active profile view after profile changes
 void plotProfileOnWaveform();
 bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent);
 void setManualPIDGains(double newKp, double newKi, double newKd);
 
-void updateNextionActiveProfile() {
+void refreshActiveProfileDisplay() {
     String activeId = profileManager.getActiveProfileId();
-    LOG_INFOF("updateNextionActiveProfile: Updating for ID %s", activeId.c_str());
+  LOG_INFOF("refreshActiveProfileDisplay: Updating for ID %s", activeId.c_str());
     String activeName;
     if (activeId.length() > 0) profileManager.loadProfileMeta(activeId, activeName);
     
@@ -278,14 +278,14 @@ void updateNextionActiveProfile() {
     displaySetActiveProfileLabel(displayName);
     }
     
-    // Update global setpoint variable on Nextion
+    // Update the active profile view with the current final target value.
     uint32_t finalTemp = profile.getFinalTargetTemp();
   displaySetFinalTargetTemp(finalTemp);
 
     plotProfileOnWaveform();
 }
 
-// WifiCredentials struct defined in Types.hpp
+// WifiCredentials struct defined in RoasterTypes.hpp
 
 unsigned long ota_progress_millis = 0;
 bool otaUpdateInProgress = false;
@@ -822,7 +822,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     
     bool success = profileManager.activateProfile(id);
     if (success) {
-        updateNextionActiveProfile();
+        refreshActiveProfileDisplay();
         request->send(200, "application/json", "{\"ok\":true}");
     } else {
         request->send(404, "application/json", "{\"ok\":false,\"error\":\"not_found\"}");

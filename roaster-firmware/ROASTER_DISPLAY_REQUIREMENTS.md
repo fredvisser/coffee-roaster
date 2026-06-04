@@ -15,7 +15,7 @@ The display shall support these operating screens:
 - Error
 - Active Profile
 
-The display requirements apply to any supported display backend. The operator experience should remain consistent whether the implementation is rendered on Nextion or LVGL hardware.
+The display requirements apply to any supported display backend. The operator experience should remain consistent whether the implementation is rendered on LVGL hardware or through any future local display backend.
 
 ## Design Principles
 

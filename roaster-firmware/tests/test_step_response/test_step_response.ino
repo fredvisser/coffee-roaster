@@ -10,7 +10,7 @@
  */
 
 #include <AUnit.h>
-#include "../../StepResponseTuner.hpp"
+#include "../../src/control/StepResponseTuner.hpp"
 
 using namespace aunit;
 

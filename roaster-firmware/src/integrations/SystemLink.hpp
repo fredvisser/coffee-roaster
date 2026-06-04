@@ -9,14 +9,14 @@
 #include <WiFiClientSecure.h>
 #include <esp_task_wdt.h>
 #include <esp_system.h>
-#include "DebugLog.hpp"
-#include "src/profiles/ProfileManager.hpp"
-#include "StepResponseTuner.hpp"
-#include "src/platform/Types.hpp"
+#include "../support/DebugLog.hpp"
+#include "../profiles/ProfileManager.hpp"
+#include "../control/StepResponseTuner.hpp"
+#include "../platform/RoasterTypes.hpp"
 
 extern Preferences preferences;
 extern ProfileManager profileManager;
-extern Profiles profile;
+extern RoastProfile profile;
 extern StepResponseTuner stepTuner;
 extern double currentTemp;
 extern double setpointTemp;

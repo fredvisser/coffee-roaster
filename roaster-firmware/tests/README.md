@@ -40,7 +40,6 @@ tests/
 
 4. **Project Dependencies**
    ```bash
-   arduino-cli lib install "EasyNextionLibrary"
    arduino-cli lib install "MAX6675 library"
    arduino-cli lib install "SimpleTimer"
    arduino-cli lib install "AutoPID"
@@ -60,6 +59,17 @@ tests/
 ## Running Unit Tests
 
 Unit tests verify software logic without requiring hardware. They test algorithms, data structures, and control flow.
+
+Canonical test entrypoint:
+
+```bash
+cd roaster-firmware
+./tools/tests.sh list
+./tools/tests.sh compile safety
+./tools/tests.sh run pid
+```
+
+Legacy compatibility note: `./run_tests.sh` still works and forwards to the new `tools/` entrypoints.
 
 ### Running Individual Test Suites
 
@@ -126,9 +136,7 @@ Tests covered (CRITICAL):
 ### Running All Unit Tests
 
 ```bash
-arduino-cli compile --fqbn esp32:esp32:nano_nora tests/unit_tests/unit_tests.ino
-arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora tests/unit_tests/unit_tests.ino
-arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
+./tools/tests.sh run unit
 ```
 
 ## Running Hardware Validation Tests
@@ -230,10 +238,10 @@ Before committing changes, run:
 
 ```bash
 # Quick compile check
-arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/roaster-firmware.ino
+cd roaster-firmware && ./tools/firmware.sh build
 
 # Run unit tests (if you have hardware)
-arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/tests/test_profiles/test_profiles.ino
+cd roaster-firmware && ./tools/tests.sh compile profiles
 ```
 
 ## Test Coverage
@@ -250,13 +258,11 @@ arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/tests/test_pro
 | Heater Control | ✓ | ✓ | High |
 | Fan Control | ✓ | ✓ | High |
 | Network/WiFi | ✗ | ✗ | Low |
-| Nextion Display | ✗ | ✗ | Low |
 
 ### Areas for Improvement
 
 - Network communication tests
 - WebSocket message handling
-- Nextion display integration tests
 - Long-duration roast tests
 - Temperature ramp rate tests
 - Power cycle/recovery tests

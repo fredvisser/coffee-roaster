@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include <math.h>
-#include "src/platform/CalibrationTypes.hpp"
+#include "../platform/CalibrationTypes.hpp"
 
 class PIDRuntimeController {
 public:

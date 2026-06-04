@@ -23,7 +23,7 @@
 #include <PWMrelay.h>
 #include <AutoPID.h>
 #include <ESP32Servo.h>
-#include "../../Profiles.hpp"
+#include "../../src/profiles/RoastProfile.hpp"
 
 // Pin definitions (from main firmware)
 #define TC1_CS 10

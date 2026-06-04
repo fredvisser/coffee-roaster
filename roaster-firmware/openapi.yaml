@@ -16,7 +16,7 @@ info:
     - MAX6675 thermocouple sensors
     - PWM fan control
     - BDC servo fan control
-    - Nextion HMI display
+    - Optional local display hardware for LVGL-enabled targets
   version: 1.0.0
   contact:
     name: Coffee Roaster Project

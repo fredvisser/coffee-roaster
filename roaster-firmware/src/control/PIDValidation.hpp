@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #include <math.h>
 #include <string.h>
-#include "src/profiles/Profiles.hpp"
+#include "../profiles/RoastProfile.hpp"
 
 class PIDValidationSession {
 public:
@@ -52,7 +52,7 @@ public:
         withinTwoDegreesCount = 0;
     }
 
-    void start(Profiles &profileToBuild, double currentTemp, double finalTargetTemp = 300.0, uint32_t fanPercent = 70) {
+    void start(RoastProfile &profileToBuild, double currentTemp, double finalTargetTemp = 300.0, uint32_t fanPercent = 70) {
         (void)finalTargetTemp;
         reset();
         summary.active = true;
@@ -125,7 +125,7 @@ public:
                          (summary.holdSampleCount == 0 || (summary.holdMeanAbsError <= 1.0 && summary.holdMaxAbsError <= 2.0));
     }
 
-    static void buildValidationProfile(Profiles &profileToBuild, uint32_t fanPercent = 70) {
+    static void buildValidationProfile(RoastProfile &profileToBuild, uint32_t fanPercent = 70) {
         profileToBuild.clearSetpoints();
         profileToBuild.addSetpoint(0, VALIDATION_HOLD_TEMP_F, fanPercent);
         profileToBuild.addSetpoint(VALIDATION_HOLD_MS, VALIDATION_HOLD_TEMP_F, fanPercent);

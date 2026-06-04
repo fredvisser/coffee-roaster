@@ -5,12 +5,12 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <vector>
-#include "Profiles.hpp"
-#include "DebugLog.hpp"
-#include "Types.hpp"
+#include "RoastProfile.hpp"
+#include "../support/DebugLog.hpp"
+#include "../platform/RoasterTypes.hpp"
 
 // Forward declarations
-extern Profiles profile;
+extern RoastProfile profile;
 extern Preferences preferences;
 
 struct ProfileOperationResult {
@@ -161,8 +161,8 @@ public:
             result.id = id;
             LOG_DEBUGF("Using ID: %s", id.c_str());
 
-            // 4. Convert to Profiles object
-            Profiles tempProfile;
+            // 4. Convert to RoastProfile object
+            RoastProfile tempProfile;
             tempProfile.clearSetpoints();
             JsonArray setpoints = doc["setpoints"];
             
@@ -314,7 +314,7 @@ public:
             uint8_t buffer[200];
             preferences.getBytes(profileDataKey(id).c_str(), buffer, sizeof(buffer));
             
-            Profiles temp;
+            RoastProfile temp;
             temp.unflattenProfile(buffer);
             
             String name;

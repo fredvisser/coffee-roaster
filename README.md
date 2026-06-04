@@ -69,11 +69,13 @@ git clone https://github.com/fredvisser/coffee-roaster.git
 cd coffee-roaster/roaster-firmware
 
 # 2. Run automated setup (installs dependencies)
-./setup_libraries.sh
+./tools/bootstrap.sh
 
 # 3. Compile and upload firmware
-./run_tests.sh 1 upload
+./tools/firmware.sh upload
 ```
+
+Legacy aliases remain available during the transition: `./setup_libraries.sh` and `./run_tests.sh` still work, but `./tools/bootstrap.sh`, `./tools/firmware.sh`, and `./tools/tests.sh` are now the canonical entrypoints.
 
 ### Key Features
 

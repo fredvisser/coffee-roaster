@@ -68,10 +68,11 @@ See `OTA_SETUP.md` for complete OTA configuration details.
 # Navigate to firmware directory
 cd roaster-firmware
 
-# Compile for ESP32 Nano (or your specific board)
-arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware.ino
+# Canonical command surface
+./tools/firmware.sh build
+./tools/firmware.sh build --board jc4827w543c
 
-# Build with verbose output for debugging
+# Legacy direct arduino-cli build (still useful for low-level debugging)
 arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware.ino --verbose
 ```
 
@@ -81,11 +82,11 @@ arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware.ino --verbose
 # List connected boards
 arduino-cli board list
 
-# Upload to connected ESP32
-arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora roaster-firmware.ino
+# Canonical upload command
+./tools/firmware.sh upload
 
-# Monitor serial output
-arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
+# Canonical test command
+./tools/tests.sh run safety
 ```
 
 #### Debug Mode

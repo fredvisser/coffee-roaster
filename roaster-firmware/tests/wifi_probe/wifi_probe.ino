@@ -1,6 +1,6 @@
 #include <WiFi.h>
-#include "../../BoardConfig.hpp"
-#include "../../DisplayAdapter.hpp"
+#include "../../src/platform/BoardConfig.hpp"
+#include "../../src/display/DisplayAdapter.hpp"
 
 #ifndef WIFI_TEST_SSID
 #define WIFI_TEST_SSID ""

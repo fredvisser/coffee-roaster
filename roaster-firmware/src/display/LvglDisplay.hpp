@@ -10,8 +10,8 @@
 #include <PINS_JC4827W543.h>
 #include <TAMC_GT911.h>
 #include <esp_heap_caps.h>
-#include "BoardConfig.hpp"
-#include "DebugLog.hpp"
+#include "../platform/BoardConfig.hpp"
+#include "../support/DebugLog.hpp"
 #include "DisplayTypes.hpp"
 
 namespace LvglDisplay
@@ -1278,136 +1278,93 @@ inline void showScreen(DisplayScreen screen)
   }
 }
 
-inline int readNumber(const char *component)
+inline int readFinalTargetTemp()
 {
-  if (strcmp(component, "globals.currentTempNum.val") == 0)
-  {
-    return currentTempValue;
-  }
-
-  if (strcmp(component, "globals.nextSetTempNum.val") == 0)
-  {
-    return targetTempValue;
-  }
-
-  if (strcmp(component, "globals.setTempNum.val") == 0)
-  {
-    return finalTargetTempValue;
-  }
-
-  if (strcmp(component, "globals.setpointFan.val") == 0)
-  {
-    return fanPercentValue;
-  }
-
-  if (strcmp(component, "globals.setpointProg.val") == 0)
-  {
-    return progressPercentValue;
-  }
-
-  return 0;
+  return finalTargetTempValue;
 }
 
-inline String readText(const char *component)
+inline DisplayWifiFormState readWifiFormState()
 {
-  if (strcmp(component, "ConfigWifi.ssid.txt") == 0)
-  {
-    syncWifiFormStateFromInputs();
-    return wifiFormState.ssid;
-  }
-
-  if (strcmp(component, "ConfigWifi.password.txt") == 0)
-  {
-    syncWifiFormStateFromInputs();
-    return wifiFormState.password;
-  }
-
-  return String();
+  syncWifiFormStateFromInputs();
+  return wifiFormState;
 }
 
-inline void writeNumber(const char *component, int value)
+inline void setCurrentTempValue(int value)
 {
   ensureUiBuilt();
-
-  if (strcmp(component, "globals.currentTempNum.val") == 0)
-  {
-    currentTempValue = value;
-    updateDerivedLabels();
-    return;
-  }
-
-  if (strcmp(component, "globals.nextSetTempNum.val") == 0 || strcmp(component, "globals.setTempNum.val") == 0)
-  {
-    if (strcmp(component, "globals.setTempNum.val") == 0)
-    {
-      finalTargetTempValue = value;
-    }
-    else
-    {
-      targetTempValue = value;
-    }
-    updateDerivedLabels();
-    return;
-  }
-
-  if (strcmp(component, "globals.setpointFan.val") == 0)
-  {
-    fanPercentValue = value;
-    updateDerivedLabels();
-    return;
-  }
-
-  if (strcmp(component, "globals.setpointProg.val") == 0)
-  {
-    progressPercentValue = value;
-    updateDerivedLabels();
-  }
+  currentTempValue = value;
+  updateDerivedLabels();
 }
 
-inline void writeText(const char *component, const String &value)
+inline void setTargetTempValue(int value)
 {
   ensureUiBuilt();
+  targetTempValue = value;
+  updateDerivedLabels();
+}
 
-  if (strcmp(component, "ConfigWifi.ssid.txt") == 0)
-  {
-    wifiFormState.ssid = value;
-    syncWifiInputsFromState();
-    return;
-  }
+inline void setFinalTargetTempValue(int value)
+{
+  ensureUiBuilt();
+  finalTargetTempValue = value;
+  updateDerivedLabels();
+}
 
-  if (strcmp(component, "ConfigWifi.password.txt") == 0)
-  {
-    wifiFormState.password = value;
-    syncWifiInputsFromState();
-    return;
-  }
+inline void setFanPercentValue(int value)
+{
+  ensureUiBuilt();
+  fanPercentValue = value;
+  updateDerivedLabels();
+}
 
-  if (strcmp(component, "ConfigWifi.ip.txt") == 0)
-  {
-    wifiStatusText = value;
-    updateDerivedLabels();
-    return;
-  }
+inline void setProgressValue(int value)
+{
+  ensureUiBuilt();
+  progressPercentValue = value;
+  updateDerivedLabels();
+}
 
-  if (strcmp(component, "ConfigNav.rev.txt") == 0)
-  {
-    revisionText = value;
-    updateDerivedLabels();
-    return;
-  }
+inline void setWifiStatusText(const String &value)
+{
+  ensureUiBuilt();
+  wifiStatusText = value;
+  updateDerivedLabels();
+}
 
-  if (strcmp(component, "ProfileActive.t1.txt") == 0)
-  {
-    activeProfileText = value;
-    updateDerivedLabels();
-    return;
-  }
+inline void setRevisionText(const String &value)
+{
+  ensureUiBuilt();
+  revisionText = value;
+  updateDerivedLabels();
+}
 
-  if (strcmp(component, "Error.message.txt") == 0)
-  {
-    errorMessageText = value;
-    updateDerivedLabels();
-  }
+inline void setActiveProfileText(const String &value)
+{
+  ensureUiBuilt();
+  activeProfileText = value;
+  updateDerivedLabels();
+}
+
+inline void setErrorMessageText(const String &value)
+{
+  ensureUiBuilt();
+  errorMessageText = value;
+  updateDerivedLabels();
+}
+
+inline void clearProfileWaveformData()
+{
+  clearProfileWaveform();
+}
+
+inline void appendProfileWaveformDataPoint(int32_t value)
+{
+  appendProfileWaveformPoint(value);
+}
+
+inline void refreshProfilePlot()
+{
+  refreshProfileChart();
 }
 
 inline void updateTelemetry(const DisplayTelemetry &telemetry)
@@ -1444,68 +1401,6 @@ inline void updateTelemetry(const DisplayTelemetry &telemetry)
   updateDerivedLabels();
 }
 
-inline void sendCommand(const char *command)
-{
-  if (strcmp(command, "s0.clr") == 0)
-  {
-    clearProfileWaveform();
-    return;
-  }
-
-  if (strcmp(command, "ref b1") == 0)
-  {
-    refreshProfileChart();
-    return;
-  }
-
-  int componentId = 0;
-  int channel = 0;
-  int value = 0;
-  if (sscanf(command, "add %d,%d,%d", &componentId, &channel, &value) == 3)
-  {
-    if (componentId == 2 && channel == 0)
-    {
-      appendProfileWaveformPoint(value);
-    }
-    return;
-  }
-
-  if (strcmp(command, "page Start") == 0)
-  {
-    showScreen(DisplayScreen::Start);
-    return;
-  }
-
-  if (strcmp(command, "page Network") == 0)
-  {
-    showScreen(DisplayScreen::Network);
-    return;
-  }
-
-  if (strcmp(command, "page Roasting") == 0)
-  {
-    showScreen(DisplayScreen::Roasting);
-    return;
-  }
-
-  if (strcmp(command, "page Cooling") == 0)
-  {
-    showScreen(DisplayScreen::Cooling);
-    return;
-  }
-
-  if (strcmp(command, "page Error") == 0)
-  {
-    showScreen(DisplayScreen::Error);
-    return;
-  }
-
-  if (strcmp(command, "page ProfileActive") == 0)
-  {
-    showScreen(DisplayScreen::ProfileActive);
-    refreshProfileChart();
-  }
-}
 }
 
 #endif

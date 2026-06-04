@@ -9,8 +9,8 @@
  */
 
 #include <AUnit.h>
-#include "../../PIDController.hpp"
-#include "../../PIDRuntimeController.hpp"
+#include "../../src/control/PIDController.hpp"
+#include "../../src/control/PIDRuntimeController.hpp"
 
 using namespace aunit;
 

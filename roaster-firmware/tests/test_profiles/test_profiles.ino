@@ -1,7 +1,7 @@
 /**
  * Profile Management Unit Tests
  * 
- * Tests for the Profiles class including:
+ * Tests for the RoastProfile class including:
  * - Setpoint interpolation accuracy
  * - Profile serialization/deserialization
  * - Boundary conditions
@@ -9,12 +9,12 @@
  */
 
 #include <AUnit.h>
-#include "../../Profiles.hpp"
+#include "../../src/profiles/RoastProfile.hpp"
 
 using namespace aunit;
 
 // Test fixtures
-Profiles testProfile;
+RoastProfile testProfile;
 uint8_t buffer[200];
 
 void setup() {
@@ -32,7 +32,7 @@ void loop() {
 // ============================================================================
 
 test(Profile_AddSetpoint_Basic) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   
   profile.addSetpoint(60000, 200, 50);
@@ -48,7 +48,7 @@ test(Profile_AddSetpoint_Basic) {
 }
 
 test(Profile_AddSetpoint_MaxCapacity) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   
   // Try to add 11 setpoints (max is 10)
@@ -61,7 +61,7 @@ test(Profile_AddSetpoint_MaxCapacity) {
 }
 
 test(Profile_ClearSetpoints) {
-  Profiles profile;
+  RoastProfile profile;
   profile.addSetpoint(60000, 200, 50);
   profile.addSetpoint(120000, 300, 75);
   
@@ -80,7 +80,7 @@ test(Profile_ClearSetpoints) {
 // ============================================================================
 
 test(Profile_GetTargetTemp_BeforeStart) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 300, 50);
   profile.addSetpoint(120000, 400, 75);
@@ -94,7 +94,7 @@ test(Profile_GetTargetTemp_BeforeStart) {
 }
 
 test(Profile_GetTargetTemp_LinearInterpolation) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 300, 50);
   profile.addSetpoint(120000, 400, 75);
@@ -108,7 +108,7 @@ test(Profile_GetTargetTemp_LinearInterpolation) {
 }
 
 test(Profile_GetTargetTemp_BetweenSetpoints) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 300, 50);
   profile.addSetpoint(120000, 400, 75);
@@ -122,7 +122,7 @@ test(Profile_GetTargetTemp_BetweenSetpoints) {
 }
 
 test(Profile_GetTargetTemp_AfterLastSetpoint) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 300, 50);
   profile.addSetpoint(120000, 400, 75);
@@ -135,7 +135,7 @@ test(Profile_GetTargetTemp_AfterLastSetpoint) {
 }
 
 test(Profile_GetFinalTargetTemp) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 300, 50);
   profile.addSetpoint(120000, 400, 75);
@@ -149,7 +149,7 @@ test(Profile_GetFinalTargetTemp) {
 // ============================================================================
 
 test(Profile_GetTargetFanSpeed_Start) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 300, 50);
   profile.addSetpoint(120000, 400, 80);
@@ -163,7 +163,7 @@ test(Profile_GetTargetFanSpeed_Start) {
 }
 
 test(Profile_GetTargetFanSpeed_LinearInterpolation) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 300, 40);
   profile.addSetpoint(120000, 400, 80);
@@ -178,7 +178,7 @@ test(Profile_GetTargetFanSpeed_LinearInterpolation) {
 }
 
 test(Profile_GetTargetFanSpeed_BetweenSetpoints) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 300, 40);
   profile.addSetpoint(120000, 400, 80);
@@ -193,7 +193,7 @@ test(Profile_GetTargetFanSpeed_BetweenSetpoints) {
 }
 
 test(Profile_GetTargetFanSpeed_AfterLastSetpoint) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 300, 50);
   profile.addSetpoint(120000, 400, 100);
@@ -210,7 +210,7 @@ test(Profile_GetTargetFanSpeed_AfterLastSetpoint) {
 // ============================================================================
 
 test(Profile_GetProfileProgress_Start) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 300, 50);
   profile.addSetpoint(120000, 400, 75);
@@ -222,7 +222,7 @@ test(Profile_GetProfileProgress_Start) {
 }
 
 test(Profile_GetProfileProgress_Halfway) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 300, 50);
   profile.addSetpoint(120000, 400, 75);
@@ -235,7 +235,7 @@ test(Profile_GetProfileProgress_Halfway) {
 }
 
 test(Profile_GetProfileProgress_Complete) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 300, 50);
   profile.addSetpoint(120000, 400, 75);
@@ -252,7 +252,7 @@ test(Profile_GetProfileProgress_Complete) {
 // ============================================================================
 
 test(Profile_Serialization_RoundTrip) {
-  Profiles profile1;
+  RoastProfile profile1;
   profile1.clearSetpoints();
   profile1.addSetpoint(60000, 300, 50);
   profile1.addSetpoint(120000, 400, 75);
@@ -261,7 +261,7 @@ test(Profile_Serialization_RoundTrip) {
   uint8_t buffer[200];
   profile1.flattenProfile(buffer);
   
-  Profiles profile2;
+  RoastProfile profile2;
   profile2.unflattenProfile(buffer);
   
   // Verify setpoint count
@@ -279,13 +279,13 @@ test(Profile_Serialization_RoundTrip) {
 }
 
 test(Profile_Serialization_EmptyProfile) {
-  Profiles profile1;
+  RoastProfile profile1;
   profile1.clearSetpoints();
   
   uint8_t buffer[200];
   profile1.flattenProfile(buffer);
   
-  Profiles profile2;
+  RoastProfile profile2;
   profile2.clearSetpoints();
   profile2.addSetpoint(99999, 999, 99); // Add garbage
   profile2.unflattenProfile(buffer);
@@ -302,7 +302,7 @@ test(Profile_Deserialization_InvalidData) {
   badBuffer[2] = 0;
   badBuffer[3] = 20;
   
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 300, 50);
   int originalCount = profile.getSetpointCount();
@@ -321,7 +321,7 @@ test(Profile_Deserialization_ZeroCount) {
   badBuffer[2] = 0;
   badBuffer[3] = 0;
   
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 300, 50);
   int originalCount = profile.getSetpointCount();
@@ -337,7 +337,7 @@ test(Profile_Deserialization_ZeroCount) {
 // ============================================================================
 
 test(Profile_BoundaryCondition_VeryShortProfile) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(1000, 250, 50); // Very short 1 second profile
   
@@ -349,7 +349,7 @@ test(Profile_BoundaryCondition_VeryShortProfile) {
 }
 
 test(Profile_BoundaryCondition_VeryLongProfile) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(3600000, 300, 50); // 1 hour profile
   profile.addSetpoint(7200000, 450, 100); // 2 hour profile
@@ -362,7 +362,7 @@ test(Profile_BoundaryCondition_VeryLongProfile) {
 }
 
 test(Profile_BoundaryCondition_HighTemperatures) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 500, 50);
   profile.addSetpoint(120000, 600, 75);
@@ -375,7 +375,7 @@ test(Profile_BoundaryCondition_HighTemperatures) {
 }
 
 test(Profile_BoundaryCondition_ZeroFanSpeed) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 300, 0);
   
@@ -386,7 +386,7 @@ test(Profile_BoundaryCondition_ZeroFanSpeed) {
 }
 
 test(Profile_BoundaryCondition_MaxFanSpeed) {
-  Profiles profile;
+  RoastProfile profile;
   profile.clearSetpoints();
   profile.addSetpoint(60000, 300, 100);
   

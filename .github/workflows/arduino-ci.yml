@@ -68,8 +68,7 @@ jobs:
       run: |
         set -o pipefail
         cd roaster-firmware
-        mkdir -p build
-        arduino-cli compile --fqbn "$BOARD_FQBN" roaster-firmware.ino --warnings all --output-dir build 2>&1 | tee ../firmware-compile.log
+        ./tools/firmware.sh build 2>&1 | tee ../firmware-compile.log
 
     - name: Generate firmware size report
       run: |
@@ -84,27 +83,33 @@ jobs:
         
     - name: Compile profile tests
       run: |
-        arduino-cli compile --fqbn "$BOARD_FQBN" roaster-firmware/tests/test_profiles/test_profiles.ino
+        cd roaster-firmware
+        ./tools/tests.sh compile profiles
         
     - name: Compile PID tests
       run: |
-        arduino-cli compile --fqbn "$BOARD_FQBN" roaster-firmware/tests/test_pid/test_pid.ino
+        cd roaster-firmware
+        ./tools/tests.sh compile pid
         
     - name: Compile state machine tests
       run: |
-        arduino-cli compile --fqbn "$BOARD_FQBN" roaster-firmware/tests/test_state_machine/test_state_machine.ino
+        cd roaster-firmware
+        ./tools/tests.sh compile state
         
     - name: Compile safety tests
       run: |
-        arduino-cli compile --fqbn "$BOARD_FQBN" roaster-firmware/tests/test_safety/test_safety.ino
+        cd roaster-firmware
+        ./tools/tests.sh compile safety
         
     - name: Compile unit test runner
       run: |
-        arduino-cli compile --fqbn "$BOARD_FQBN" roaster-firmware/tests/unit_tests/unit_tests.ino
+        cd roaster-firmware
+        ./tools/tests.sh compile unit
         
     - name: Compile hardware validation tests
       run: |
-        arduino-cli compile --fqbn "$BOARD_FQBN" roaster-firmware/tests/hardware_validation/hardware_validation.ino
+        cd roaster-firmware
+        ./tools/tests.sh compile hardware
         
     - name: Archive build artifacts
       uses: actions/upload-artifact@v4

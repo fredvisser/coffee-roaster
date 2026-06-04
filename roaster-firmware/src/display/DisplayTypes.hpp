@@ -2,7 +2,7 @@
 #define DISPLAY_TYPES_HPP
 
 #include <Arduino.h>
-#include "Types.hpp"
+#include "../platform/RoasterTypes.hpp"
 
 enum class DisplayScreen
 {

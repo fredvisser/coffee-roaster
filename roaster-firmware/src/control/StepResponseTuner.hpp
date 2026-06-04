@@ -5,8 +5,8 @@
 #include <math.h>
 #include <string.h>
 
-#include "DebugLog.hpp"
-#include "src/platform/CalibrationTypes.hpp"
+#include "../support/DebugLog.hpp"
+#include "../platform/CalibrationTypes.hpp"
 
 class StepResponseTuner {
 public:
