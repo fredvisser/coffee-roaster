@@ -101,15 +101,22 @@ print_info() {
 compile_sketch() {
     local sketch_path="$1"
     local sketch_name=$(basename "$sketch_path" .ino)
+    local all_extra_flags="$BUILD_EXTRA_FLAGS"
 
     print_info "Compiling $sketch_name..."
 
     print_info "Target board: $TARGET_BOARD ($BOARD_FQBN)"
 
+    if [[ "$sketch_name" == "roaster-firmware" ]]; then
+        local build_version="${ROASTER_BUILD_VERSION:-$(date +%F)}"
+        all_extra_flags="${all_extra_flags:+$all_extra_flags }-DVERSION=\"${build_version}\""
+        print_info "Firmware version: $build_version"
+    fi
+
     local build_args=(--fqbn "$BOARD_FQBN")
-    if [[ -n "$BUILD_EXTRA_FLAGS" ]]; then
-        build_args+=(--build-property "compiler.cpp.extra_flags=$BUILD_EXTRA_FLAGS")
-        build_args+=(--build-property "compiler.c.extra_flags=$BUILD_EXTRA_FLAGS")
+    if [[ -n "$all_extra_flags" ]]; then
+        build_args+=(--build-property "compiler.cpp.extra_flags=$all_extra_flags")
+        build_args+=(--build-property "compiler.c.extra_flags=$all_extra_flags")
     fi
 
     if arduino-cli compile "${build_args[@]}" "$sketch_path" 2>&1 | tee /tmp/compile.log; then

@@ -35,6 +35,20 @@ ESP32-based coffee roaster control system with PID temperature control, dual fan
 
 ## Building
 
+### LVGL Simulator
+
+You can render the display screens locally on macOS using the SDL-backed LVGL simulator:
+
+```bash
+brew install cmake pkg-config sdl2
+
+cd roaster-firmware
+./tools/lvgl-sim.sh run start
+./tools/lvgl-sim.sh screenshot all
+```
+
+Screenshot output is written to `roaster-firmware/build/simulator-screens/` and can be inspected directly or shared back into Copilot for visual review.
+
 ### Quick Setup (Automated)
 
 ```bash

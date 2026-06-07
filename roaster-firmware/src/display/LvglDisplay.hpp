@@ -7,6 +7,7 @@
 #if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_LVGL
 
 #include <lvgl.h>
+#include <vector>
 #include <PINS_JC4827W543.h>
 #include <TAMC_GT911.h>
 #include <esp_heap_caps.h>
@@ -37,6 +38,7 @@ inline constexpr uint8_t ActionQueueCapacity = 8;
 inline int currentTempValue = 0;
 inline int targetTempValue = -1;
 inline int finalTargetTempValue = -1;
+inline int storedProfileFinalTargetValue = -1;
 inline int fanPercentValue = -1;
 inline int progressPercentValue = -1;
 inline int elapsedSecondsValue = -1;
@@ -45,8 +47,15 @@ inline int heaterOutputValue = -1;
 inline int bdcFanMicrosValue = -1;
 inline String wifiStatusText = "No network";
 inline String activeProfileText = "No profile";
+inline String profileBrowserFocusText;
 inline String revisionText;
 inline String errorMessageText;
+inline int profileBrowserFocusFinalTargetValue = -1;
+inline int profileGraphMaxTempValue = -1;
+inline uint32_t profileGraphMaxTimeSeconds = 0;
+
+inline constexpr char TempUnitSymbol[] = "°";
+inline constexpr char TempUnitSuffix[] = "°F";
 
 inline constexpr uint32_t ColorBackground = 0x111111;
 inline constexpr uint32_t ColorHeader = 0x252525;
@@ -89,6 +98,11 @@ inline lv_obj_t *profileLabel = nullptr;
 inline lv_obj_t *errorLabel = nullptr;
 inline lv_obj_t *revisionLabel = nullptr;
 inline lv_obj_t *profileChart = nullptr;
+inline lv_obj_t *profileGraphYAxisMaxLabel = nullptr;
+inline lv_obj_t *profileGraphYAxisMinLabel = nullptr;
+inline lv_obj_t *profileGraphXAxisStartLabel = nullptr;
+inline lv_obj_t *profileGraphXAxisEndLabel = nullptr;
+inline lv_obj_t *profileListContainer = nullptr;
 inline lv_chart_series_t *profileSeries = nullptr;
 inline lv_obj_t *roastStartButton = nullptr;
 inline lv_obj_t *roastStopButton = nullptr;
@@ -105,6 +119,11 @@ inline lv_obj_t *finalTargetDownButton = nullptr;
 inline lv_obj_t *finalTargetUpButton = nullptr;
 inline lv_obj_t *ssidTextArea = nullptr;
 inline lv_obj_t *passwordTextArea = nullptr;
+inline lv_obj_t *profileNameModal = nullptr;
+inline lv_obj_t *profileNameTitleLabel = nullptr;
+inline lv_obj_t *profileNameTextArea = nullptr;
+inline lv_obj_t *profileNameSaveButton = nullptr;
+inline lv_obj_t *profileNameCancelButton = nullptr;
 inline lv_obj_t *keyboard = nullptr;
 inline lv_obj_t *activeTextArea = nullptr;
 
@@ -114,10 +133,35 @@ inline uint16_t profileWaveformPointCount = 0;
 inline DisplayAction actionQueue[ActionQueueCapacity] = {DisplayAction::None};
 inline uint8_t actionQueueHead = 0;
 inline uint8_t actionQueueTail = 0;
+inline std::vector<DisplayProfileSummary> profileBrowserEntries;
+inline std::vector<lv_obj_t *> profileListRows;
+inline int selectedProfileIndex = -1;
+inline bool profileNameModalVisible = false;
 
 inline void ensureUiBuilt();
 inline void refreshScreenLayout();
 inline void updateDerivedLabels();
+inline void rebuildProfileList();
+inline void refreshProfileListSelection();
+
+inline void formatDurationLabel(uint32_t totalSeconds, char *buffer, size_t bufferSize)
+{
+  if (buffer == nullptr || bufferSize == 0)
+  {
+    return;
+  }
+
+  snprintf(buffer, bufferSize, "%02lu:%02lu",
+           static_cast<unsigned long>(totalSeconds / 60U),
+           static_cast<unsigned long>(totalSeconds % 60U));
+}
+
+inline bool isFinalTargetDirty()
+{
+  return storedProfileFinalTargetValue >= 0 &&
+         finalTargetTempValue >= 0 &&
+         finalTargetTempValue != storedProfileFinalTargetValue;
+}
 
 inline lv_color_t stateAccentColor(RoasterState state)
 {
@@ -137,24 +181,26 @@ inline lv_color_t stateAccentColor(RoasterState state)
   }
 }
 
-inline const char *statusBannerText()
+inline String statusBannerText()
 {
   switch (activeScreen)
   {
   case DisplayScreen::Start:
-    return currentRoasterState == IDLE ? "Start - Idle ready" : "Start";
+    return currentRoasterState == IDLE ? String("Start - Idle ready") : String("Start");
   case DisplayScreen::Network:
-    return wifiStatusText.indexOf("Connecting") >= 0 ? "Network - Connecting" : "Network - Ready";
+    return wifiStatusText.indexOf("Connecting") >= 0 ? String("Network - Connecting") : String("Network - Ready");
   case DisplayScreen::Roasting:
-    return currentRoasterState == START_ROAST ? "Roasting - Fan ramp" : "Roasting - Heater on";
+    return currentRoasterState == START_ROAST ? String("Roasting - Fan ramp") : String("Roasting - Heater on");
   case DisplayScreen::Cooling:
-    return "Cooling - Airflow max";
+    return String("Cooling - Airflow max");
   case DisplayScreen::Error:
-    return "Error - Start blocked";
+    return String("Error - Start blocked");
+  case DisplayScreen::ProfileList:
+    return String("Profiles - Select one");
   case DisplayScreen::ProfileActive:
-    return "Profile graph";
+    return profileBrowserFocusText.length() > 0 ? String("Profile graph - ") + profileBrowserFocusText : String("Profile graph");
   default:
-    return "ROASTER";
+    return String("ROASTER");
   }
 }
 
@@ -381,17 +427,24 @@ inline void syncWifiFormStateFromInputs()
   }
 }
 
-inline void syncWifiInputsFromState()
+inline void syncWifiInputFromState(lv_obj_t *textArea, const String &value)
 {
-  if (ssidTextArea != nullptr)
+  if (textArea == nullptr || textArea == activeTextArea)
   {
-    lv_textarea_set_text(ssidTextArea, wifiFormState.ssid.c_str());
+    return;
   }
 
-  if (passwordTextArea != nullptr)
+  const char *currentText = lv_textarea_get_text(textArea);
+  if (currentText == nullptr || strcmp(currentText, value.c_str()) != 0)
   {
-    lv_textarea_set_text(passwordTextArea, wifiFormState.password.c_str());
+    lv_textarea_set_text(textArea, value.c_str());
   }
+}
+
+inline void syncWifiInputsFromState()
+{
+  syncWifiInputFromState(ssidTextArea, wifiFormState.ssid);
+  syncWifiInputFromState(passwordTextArea, wifiFormState.password);
 }
 
 inline void hideKeyboard()
@@ -471,6 +524,10 @@ inline void setFinalTargetValue(int value)
 {
   finalTargetTempValue = constrain(value, 0, 500);
   updateDerivedLabels();
+  if (activeScreen == DisplayScreen::Start)
+  {
+    refreshScreenLayout();
+  }
 }
 
 inline void actionButtonEvent(lv_event_t *event)
@@ -505,6 +562,130 @@ inline void finalTargetAdjustEvent(lv_event_t *event)
   }
 
   setFinalTargetValue(baseValue + delta);
+}
+
+inline void profileLabelEvent(lv_event_t *event)
+{
+  if (lv_event_get_code(event) != LV_EVENT_CLICKED)
+  {
+    return;
+  }
+
+  if (activeScreen == DisplayScreen::Start)
+  {
+    queueAction(DisplayAction::OpenActiveProfile);
+  }
+}
+
+inline void profileListRowEvent(lv_event_t *event)
+{
+  if (lv_event_get_code(event) != LV_EVENT_CLICKED)
+  {
+    return;
+  }
+
+  selectedProfileIndex = static_cast<int>(reinterpret_cast<intptr_t>(lv_event_get_user_data(event)));
+  if (selectedProfileIndex >= 0 && selectedProfileIndex < static_cast<int>(profileBrowserEntries.size()))
+  {
+    profileBrowserFocusText = profileBrowserEntries[static_cast<size_t>(selectedProfileIndex)].name;
+    profileBrowserFocusFinalTargetValue = profileBrowserEntries[static_cast<size_t>(selectedProfileIndex)].finalTargetF;
+  }
+
+  refreshProfileListSelection();
+  lv_obj_scroll_to_view(lv_event_get_target_obj(event), LV_ANIM_OFF);
+  updateDerivedLabels();
+}
+
+inline void profileSecondaryButtonEvent(lv_event_t *event)
+{
+  if (lv_event_get_code(event) != LV_EVENT_CLICKED)
+  {
+    return;
+  }
+
+  if (activeScreen == DisplayScreen::ProfileList)
+  {
+    queueAction(DisplayAction::ViewSelectedProfileGraph);
+    return;
+  }
+
+  if (activeScreen != DisplayScreen::ProfileActive || profileNameModal == nullptr || profileNameTextArea == nullptr)
+  {
+    return;
+  }
+
+  String suggestedName = profileBrowserFocusText.length() > 0 ? profileBrowserFocusText + " Copy" : String("Profile Copy");
+  lv_label_set_text(profileNameTitleLabel, "Copy profile as");
+  lv_textarea_set_text(profileNameTextArea, suggestedName.c_str());
+  profileNameModalVisible = true;
+  showKeyboardFor(profileNameTextArea);
+  refreshScreenLayout();
+}
+
+inline void profileBackButtonEvent(lv_event_t *event)
+{
+  if (lv_event_get_code(event) != LV_EVENT_CLICKED)
+  {
+    return;
+  }
+
+  if (profileNameModalVisible)
+  {
+    profileNameModalVisible = false;
+    hideKeyboard();
+    refreshScreenLayout();
+    return;
+  }
+
+  queueAction(activeScreen == DisplayScreen::ProfileActive ? DisplayAction::ReturnToProfileList : DisplayAction::ReturnToStateScreen);
+}
+
+inline void profileNameSaveEvent(lv_event_t *event)
+{
+  if (lv_event_get_code(event) != LV_EVENT_CLICKED)
+  {
+    return;
+  }
+
+  hideKeyboard();
+  profileNameModalVisible = false;
+  queueAction(DisplayAction::DuplicateSelectedProfile);
+  refreshScreenLayout();
+}
+
+inline void profileNameCancelEvent(lv_event_t *event)
+{
+  if (lv_event_get_code(event) != LV_EVENT_CLICKED)
+  {
+    return;
+  }
+
+  profileNameModalVisible = false;
+  hideKeyboard();
+  refreshScreenLayout();
+}
+
+inline void profileNameTextAreaEvent(lv_event_t *event)
+{
+  lv_event_code_t code = lv_event_get_code(event);
+  lv_obj_t *target = lv_event_get_target_obj(event);
+
+  if (code == LV_EVENT_FOCUSED || code == LV_EVENT_CLICKED)
+  {
+    showKeyboardFor(target);
+    return;
+  }
+
+  if (code == LV_EVENT_DEFOCUSED && target == activeTextArea)
+  {
+    hideKeyboard();
+    return;
+  }
+
+  if (code == LV_EVENT_READY)
+  {
+    hideKeyboard();
+  }
 }
 
 inline void wifiTextAreaEvent(lv_event_t *event)
@@ -569,6 +750,8 @@ inline void refreshProfileChart()
   if (profileWaveformPointCount == 0)
   {
     static const int32_t emptySeries[] = {0};
+    profileGraphMaxTempValue = -1;
+    profileGraphMaxTimeSeconds = 0;
     lv_chart_set_point_count(profileChart, 1);
     lv_chart_set_series_values(profileChart, profileSeries, emptySeries, 1);
     lv_chart_refresh(profileChart);
@@ -601,23 +784,106 @@ inline void appendProfileWaveformPoint(int32_t value)
   profileWaveformValues[profileWaveformPointCount++] = value;
 }
 
-inline void refreshScreenLayout()
+inline void refreshProfileListSelection()
 {
-  if (profileChart == nullptr || headerBar == nullptr || mainCard == nullptr || footerCard == nullptr)
+  for (size_t index = 0; index < profileListRows.size(); ++index)
+  {
+    lv_obj_t *row = profileListRows[index];
+    bool selected = static_cast<int>(index) == selectedProfileIndex;
+    bool active = index < profileBrowserEntries.size() ? profileBrowserEntries[index].active : false;
+
+    lv_obj_set_style_bg_color(row, lv_color_hex(selected ? ColorAccentReady : ColorPanel), 0);
+    lv_obj_set_style_border_color(row, lv_color_hex(selected ? ColorAccentReady : (active ? ColorAccentCool : ColorAccentOutline)), 0);
+    lv_obj_set_style_border_width(row, selected || active ? 2 : 1, 0);
+
+    lv_obj_t *nameLabel = lv_obj_get_child(row, 0);
+    lv_obj_t *metaLabel = lv_obj_get_child(row, 1);
+    if (nameLabel != nullptr)
+    {
+      lv_obj_set_style_text_color(nameLabel, lv_color_hex(selected ? ColorBackground : ColorTextPrimary), 0);
+    }
+    if (metaLabel != nullptr)
+    {
+      lv_obj_set_style_text_color(metaLabel, lv_color_hex(selected ? ColorBackground : ColorTextMuted), 0);
+    }
+  }
+}
+
+inline void rebuildProfileList()
+{
+  if (profileListContainer == nullptr)
   {
     return;
   }
+
+  lv_obj_clean(profileListContainer);
+  profileListRows.clear();
+
+  for (size_t index = 0; index < profileBrowserEntries.size(); ++index)
+  {
+    const DisplayProfileSummary &entry = profileBrowserEntries[index];
+    lv_obj_t *row = lv_button_create(profileListContainer);
+    lv_obj_set_width(row, lv_pct(100));
+    lv_obj_set_height(row, 50);
+    lv_obj_set_style_radius(row, 0, 0);
+    lv_obj_set_style_shadow_width(row, 0, 0);
+    lv_obj_set_style_bg_color(row, lv_color_hex(ColorPanel), 0);
+    lv_obj_set_style_border_color(row, lv_color_hex(ColorAccentOutline), 0);
+    lv_obj_set_style_border_width(row, 1, 0);
+    lv_obj_set_style_pad_all(row, 10, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(row, profileListRowEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(index)));
+
+    lv_obj_t *nameLabel = lv_label_create(row);
+    lv_obj_set_style_text_font(nameLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(nameLabel, lv_color_hex(ColorTextPrimary), 0);
+    lv_label_set_text(nameLabel, entry.name.c_str());
+    lv_obj_align(nameLabel, LV_ALIGN_LEFT_MID, 0, -8);
+
+    lv_obj_t *metaLabel = lv_label_create(row);
+    lv_obj_set_style_text_font(metaLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(metaLabel, lv_color_hex(ColorTextMuted), 0);
+    if (entry.active)
+    {
+      lv_label_set_text_fmt(metaLabel, "Final %d%s  ACTIVE", entry.finalTargetF, TempUnitSuffix);
+    }
+    else
+    {
+      lv_label_set_text_fmt(metaLabel, "Final %d%s", entry.finalTargetF, TempUnitSuffix);
+    }
+    lv_obj_align(metaLabel, LV_ALIGN_LEFT_MID, 0, 10);
+
+    profileListRows.push_back(row);
+  }
+
+  refreshProfileListSelection();
+}
+
+inline void refreshScreenLayout()
+{
+  if (profileChart == nullptr || headerBar == nullptr || mainCard == nullptr || footerCard == nullptr || profileListContainer == nullptr)
+  {
+    return;
+  }
+
+  const int gutter = 12;
+  const int sideColumnWidth = 116;
+  const int leftColumnWidth = BoardConfig::DisplayWidth - (gutter * 4) - sideColumnWidth;
+  const int topY = 44;
 
   const bool showStartControls = activeScreen == DisplayScreen::Start;
   const bool showNetworkControls = activeScreen == DisplayScreen::Network;
   const bool showRoastControls = activeScreen == DisplayScreen::Roasting;
   const bool showCoolingControls = activeScreen == DisplayScreen::Cooling;
   const bool showErrorControls = activeScreen == DisplayScreen::Error;
-  const bool showProfileControls = activeScreen == DisplayScreen::ProfileActive;
+  const bool showProfileListControls = activeScreen == DisplayScreen::ProfileList;
+  const bool showProfileGraphControls = activeScreen == DisplayScreen::ProfileActive && !profileNameModalVisible;
+  const bool showProfileControls = showProfileListControls || showProfileGraphControls;
   const bool showMainCard = showStartControls || showRoastControls || showCoolingControls || showErrorControls || showProfileControls;
   const bool showFooterCard = showStartControls || showRoastControls;
   const bool showNetworkFields = showNetworkControls;
   const bool showNetworkButtons = showNetworkFields && activeTextArea == nullptr;
+  const bool showKeyboard = activeTextArea != nullptr && (showNetworkFields || profileNameModalVisible);
 
   lv_obj_align(headerBar, LV_ALIGN_TOP_MID, 0, 0);
   lv_obj_set_size(headerBar, BoardConfig::DisplayWidth, 30);
@@ -627,11 +893,11 @@ inline void refreshScreenLayout()
 
   setWidgetHidden(mainCard, !showMainCard);
   setWidgetHidden(footerCard, !showFooterCard);
-  setWidgetHidden(mainEyebrowLabel, !(showMainCard && !showProfileControls));
-  setWidgetHidden(mainBodyLabel, !(showMainCard && !showProfileControls));
-  setWidgetHidden(mainSupportLabel, !(showMainCard && !showProfileControls));
+  setWidgetHidden(mainEyebrowLabel, !(showStartControls || showRoastControls || showCoolingControls || showErrorControls));
+  setWidgetHidden(mainBodyLabel, !(showCoolingControls || showErrorControls));
+  setWidgetHidden(mainSupportLabel, !(showCoolingControls || showErrorControls));
   setWidgetHidden(currentTempLabel, !(showStartControls || showRoastControls || showCoolingControls));
-  setWidgetHidden(targetTempLabel, !(showRoastControls || showProfileControls));
+  setWidgetHidden(targetTempLabel, !(showRoastControls || showProfileGraphControls));
   setWidgetHidden(progressBar, !showRoastControls);
   setWidgetHidden(progressLabel, !showRoastControls);
   setWidgetHidden(fanLabel, !showRoastControls);
@@ -639,12 +905,18 @@ inline void refreshScreenLayout()
   setWidgetHidden(fanTempLabel, true);
   setWidgetHidden(bdcFanLabel, true);
   setWidgetHidden(errorLabel, !showErrorControls);
-  setWidgetHidden(profileChart, !showProfileControls);
-  setWidgetHidden(profileLabel, !(showStartControls || showProfileControls));
-  setWidgetHidden(wifiLabel, !(showStartControls || showNetworkControls));
-  setWidgetHidden(revisionLabel, !(showStartControls || showNetworkControls));
+  setWidgetHidden(profileChart, !showProfileGraphControls);
+  setWidgetHidden(profileGraphYAxisMaxLabel, !showProfileGraphControls);
+  setWidgetHidden(profileGraphYAxisMinLabel, !showProfileGraphControls);
+  setWidgetHidden(profileGraphXAxisStartLabel, !showProfileGraphControls);
+  setWidgetHidden(profileGraphXAxisEndLabel, !showProfileGraphControls);
+  setWidgetHidden(profileListContainer, !showProfileListControls);
+  setWidgetHidden(profileLabel, !(showStartControls || showProfileGraphControls));
+  setWidgetHidden(wifiLabel, !showNetworkControls);
+  setWidgetHidden(revisionLabel, !showNetworkControls);
   setWidgetHidden(ssidCaptionLabel, !showNetworkFields);
   setWidgetHidden(passwordCaptionLabel, !showNetworkFields);
+  setWidgetHidden(profileNameModal, !profileNameModalVisible);
 
   lv_obj_t *startWidgets[] = {
       roastStartButton,
@@ -652,6 +924,7 @@ inline void refreshScreenLayout()
       networkProfileButton,
       finalTargetDownButton,
       finalTargetUpButton,
+      profileRefreshButton,
   };
 
   for (lv_obj_t *widget : startWidgets)
@@ -685,7 +958,6 @@ inline void refreshScreenLayout()
   lv_obj_t *profileWidgets[] = {
       profilePrevButton,
       profileNextButton,
-      profileRefreshButton,
       profileBackButton,
   };
 
@@ -694,11 +966,11 @@ inline void refreshScreenLayout()
     setWidgetHidden(widget, !showProfileControls);
   }
 
-  setWidgetHidden(secondaryButton, !showErrorControls);
-  setWidgetHidden(keyboard, !showNetworkFields || activeTextArea == nullptr);
+  setWidgetHidden(secondaryButton, true);
+  setWidgetHidden(keyboard, !showKeyboard);
   layoutNetworkWidgets();
 
-  if (!showNetworkFields)
+  if (!showNetworkFields && !profileNameModalVisible)
   {
     if (keyboard != nullptr)
     {
@@ -710,65 +982,65 @@ inline void refreshScreenLayout()
 
   if (showStartControls)
   {
-    lv_obj_set_size(mainCard, 304, 156);
-    lv_obj_align(mainCard, LV_ALIGN_TOP_LEFT, 12, 44);
+    lv_obj_set_size(mainCard, leftColumnWidth, 156);
+    lv_obj_align(mainCard, LV_ALIGN_TOP_LEFT, gutter, topY);
     lv_obj_set_style_border_color(mainCard, lv_color_hex(ColorAccentOutline), 0);
     lv_obj_set_style_border_width(mainCard, 1, 0);
     lv_obj_set_style_bg_color(mainCard, lv_color_hex(ColorPanel), 0);
 
-    lv_obj_set_size(footerCard, 304, 54);
-    lv_obj_align(footerCard, LV_ALIGN_BOTTOM_LEFT, 12, -16);
+    lv_obj_set_size(footerCard, leftColumnWidth, 46);
+    lv_obj_align(footerCard, LV_ALIGN_TOP_LEFT, gutter, topY + 166);
     lv_obj_set_style_bg_color(footerCard, lv_color_hex(ColorPanel), 0);
     lv_obj_set_style_border_color(footerCard, lv_color_hex(ColorAccentOutline), 0);
     lv_obj_set_style_border_width(footerCard, 1, 0);
 
     lv_obj_align_to(mainEyebrowLabel, mainCard, LV_ALIGN_TOP_MID, 0, 18);
     lv_obj_align_to(currentTempLabel, mainCard, LV_ALIGN_CENTER, 0, 6);
-    lv_obj_align_to(mainBodyLabel, mainCard, LV_ALIGN_BOTTOM_MID, 0, -30);
-    lv_obj_align_to(mainSupportLabel, mainCard, LV_ALIGN_BOTTOM_MID, 0, -14);
 
     lv_obj_set_size(roastStartButton, 116, 84);
-    lv_obj_align(roastStartButton, LV_ALIGN_TOP_RIGHT, -12, 44);
+    lv_obj_align(roastStartButton, LV_ALIGN_TOP_RIGHT, -12, topY);
     lv_obj_set_size(profileOpenButton, 116, 46);
-    lv_obj_align(profileOpenButton, LV_ALIGN_TOP_RIGHT, -12, 136);
+    lv_obj_align(profileOpenButton, LV_ALIGN_TOP_RIGHT, -12, topY + 92);
     lv_obj_set_size(networkProfileButton, 116, 46);
-    lv_obj_align(networkProfileButton, LV_ALIGN_TOP_RIGHT, -12, 190);
+    lv_obj_align(networkProfileButton, LV_ALIGN_TOP_RIGHT, -12, topY + 146);
     lv_obj_set_size(finalTargetDownButton, 52, 52);
     lv_obj_align_to(finalTargetDownButton, mainCard, LV_ALIGN_LEFT_MID, 22, 0);
     lv_obj_set_size(finalTargetUpButton, 52, 52);
     lv_obj_align_to(finalTargetUpButton, mainCard, LV_ALIGN_RIGHT_MID, -22, 0);
 
-    lv_obj_set_width(profileLabel, 280);
-    lv_obj_align_to(profileLabel, footerCard, LV_ALIGN_TOP_LEFT, 10, 7);
-    lv_obj_set_width(wifiLabel, 280);
-    lv_obj_align_to(wifiLabel, footerCard, LV_ALIGN_TOP_LEFT, 10, 28);
-    lv_obj_set_width(revisionLabel, 280);
-    lv_obj_align(revisionLabel, LV_ALIGN_BOTTOM_LEFT, 14, -2);
+    lv_obj_set_size(profileRefreshButton, 82, 30);
+    lv_obj_align_to(profileRefreshButton, footerCard, LV_ALIGN_RIGHT_MID, -8, 0);
+    setWidgetHidden(profileRefreshButton, !isFinalTargetDirty());
+
+    lv_obj_set_width(profileLabel, isFinalTargetDirty() ? leftColumnWidth - 114 : leftColumnWidth - 20);
+    lv_obj_align_to(profileLabel, footerCard, LV_ALIGN_LEFT_MID, 10, 0);
   }
 
   if (showRoastControls)
   {
-    lv_obj_set_size(mainCard, 304, 92);
-    lv_obj_align(mainCard, LV_ALIGN_TOP_LEFT, 12, 44);
+    lv_obj_set_size(mainCard, leftColumnWidth, 130);
+    lv_obj_align(mainCard, LV_ALIGN_TOP_LEFT, gutter, topY);
     lv_obj_set_style_border_color(mainCard, lv_color_hex(ColorAccentOutline), 0);
     lv_obj_set_style_border_width(mainCard, 1, 0);
     lv_obj_set_style_bg_color(mainCard, lv_color_hex(ColorPanel), 0);
 
-    lv_obj_set_size(footerCard, 304, 58);
-    lv_obj_align(footerCard, LV_ALIGN_TOP_LEFT, 12, 146);
+    lv_obj_set_size(footerCard, leftColumnWidth, 58);
+    lv_obj_align(footerCard, LV_ALIGN_TOP_LEFT, gutter, topY + 144);
     lv_obj_set_style_bg_color(footerCard, lv_color_hex(ColorPanel), 0);
     lv_obj_set_style_border_color(footerCard, lv_color_hex(ColorAccentOutline), 0);
     lv_obj_set_style_border_width(footerCard, 1, 0);
 
     lv_obj_align_to(mainEyebrowLabel, mainCard, LV_ALIGN_TOP_LEFT, 12, 10);
-    lv_obj_align_to(currentTempLabel, mainCard, LV_ALIGN_LEFT_MID, 12, 8);
-    lv_obj_align_to(targetTempLabel, mainCard, LV_ALIGN_TOP_RIGHT, -12, 14);
-    lv_obj_align_to(mainSupportLabel, mainCard, LV_ALIGN_BOTTOM_LEFT, 12, -10);
+    lv_obj_align_to(currentTempLabel, mainCard, LV_ALIGN_LEFT_MID, 12, 10);
+    lv_obj_set_width(targetTempLabel, 126);
+    lv_obj_align_to(targetTempLabel, mainCard, LV_ALIGN_RIGHT_MID, -18, 0);
 
     lv_obj_set_size(roastStopButton, 116, 124);
-    lv_obj_align(roastStopButton, LV_ALIGN_TOP_RIGHT, -12, 44);
+    lv_obj_align(roastStopButton, LV_ALIGN_TOP_RIGHT, -12, topY);
 
     lv_obj_align_to(progressLabel, footerCard, LV_ALIGN_TOP_LEFT, 10, 8);
+    lv_obj_set_width(fanLabel, 172);
+    lv_obj_set_style_text_align(fanLabel, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_align_to(fanLabel, footerCard, LV_ALIGN_TOP_RIGHT, -10, 8);
     lv_obj_set_size(progressBar, 284, 10);
     lv_obj_align_to(progressBar, footerCard, LV_ALIGN_BOTTOM_MID, 0, -10);
@@ -806,32 +1078,67 @@ inline void refreshScreenLayout()
 
     lv_obj_set_size(roastStopButton, 116, 84);
     lv_obj_align(roastStopButton, LV_ALIGN_TOP_RIGHT, -12, 44);
-    lv_obj_set_size(secondaryButton, 116, 52);
-    lv_obj_align(secondaryButton, LV_ALIGN_TOP_RIGHT, -12, 136);
   }
 
-  if (showProfileControls)
+  if (showProfileListControls)
   {
-    lv_obj_set_size(mainCard, 304, 144);
-    lv_obj_align(mainCard, LV_ALIGN_TOP_LEFT, 12, 44);
+    lv_obj_set_size(mainCard, leftColumnWidth, BoardConfig::DisplayHeight - topY - 14);
+    lv_obj_align(mainCard, LV_ALIGN_TOP_LEFT, gutter, topY);
     lv_obj_set_style_border_color(mainCard, lv_color_hex(ColorAccentOutline), 0);
     lv_obj_set_style_border_width(mainCard, 1, 0);
     lv_obj_set_style_bg_color(mainCard, lv_color_hex(ColorPanel), 0);
 
-    lv_obj_set_width(profileLabel, 180);
-    lv_obj_align_to(profileLabel, mainCard, LV_ALIGN_TOP_LEFT, 10, 8);
-    lv_obj_align_to(targetTempLabel, mainCard, LV_ALIGN_TOP_RIGHT, -10, 8);
-    lv_obj_set_size(profileChart, 264, 98);
-    lv_obj_align_to(profileChart, mainCard, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_set_size(profileListContainer, leftColumnWidth - 18, BoardConfig::DisplayHeight - topY - 30);
+    lv_obj_align_to(profileListContainer, mainCard, LV_ALIGN_TOP_LEFT, 8, 8);
 
-    lv_obj_set_size(profilePrevButton, 116, 38);
-    lv_obj_align(profilePrevButton, LV_ALIGN_TOP_RIGHT, -12, 44);
-    lv_obj_set_size(profileNextButton, 116, 38);
-    lv_obj_align(profileNextButton, LV_ALIGN_TOP_RIGHT, -12, 90);
-    lv_obj_set_size(profileRefreshButton, 116, 38);
-    lv_obj_align(profileRefreshButton, LV_ALIGN_TOP_RIGHT, -12, 136);
-    lv_obj_set_size(profileBackButton, 116, 38);
-    lv_obj_align(profileBackButton, LV_ALIGN_TOP_RIGHT, -12, 182);
+    lv_obj_set_size(profilePrevButton, 116, 48);
+    lv_obj_align(profilePrevButton, LV_ALIGN_TOP_RIGHT, -12, topY);
+    lv_obj_set_size(profileNextButton, 116, 48);
+    lv_obj_align(profileNextButton, LV_ALIGN_TOP_RIGHT, -12, topY + 58);
+    lv_obj_set_size(profileBackButton, 116, 48);
+    lv_obj_align(profileBackButton, LV_ALIGN_TOP_RIGHT, -12, topY + 116);
+  }
+
+  if (showProfileGraphControls)
+  {
+    lv_obj_set_size(mainCard, leftColumnWidth, BoardConfig::DisplayHeight - topY - 14);
+    lv_obj_align(mainCard, LV_ALIGN_TOP_LEFT, gutter, topY);
+    lv_obj_set_style_border_color(mainCard, lv_color_hex(ColorAccentOutline), 0);
+    lv_obj_set_style_border_width(mainCard, 1, 0);
+    lv_obj_set_style_bg_color(mainCard, lv_color_hex(ColorPanel), 0);
+
+    lv_obj_set_width(profileLabel, leftColumnWidth - 124);
+    lv_obj_align_to(profileLabel, mainCard, LV_ALIGN_TOP_LEFT, 10, 10);
+    lv_obj_set_width(targetTempLabel, 100);
+    lv_obj_align_to(targetTempLabel, mainCard, LV_ALIGN_TOP_RIGHT, -10, 10);
+    lv_obj_set_size(profileChart, leftColumnWidth - 44, 156);
+    lv_obj_align_to(profileChart, mainCard, LV_ALIGN_TOP_LEFT, 34, 34);
+
+    lv_obj_align_to(profileGraphYAxisMaxLabel, mainCard, LV_ALIGN_TOP_LEFT, 8, 36);
+    lv_obj_align_to(profileGraphYAxisMinLabel, mainCard, LV_ALIGN_BOTTOM_LEFT, 8, -26);
+    lv_obj_align_to(profileGraphXAxisStartLabel, mainCard, LV_ALIGN_BOTTOM_LEFT, 34, -8);
+    lv_obj_align_to(profileGraphXAxisEndLabel, mainCard, LV_ALIGN_BOTTOM_RIGHT, -12, -8);
+
+    lv_obj_set_size(profilePrevButton, 116, 48);
+    lv_obj_align(profilePrevButton, LV_ALIGN_TOP_RIGHT, -12, topY);
+    lv_obj_set_size(profileNextButton, 116, 48);
+    lv_obj_align(profileNextButton, LV_ALIGN_TOP_RIGHT, -12, topY + 58);
+    lv_obj_set_size(profileBackButton, 116, 48);
+    lv_obj_align(profileBackButton, LV_ALIGN_TOP_RIGHT, -12, topY + 116);
+  }
+
+  if (profileNameModalVisible && profileNameModal != nullptr)
+  {
+    lv_obj_set_size(profileNameModal, 296, 112);
+    lv_obj_align(profileNameModal, LV_ALIGN_TOP_MID, 0, activeTextArea == profileNameTextArea ? 38 : 68);
+    lv_obj_set_width(profileNameTitleLabel, 272);
+    lv_obj_align(profileNameTitleLabel, LV_ALIGN_TOP_LEFT, 12, 10);
+    lv_obj_set_size(profileNameTextArea, 272, 40);
+    lv_obj_align(profileNameTextArea, LV_ALIGN_TOP_LEFT, 12, 34);
+    lv_obj_set_size(profileNameCancelButton, 96, 30);
+    lv_obj_align(profileNameCancelButton, LV_ALIGN_BOTTOM_LEFT, 12, -10);
+    lv_obj_set_size(profileNameSaveButton, 96, 30);
+    lv_obj_align(profileNameSaveButton, LV_ALIGN_BOTTOM_RIGHT, -12, -10);
   }
 }
 
@@ -851,7 +1158,8 @@ inline void updateDerivedLabels()
 
   lv_label_set_text(titleLabel, screenTitle(activeScreen));
   lv_obj_set_style_text_color(titleLabel, lv_color_hex(ColorAccentReady), 0);
-  lv_label_set_text(stateLabel, statusBannerText());
+  String bannerText = statusBannerText();
+  lv_label_set_text(stateLabel, bannerText.c_str());
   lv_obj_set_style_text_color(stateLabel,
                               activeScreen == DisplayScreen::Error ? lv_color_hex(ColorAccentFault) :
                               activeScreen == DisplayScreen::Cooling ? lv_color_hex(ColorTextMuted) :
@@ -865,13 +1173,15 @@ inline void updateDerivedLabels()
   setButtonText(profileOpenButton, "Profiles");
   setButtonText(networkProfileButton, "Wi-Fi");
   setButtonText(wifiApplyButton, "Apply");
-  setButtonText(networkBackButton, "Done");
+  setButtonText(networkBackButton, "Back");
   setButtonText(roastStopButton, activeScreen == DisplayScreen::Error ? "Force cooling" : "STOP");
   setButtonText(coolingStopButton, "Stop cooling");
-  setButtonText(profilePrevButton, "Prev");
-  setButtonText(profileNextButton, "Next");
-  setButtonText(profileRefreshButton, "Refresh");
-  setButtonText(profileBackButton, "Done");
+  setButtonText(profilePrevButton, "Use");
+  setButtonText(profileNextButton, activeScreen == DisplayScreen::ProfileList ? "Graph" : "Copy");
+  setButtonText(profileRefreshButton, "Save");
+  setButtonText(profileBackButton, activeScreen == DisplayScreen::ProfileActive ? "Back" : "Cancel");
+  setButtonText(profileNameSaveButton, "Create");
+  setButtonText(profileNameCancelButton, "Cancel");
 
   styleButton(roastStartButton, ColorAccentReady, ColorAccentReady);
   styleButton(profileOpenButton, ColorPanelMuted, ColorAccentOutline);
@@ -884,8 +1194,10 @@ inline void updateDerivedLabels()
   styleButton(coolingStopButton, ColorAccentCool, ColorAccentCool);
   styleButton(profilePrevButton, ColorAccentReady, ColorAccentReady);
   styleButton(profileNextButton, ColorPanelMuted, ColorAccentOutline);
-  styleButton(profileRefreshButton, ColorPanelMuted, ColorAccentOutline);
+  styleButton(profileRefreshButton, ColorAccentReady, ColorAccentReady);
   styleButton(profileBackButton, ColorPanelMuted, ColorAccentOutline);
+  styleButton(profileNameSaveButton, ColorAccentReady, ColorAccentReady);
+  styleButton(profileNameCancelButton, ColorPanelMuted, ColorAccentOutline);
 
   if (secondaryButton != nullptr)
   {
@@ -915,43 +1227,32 @@ inline void updateDerivedLabels()
   if (activeScreen == DisplayScreen::Start)
   {
     lv_label_set_text(mainEyebrowLabel, "FINAL TARGET");
-    lv_label_set_text_fmt(currentTempLabel, "%dF", displayTargetValue >= 0 ? displayTargetValue : 0);
-    lv_label_set_text(mainBodyLabel, "Touch to change");
-    lv_label_set_text_fmt(mainSupportLabel, "Bean %dF", currentTempValue);
-    lv_label_set_text_fmt(profileLabel, "Profile  %s", activeProfileText.c_str());
-    lv_label_set_text_fmt(wifiLabel, "%s", wifiStatusText.c_str());
-    lv_label_set_text_fmt(revisionLabel, "Firmware %s", revisionText.c_str());
+    lv_label_set_text_fmt(currentTempLabel, "%d%s", displayTargetValue >= 0 ? displayTargetValue : 0, TempUnitSuffix);
+    String profileSummary = activeProfileText;
+    if (isFinalTargetDirty())
+    {
+      profileSummary += " *";
+    }
+    lv_label_set_text(profileLabel, profileSummary.c_str());
   }
   else if (activeScreen == DisplayScreen::Network)
   {
     lv_label_set_text(ssidCaptionLabel, "SSID");
     lv_label_set_text(passwordCaptionLabel, "Password");
     lv_label_set_text_fmt(wifiLabel, "%s", wifiStatusText.c_str());
-    lv_label_set_text_fmt(revisionLabel, "Firmware: %s", revisionText.c_str());
+    lv_label_set_text_fmt(revisionLabel, "Firmware %s", revisionText.c_str());
   }
   else if (activeScreen == DisplayScreen::Roasting)
   {
     lv_label_set_text(mainEyebrowLabel, "BEAN TEMP");
-    lv_label_set_text_fmt(currentTempLabel, "%dF", currentTempValue);
+    lv_label_set_text_fmt(currentTempLabel, "%d%s", currentTempValue, TempUnitSuffix);
     if (targetTempValue >= 0 && displayTargetValue >= 0)
     {
-      lv_label_set_text_fmt(targetTempLabel, "Target %dF\nStop %dF", targetTempValue, displayTargetValue);
+      lv_label_set_text_fmt(targetTempLabel, "Target %d%s\nStop %d%s", targetTempValue, TempUnitSuffix, displayTargetValue, TempUnitSuffix);
     }
     else
     {
       lv_label_set_text(targetTempLabel, "Target --\nStop --");
-    }
-    if (fanTempValue >= 0 && bdcFanMicrosValue >= 0)
-    {
-      lv_label_set_text_fmt(mainSupportLabel, "Exhaust %dF | Blower %dus", fanTempValue, bdcFanMicrosValue);
-    }
-    else if (fanTempValue >= 0)
-    {
-      lv_label_set_text_fmt(mainSupportLabel, "Exhaust %dF", fanTempValue);
-    }
-    else
-    {
-      lv_label_set_text(mainSupportLabel, "Live roast telemetry");
     }
     lv_label_set_text(progressLabel, elapsedBuffer);
     if (fanPercentValue >= 0 && heaterPercent >= 0)
@@ -970,8 +1271,8 @@ inline void updateDerivedLabels()
   else if (activeScreen == DisplayScreen::Cooling)
   {
     lv_label_set_text(mainEyebrowLabel, "COOLING ACTIVE");
-    lv_label_set_text_fmt(currentTempLabel, "%dF", currentTempValue);
-    lv_label_set_text(mainBodyLabel, "Safe handling target: < 120F");
+    lv_label_set_text_fmt(currentTempLabel, "%d%s", currentTempValue, TempUnitSuffix);
+    lv_label_set_text_fmt(mainBodyLabel, "Target below 120%s", TempUnitSuffix);
     lv_label_set_text(mainSupportLabel, "Heater off | blower at maximum");
   }
   else if (activeScreen == DisplayScreen::Error)
@@ -980,17 +1281,40 @@ inline void updateDerivedLabels()
     lv_label_set_text(errorLabel, errorMessageText.length() > 0 ? errorMessageText.c_str() : "Controller fault detected.");
     lv_label_set_text(mainSupportLabel, "Roast start is disabled until the controller reports a safe state.");
   }
+  else if (activeScreen == DisplayScreen::ProfileList)
+  {
+    refreshProfileListSelection();
+  }
   else if (activeScreen == DisplayScreen::ProfileActive)
   {
-    lv_label_set_text(profileLabel, activeProfileText.c_str());
-    if (displayTargetValue >= 0)
+    lv_label_set_text(profileLabel, profileBrowserFocusText.length() > 0 ? profileBrowserFocusText.c_str() : activeProfileText.c_str());
+    int graphFinalTarget = profileBrowserFocusFinalTargetValue >= 0 ? profileBrowserFocusFinalTargetValue : displayTargetValue;
+    if (graphFinalTarget >= 0)
     {
-      lv_label_set_text_fmt(targetTempLabel, "Final %dF", displayTargetValue);
+      lv_label_set_text_fmt(targetTempLabel, "Final %d%s", graphFinalTarget, TempUnitSuffix);
     }
     else
     {
       lv_label_set_text(targetTempLabel, "Final --");
     }
+
+    char durationBuffer[16] = "--:--";
+    if (profileGraphMaxTimeSeconds > 0)
+    {
+      formatDurationLabel(profileGraphMaxTimeSeconds, durationBuffer, sizeof(durationBuffer));
+    }
+
+    if (profileGraphMaxTempValue > 0)
+    {
+      lv_label_set_text_fmt(profileGraphYAxisMaxLabel, "%d%s", profileGraphMaxTempValue, TempUnitSuffix);
+    }
+    else
+    {
+      lv_label_set_text(profileGraphYAxisMaxLabel, "--");
+    }
+    lv_label_set_text_fmt(profileGraphYAxisMinLabel, "0%s", TempUnitSymbol);
+    lv_label_set_text(profileGraphXAxisStartLabel, "0:00");
+    lv_label_set_text(profileGraphXAxisEndLabel, durationBuffer);
   }
 
   const int finalTargetValue = finalTargetTempValue >= 0 ? finalTargetTempValue : displayTargetValue;
@@ -1074,6 +1398,9 @@ inline void buildScreen()
   lv_obj_set_style_text_font(wifiLabel, &lv_font_montserrat_14, 0);
   profileLabel = makeValueLabel(screenRoot, LV_ALIGN_BOTTOM_RIGHT, -16, -66);
   lv_obj_set_style_text_font(profileLabel, &lv_font_montserrat_14, 0);
+  lv_obj_add_flag(profileLabel, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(profileLabel, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(profileLabel, profileLabelEvent, LV_EVENT_CLICKED, nullptr);
 
   revisionLabel = lv_label_create(screenRoot);
   lv_obj_set_style_text_color(revisionLabel, lv_color_hex(ColorTextMuted), 0);
@@ -1097,10 +1424,10 @@ inline void buildScreen()
   lv_obj_add_event_cb(profileOpenButton, actionButtonEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(DisplayAction::OpenActiveProfile)));
 
   finalTargetDownButton = makeButton(screenRoot, "-", LV_ALIGN_CENTER, -136, 4, 52, 52, ColorPanelMuted);
-  lv_obj_add_event_cb(finalTargetDownButton, finalTargetAdjustEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(-5)));
+  lv_obj_add_event_cb(finalTargetDownButton, finalTargetAdjustEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(-1)));
 
   finalTargetUpButton = makeButton(screenRoot, "+", LV_ALIGN_CENTER, 136, 4, 52, 52, ColorPanelMuted);
-  lv_obj_add_event_cb(finalTargetUpButton, finalTargetAdjustEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(5)));
+  lv_obj_add_event_cb(finalTargetUpButton, finalTargetAdjustEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(1)));
 
   roastStopButton = makeButton(screenRoot, "STOP", LV_ALIGN_BOTTOM_MID, 0, -12, BoardConfig::DisplayWidth - 32, 56, ColorAccentHeat);
   lv_obj_add_event_cb(roastStopButton, actionButtonEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(DisplayAction::StopRoast)));
@@ -1109,16 +1436,16 @@ inline void buildScreen()
   lv_obj_add_event_cb(coolingStopButton, actionButtonEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(DisplayAction::StopCooling)));
 
   profilePrevButton = makeButton(screenRoot, "PREV", LV_ALIGN_BOTTOM_LEFT, 16, -12, 100, 48, ColorPanel);
-  lv_obj_add_event_cb(profilePrevButton, actionButtonEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(DisplayAction::PreviousProfile)));
+  lv_obj_add_event_cb(profilePrevButton, actionButtonEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(DisplayAction::ActivateSelectedProfile)));
 
   profileNextButton = makeButton(screenRoot, "NEXT", LV_ALIGN_BOTTOM_LEFT, 124, -12, 100, 48, ColorPanel);
-  lv_obj_add_event_cb(profileNextButton, actionButtonEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(DisplayAction::NextProfile)));
+  lv_obj_add_event_cb(profileNextButton, profileSecondaryButtonEvent, LV_EVENT_CLICKED, nullptr);
 
-  profileRefreshButton = makeButton(screenRoot, "REFRESH", LV_ALIGN_BOTTOM_RIGHT, -124, -12, 100, 48, ColorAccentReady);
-  lv_obj_add_event_cb(profileRefreshButton, actionButtonEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(DisplayAction::OpenActiveProfile)));
+  profileRefreshButton = makeButton(screenRoot, "SAVE", LV_ALIGN_BOTTOM_RIGHT, -124, -12, 100, 48, ColorAccentReady);
+  lv_obj_add_event_cb(profileRefreshButton, actionButtonEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(DisplayAction::SaveFinalTargetToProfile)));
 
   profileBackButton = makeButton(screenRoot, "BACK", LV_ALIGN_BOTTOM_RIGHT, -16, -12, 100, 48, ColorPanel);
-  lv_obj_add_event_cb(profileBackButton, actionButtonEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(DisplayAction::ReturnToStateScreen)));
+  lv_obj_add_event_cb(profileBackButton, profileBackButtonEvent, LV_EVENT_CLICKED, nullptr);
 
   secondaryButton = makePanel(screenRoot, 116, 52, ColorPanelMuted, ColorAccentOutline, 1);
   lv_obj_t *secondaryLabel = lv_label_create(secondaryButton);
@@ -1191,6 +1518,60 @@ inline void buildScreen()
   lv_chart_set_div_line_count(profileChart, 5, 8);
   lv_chart_set_point_count(profileChart, 1);
   profileSeries = lv_chart_add_series(profileChart, lv_color_hex(ColorChartLine), LV_CHART_AXIS_PRIMARY_Y);
+
+  profileGraphYAxisMaxLabel = lv_label_create(screenRoot);
+  lv_obj_set_style_text_color(profileGraphYAxisMaxLabel, lv_color_hex(ColorTextMuted), 0);
+  lv_obj_set_style_text_font(profileGraphYAxisMaxLabel, &lv_font_montserrat_14, 0);
+
+  profileGraphYAxisMinLabel = lv_label_create(screenRoot);
+  lv_obj_set_style_text_color(profileGraphYAxisMinLabel, lv_color_hex(ColorTextMuted), 0);
+  lv_obj_set_style_text_font(profileGraphYAxisMinLabel, &lv_font_montserrat_14, 0);
+
+  profileGraphXAxisStartLabel = lv_label_create(screenRoot);
+  lv_obj_set_style_text_color(profileGraphXAxisStartLabel, lv_color_hex(ColorTextMuted), 0);
+  lv_obj_set_style_text_font(profileGraphXAxisStartLabel, &lv_font_montserrat_14, 0);
+
+  profileGraphXAxisEndLabel = lv_label_create(screenRoot);
+  lv_obj_set_style_text_color(profileGraphXAxisEndLabel, lv_color_hex(ColorTextMuted), 0);
+  lv_obj_set_style_text_font(profileGraphXAxisEndLabel, &lv_font_montserrat_14, 0);
+
+  profileListContainer = lv_obj_create(screenRoot);
+  lv_obj_set_size(profileListContainer, BoardConfig::DisplayWidth - 32, 154);
+  lv_obj_align(profileListContainer, LV_ALIGN_TOP_LEFT, 16, 60);
+  lv_obj_set_style_radius(profileListContainer, 0, 0);
+  lv_obj_set_style_bg_color(profileListContainer, lv_color_hex(ColorPanel), 0);
+  lv_obj_set_style_bg_opa(profileListContainer, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(profileListContainer, 0, 0);
+  lv_obj_set_style_pad_all(profileListContainer, 0, 0);
+  lv_obj_set_style_pad_row(profileListContainer, 6, 0);
+  lv_obj_set_scrollbar_mode(profileListContainer, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_scroll_dir(profileListContainer, LV_DIR_VER);
+  lv_obj_set_layout(profileListContainer, LV_LAYOUT_FLEX);
+  lv_obj_set_flex_flow(profileListContainer, LV_FLEX_FLOW_COLUMN);
+
+  profileNameModal = makePanel(screenRoot, 296, 112, ColorPanel, ColorAccentOutline, 1);
+  lv_obj_set_style_bg_opa(profileNameModal, LV_OPA_COVER, 0);
+  lv_obj_add_flag(profileNameModal, LV_OBJ_FLAG_HIDDEN);
+
+  profileNameTitleLabel = lv_label_create(profileNameModal);
+  lv_obj_set_style_text_color(profileNameTitleLabel, lv_color_hex(ColorTextPrimary), 0);
+  lv_obj_set_style_text_font(profileNameTitleLabel, &lv_font_montserrat_14, 0);
+  lv_label_set_text(profileNameTitleLabel, "Copy profile as");
+
+  profileNameTextArea = lv_textarea_create(profileNameModal);
+  lv_textarea_set_one_line(profileNameTextArea, true);
+  lv_textarea_set_max_length(profileNameTextArea, 31);
+  lv_obj_set_style_radius(profileNameTextArea, 0, 0);
+  lv_obj_set_style_bg_color(profileNameTextArea, lv_color_hex(ColorPanelMuted), 0);
+  lv_obj_set_style_border_color(profileNameTextArea, lv_color_hex(ColorAccentOutline), 0);
+  lv_obj_set_style_text_color(profileNameTextArea, lv_color_hex(ColorTextPrimary), 0);
+  lv_obj_add_event_cb(profileNameTextArea, profileNameTextAreaEvent, LV_EVENT_ALL, nullptr);
+
+  profileNameCancelButton = makeButton(profileNameModal, "Cancel", LV_ALIGN_BOTTOM_LEFT, 12, -10, 96, 30, ColorPanelMuted);
+  lv_obj_add_event_cb(profileNameCancelButton, profileNameCancelEvent, LV_EVENT_CLICKED, nullptr);
+
+  profileNameSaveButton = makeButton(profileNameModal, "Create", LV_ALIGN_BOTTOM_RIGHT, -12, -10, 96, 30, ColorAccentReady);
+  lv_obj_add_event_cb(profileNameSaveButton, profileNameSaveEvent, LV_EVENT_CLICKED, nullptr);
 
   errorLabel = lv_label_create(screenRoot);
   lv_obj_set_width(errorLabel, 280);
@@ -1269,9 +1650,14 @@ inline void tick()
 inline void showScreen(DisplayScreen screen)
 {
   activeScreen = screen;
+  if (screen != DisplayScreen::ProfileActive)
+  {
+    profileNameModalVisible = false;
+  }
   ensureUiBuilt();
   lv_label_set_text(titleLabel, screenTitle(screen));
   refreshScreenLayout();
+  updateDerivedLabels();
   if (screen != DisplayScreen::Error)
   {
     lv_label_set_text(errorLabel, "");
@@ -1308,6 +1694,25 @@ inline void setFinalTargetTempValue(int value)
   ensureUiBuilt();
   finalTargetTempValue = value;
   updateDerivedLabels();
+  if (activeScreen == DisplayScreen::Start)
+  {
+    refreshScreenLayout();
+  }
+}
+
+inline void setStoredProfileFinalTargetValue(int value)
+{
+  ensureUiBuilt();
+  storedProfileFinalTargetValue = value;
+  if (finalTargetTempValue < 0)
+  {
+    finalTargetTempValue = value;
+  }
+  updateDerivedLabels();
+  if (activeScreen == DisplayScreen::Start)
+  {
+    refreshScreenLayout();
+  }
 }
 
 inline void setFanPercentValue(int value)
@@ -1331,6 +1736,13 @@ inline void setWifiStatusText(const String &value)
   updateDerivedLabels();
 }
 
+inline void setWifiFormState(const DisplayWifiFormState &value)
+{
+  ensureUiBuilt();
+  wifiFormState = value;
+  syncWifiInputsFromState();
+}
+
 inline void setRevisionText(const String &value)
 {
   ensureUiBuilt();
@@ -1343,6 +1755,64 @@ inline void setActiveProfileText(const String &value)
   ensureUiBuilt();
   activeProfileText = value;
   updateDerivedLabels();
+}
+
+inline void setProfileBrowserFocus(const String &value, int finalTargetF)
+{
+  ensureUiBuilt();
+  profileBrowserFocusText = value;
+  profileBrowserFocusFinalTargetValue = finalTargetF;
+  updateDerivedLabels();
+}
+
+inline void setProfileGraphBounds(int maxTempF, uint32_t maxTimeSeconds)
+{
+  ensureUiBuilt();
+  profileGraphMaxTempValue = maxTempF;
+  profileGraphMaxTimeSeconds = maxTimeSeconds;
+  updateDerivedLabels();
+}
+
+inline void setProfileBrowserEntries(const std::vector<DisplayProfileSummary> &entries, int selectedIndex)
+{
+  ensureUiBuilt();
+  profileBrowserEntries = entries;
+  if (entries.empty())
+  {
+    selectedProfileIndex = -1;
+    profileBrowserFocusText = String();
+    profileBrowserFocusFinalTargetValue = -1;
+  }
+  else
+  {
+    if (selectedIndex < 0 || selectedIndex >= static_cast<int>(entries.size()))
+    {
+      selectedProfileIndex = 0;
+    }
+    else
+    {
+      selectedProfileIndex = selectedIndex;
+    }
+    profileBrowserFocusText = entries[static_cast<size_t>(selectedProfileIndex)].name;
+    profileBrowserFocusFinalTargetValue = entries[static_cast<size_t>(selectedProfileIndex)].finalTargetF;
+  }
+  rebuildProfileList();
+  updateDerivedLabels();
+}
+
+inline int readSelectedProfileIndex()
+{
+  return selectedProfileIndex;
+}
+
+inline String readProfileNameInput()
+{
+  ensureUiBuilt();
+  if (profileNameTextArea == nullptr)
+  {
+    return String();
+  }
+  return String(lv_textarea_get_text(profileNameTextArea));
 }
 
 inline void setErrorMessageText(const String &value)

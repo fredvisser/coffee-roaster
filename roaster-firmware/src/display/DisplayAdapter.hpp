@@ -2,6 +2,7 @@
 #define DISPLAY_ADAPTER_HPP
 
 #include <Arduino.h>
+#include <vector>
 #include "DisplayBackendConfig.hpp"
 #include "DisplayTypes.hpp"
 
@@ -80,6 +81,15 @@ inline void displaySetFinalTargetTemp(int tempF)
 #endif
 }
 
+inline void displaySetStoredProfileFinalTarget(int tempF)
+{
+#if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_LVGL
+  LvglDisplay::setStoredProfileFinalTargetValue(tempF);
+#else
+  (void)tempF;
+#endif
+}
+
 inline void displaySetFanPercent(int percent)
 {
 #if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_LVGL
@@ -145,6 +155,15 @@ inline DisplayWifiFormState displayReadWifiFormState()
 #endif
 }
 
+inline void displaySetWifiFormState(const DisplayWifiFormState &state)
+{
+#if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_LVGL
+  LvglDisplay::setWifiFormState(state);
+#else
+  (void)state;
+#endif
+}
+
 inline void displaySetRevision(const char *revision)
 {
 #if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_LVGL
@@ -160,6 +179,54 @@ inline void displaySetActiveProfileLabel(const String &label)
   LvglDisplay::setActiveProfileText(label);
 #else
   (void)label;
+#endif
+}
+
+inline void displaySetProfileBrowserFocus(const String &label, int finalTargetF)
+{
+#if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_LVGL
+  LvglDisplay::setProfileBrowserFocus(label, finalTargetF);
+#else
+  (void)label;
+  (void)finalTargetF;
+#endif
+}
+
+inline void displaySetProfileGraphBounds(int maxTempF, uint32_t maxTimeSeconds)
+{
+#if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_LVGL
+  LvglDisplay::setProfileGraphBounds(maxTempF, maxTimeSeconds);
+#else
+  (void)maxTempF;
+  (void)maxTimeSeconds;
+#endif
+}
+
+inline void displaySetProfileBrowserEntries(const std::vector<DisplayProfileSummary> &entries, int selectedIndex)
+{
+#if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_LVGL
+  LvglDisplay::setProfileBrowserEntries(entries, selectedIndex);
+#else
+  (void)entries;
+  (void)selectedIndex;
+#endif
+}
+
+inline int displayReadSelectedProfileIndex()
+{
+#if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_LVGL
+  return LvglDisplay::readSelectedProfileIndex();
+#else
+  return -1;
+#endif
+}
+
+inline String displayReadProfileNameInput()
+{
+#if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_LVGL
+  return LvglDisplay::readProfileNameInput();
+#else
+  return String();
 #endif
 }
 

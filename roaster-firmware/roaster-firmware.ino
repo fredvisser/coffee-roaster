@@ -61,7 +61,9 @@ double kd = 0;
 // Preferences namespace
 #define PREFS_NAMESPACE "roaster"
 
+#ifndef VERSION
 #define VERSION "2025-12-24"
+#endif
 
 // Use timers for simple multitasking
 SimpleTimer checkTempTimer(125);
@@ -323,6 +325,7 @@ void setup()
 
   wifiCredentials.ssid = preferences.getString("ssid", "");
   wifiCredentials.password = preferences.getString("password", "");
+  displaySetWifiFormState(DisplayWifiFormState{wifiCredentials.ssid, wifiCredentials.password});
 
   String ipAddress = initializeWifi(wifiCredentials);
   if (ipAddress != "Failed to connect to WiFi")
@@ -350,6 +353,13 @@ void setup()
   }
   
   LOG_INFOF("Profile system initialized - using profile with %d setpoints", profile.getSetpointCount());
+
+  String activeProfileName;
+  if (activeId.length() > 0 && profileManager.loadProfileMeta(activeId, activeProfileName))
+  {
+    displaySetActiveProfileLabel(activeProfileName);
+  }
+  displaySetStoredProfileFinalTarget(static_cast<int>(profile.getFinalTargetTemp()));
 
   // Update the active display with current profile values.
   // If no override is set (-1), this sends the profile's default final target.
@@ -850,6 +860,7 @@ void handleApplyWifiCommand()
   requestedCredentials.ssid = form.ssid;
   requestedCredentials.password = form.password;
   wifiCredentials = normalizeWifiCredentials(requestedCredentials);
+  displaySetWifiFormState(DisplayWifiFormState{wifiCredentials.ssid, wifiCredentials.password});
   displaySetWifiIp("Connecting...");
   String ip = initializeWifi(wifiCredentials);
   displaySetWifiIp(ip);

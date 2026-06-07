@@ -280,6 +280,7 @@ void refreshActiveProfileDisplay() {
     
     // Update the active profile view with the current final target value.
     uint32_t finalTemp = profile.getFinalTargetTemp();
+  displaySetStoredProfileFinalTarget(static_cast<int>(finalTemp));
   displaySetFinalTargetTemp(finalTemp);
 
     plotProfileOnWaveform();

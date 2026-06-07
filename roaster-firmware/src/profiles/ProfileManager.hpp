@@ -74,6 +74,21 @@ private:
 public:
     ProfileManager() {}
 
+    bool readProfile(const String& id, RoastProfile& profileOut) {
+        if (id.length() == 0) {
+            return false;
+        }
+
+        uint8_t buffer[200];
+        size_t len = preferences.getBytes(profileDataKey(id).c_str(), buffer, sizeof(buffer));
+        if (len == 0) {
+            return false;
+        }
+
+        profileOut.unflattenProfile(buffer);
+        return true;
+    }
+
     std::vector<String> getProfileIds() {
         String csv = preferences.getString("profile_ids", "");
         return splitNames(csv);
@@ -269,15 +284,101 @@ public:
 
     // Load a profile into the global 'profile' object
     bool loadProfile(const String& id) {
-        if (id.length() == 0) return false;
-        
-        uint8_t buffer[200];
-        size_t len = preferences.getBytes(profileDataKey(id).c_str(), buffer, sizeof(buffer));
-        
-        if (len == 0) return false;
-        
-        profile.unflattenProfile(buffer);
+        if (!readProfile(id, profile)) {
+            return false;
+        }
+
         return true;
+    }
+
+    bool getProfileSummary(const String& id, String& nameOut, int& finalTargetOut, bool& activeOut) {
+        RoastProfile tempProfile;
+        if (!readProfile(id, tempProfile)) {
+            return false;
+        }
+
+        if (!loadProfileMeta(id, nameOut) || nameOut.length() == 0) {
+            nameOut = id;
+        }
+
+        finalTargetOut = static_cast<int>(tempProfile.getFinalTargetTemp());
+        activeOut = (id == getActiveProfileId());
+        return true;
+    }
+
+    ProfileOperationResult updateProfileFinalTarget(const String& id, uint32_t finalTarget) {
+        ProfileOperationResult result = {false, id, ""};
+
+        RoastProfile tempProfile;
+        if (!readProfile(id, tempProfile)) {
+            result.error = "not_found";
+            return result;
+        }
+
+        tempProfile.setFinalTargetTemp(finalTarget);
+
+        uint8_t buffer[200];
+        tempProfile.flattenProfile(buffer);
+        size_t len = 5 + (static_cast<size_t>(tempProfile.getSetpointCount()) * 12);
+        if (len > sizeof(buffer)) {
+            len = sizeof(buffer);
+        }
+
+        size_t written = preferences.putBytes(profileDataKey(id).c_str(), buffer, len);
+        if (written == 0) {
+            result.error = "nvs_write_failed";
+            return result;
+        }
+
+        if (id == getActiveProfileId()) {
+            profile = tempProfile;
+        }
+
+        result.success = true;
+        return result;
+    }
+
+    ProfileOperationResult duplicateProfile(const String& sourceId, const String& requestedName) {
+        ProfileOperationResult result = {false, "", ""};
+
+        if (sourceId.length() == 0) {
+            result.error = "empty_id";
+            return result;
+        }
+
+        uint8_t buffer[200];
+        size_t len = preferences.getBytes(profileDataKey(sourceId).c_str(), buffer, sizeof(buffer));
+        if (len == 0) {
+            result.error = "not_found";
+            return result;
+        }
+
+        String sourceName;
+        loadProfileMeta(sourceId, sourceName);
+
+        String duplicateName = requestedName;
+        duplicateName.trim();
+        if (duplicateName.length() == 0) {
+            duplicateName = sourceName.length() > 0 ? sourceName + " Copy" : String("Profile Copy");
+        }
+
+        String duplicateId = generateId();
+        result.id = duplicateId;
+
+        size_t written = preferences.putBytes(profileDataKey(duplicateId).c_str(), buffer, len);
+        if (written == 0) {
+            result.error = "nvs_write_failed";
+            return result;
+        }
+
+        saveProfileMeta(duplicateId, duplicateName);
+
+        auto ids = getProfileIds();
+        ids.push_back(duplicateId);
+        setProfileIds(ids);
+
+        result.success = true;
+        return result;
     }
 
     // Get JSON list of profiles

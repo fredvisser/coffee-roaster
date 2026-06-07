@@ -11,6 +11,7 @@ enum class DisplayScreen
   Roasting,
   Cooling,
   Error,
+  ProfileList,
   ProfileActive
 };
 
@@ -23,9 +24,21 @@ enum class DisplayAction
   StopCooling,
   ApplyWifi,
   OpenActiveProfile,
+  ActivateSelectedProfile,
+  ViewSelectedProfileGraph,
+  SaveFinalTargetToProfile,
+  DuplicateSelectedProfile,
   PreviousProfile,
   NextProfile,
+  ReturnToProfileList,
   ReturnToStateScreen
+};
+
+struct DisplayProfileSummary
+{
+  String name;
+  int finalTargetF = -1;
+  bool active = false;
 };
 
 struct DisplayTelemetry

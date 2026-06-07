@@ -110,26 +110,27 @@ This pin map is intended to avoid the onboard display, touch, and SD wiring whil
 
 - `TC_SPI_SCK`: GPIO5
 - `TC_SPI_SO`: GPIO46
-- `TC1_CS`: GPIO6
-- `TC2_CS`: GPIO7
+- `TC1_CS`: GPIO9
+- `TC2_CS`: GPIO14
 
 Notes:
 
 - The MAX6675 interface can be treated as software SPI here.
 - Share `SCK` and `SO` between both MAX6675 modules and give each module its own chip select.
 - GPIO46 is a good fit for `SO` because it is input-only.
+- This keeps the MAX6675 wiring on the single breakout group `GPIO46, GPIO9, GPIO14, GPIO5`.
 
 ### Outputs
 
-- `HEATER_PWM`: GPIO14
-- `PWM_FAN`: GPIO15
-- `BDC_FAN_SERVO`: GPIO16
+- `HEATER_PWM`: GPIO6
+- `PWM_FAN`: GPIO7
+- `BDC_FAN_SERVO`: GPIO15
 
 ### Reserved for service and expansion
 
 - `UART1_TX`: GPIO17
 - `UART1_RX`: GPIO18
-- `GPIO9`: spare input for a future e-stop, door switch, bean-drop sensor, or physical start/stop button
+- `GPIO16`: spare adjacent I/O for a future output or interlock input
 
 ## Harness changes to implement
 
@@ -140,14 +141,15 @@ Notes:
    - separate `CS` lines
    - `3.3V`
    - `GND`
-3. Route heater driver control input to `GPIO14`.
-4. Route PWM fan control input to `GPIO15`.
-5. Route BDC fan control input to `GPIO16`.
-6. Bring a clean common ground between the JC board and the roaster control board.
-7. Decide how the JC board is powered in the enclosure:
+3. Route heater driver control input to `GPIO6`.
+4. Route PWM fan control input to `GPIO7`.
+5. Route BDC fan control input to `GPIO15`.
+6. Leave `GPIO16` available as the adjacent spare on the output connector unless a fourth low-voltage output is added later.
+7. Bring a clean common ground between the JC board and the roaster control board.
+8. Decide how the JC board is powered in the enclosure:
    - preferred: regulated low-noise 5V feed into the board's intended power input path
    - acceptable during bench work: USB-C
-8. If the existing control PCB exposes only a connector intended for the old ESP32 board, create a small adapter harness or interposer board instead of hand-wiring directly.
+9. If the existing control PCB exposes only a connector intended for the old ESP32 board, create a small adapter harness or interposer board instead of hand-wiring directly.
 
 ## Wiring Validation Checklist
 
@@ -849,23 +851,23 @@ Base electrical rules:
 
 This mapping preserves the current external devices while avoiding the known onboard display and touch pins.
 
-| Function | Current firmware | Proposed JC4827W543C GPIO | Notes |
-| --- | --- | --- | --- |
-| MAX6675 shared clock | `SCK` default | `GPIO5` | Use software SPI or explicit pin assignment |
-| MAX6675 shared data out | `MISO` default | `GPIO46` | Input-only, good fit |
-| Bean thermocouple CS | `TC1_CS = 10` | `GPIO6` | Output |
-| Fan/exhaust thermocouple CS | `TC2_CS = 9` | `GPIO7` | Output |
-| Heater PWM output | `HEATER = A0` | `GPIO14` | Use LEDC-capable output |
-| PWM fan output | `FAN = A1` | `GPIO15` | Use LEDC-capable output |
-| BDC fan servo output | `BDCFAN = D5` | `GPIO16` | Servo timing output |
-| Optional spare / estop input / lid switch | not present | `GPIO9` | Reserve for future safety input |
-| Optional service UART TX | not present | `GPIO17` | Useful for debug or external peripheral |
-| Optional service UART RX | not present | `GPIO18` | Useful for debug or external peripheral |
+| Function                                  | Current firmware | Proposed JC4827W543C GPIO | Notes                                       |
+| ----------------------------------------- | ---------------- | ------------------------- | ------------------------------------------- |
+| MAX6675 shared clock                      | `SCK` default    | `GPIO5`                   | Use software SPI or explicit pin assignment |
+| MAX6675 shared data out                   | `MISO` default   | `GPIO46`                  | Input-only, good fit                        |
+| Bean thermocouple CS                      | `TC1_CS = 10`    | `GPIO9`                   | MAX6675 CS on the same breakout as SCK/SO   |
+| Fan/exhaust thermocouple CS               | `TC2_CS = 9`     | `GPIO14`                  | MAX6675 CS on the same breakout as SCK/SO   |
+| Heater PWM output                         | `HEATER = A0`    | `GPIO6`                   | Output-group connector                      |
+| PWM fan output                            | `FAN = A1`       | `GPIO7`                   | Output-group connector                      |
+| BDC fan servo output                      | `BDCFAN = D5`    | `GPIO15`                  | Output-group connector                      |
+| Optional spare / estop input / lid switch | not present      | `GPIO16`                  | Adjacent spare I/O on the output connector  |
+| Optional service UART TX                  | not present      | `GPIO17`                  | Useful for debug or external peripheral     |
+| Optional service UART RX                  | not present      | `GPIO18`                  | Useful for debug or external peripheral     |
 
 Notes:
 
 - If the MAX6675 library depends on default SPI macros for the new board, force explicit pin configuration rather than relying on board defaults.
-- If `ESP32Servo` proves awkward on `GPIO16`, replace it with direct `ledcWrite` or MCPWM-based pulse generation.
+- If `ESP32Servo` proves awkward on `GPIO15`, replace it with direct `ledcWrite` or MCPWM-based pulse generation.
 - Do not use `GPIO3`, `GPIO4`, `GPIO8`, or `GPIO38`; they are already consumed by the onboard GT911 touch path in the reference design.
 - Do not plan around `GPIO10-13` unless you intentionally give up the onboard SD function and confirm those traces on the real board.
 
