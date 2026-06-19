@@ -163,6 +163,40 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
       .hero, .content { padding: 18px; }
       h1 { font-size: 28px; }
     }
+    @media (max-width: 480px) {
+      body { padding: 10px; }
+      .topnav {
+        padding: 12px;
+        gap: 8px;
+      }
+      .topnav-logo {
+        width: 100%;
+        margin-right: 0;
+        justify-content: center;
+        font-size: 18px;
+      }
+      .topnav a {
+        flex: 1 1 calc(50% - 8px);
+        min-width: 0;
+        padding: 12px 10px;
+        font-size: 12px;
+      }
+      .hero, .content, .card {
+        padding: 16px;
+      }
+      h1 {
+        font-size: 24px;
+      }
+      .grid {
+        grid-template-columns: 1fr;
+      }
+      .actions > * {
+        width: 100%;
+      }
+      .meta {
+        gap: 10px;
+      }
+    }
   </style>
 </head>
 <body>

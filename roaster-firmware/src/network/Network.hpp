@@ -1355,6 +1355,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       max-width: 1400px;
       margin: 0 auto;
       display: grid;
+      grid-template-columns: minmax(0, 1fr);
       gap: 18px;
     }
     .header {
@@ -1406,6 +1407,10 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
       gap: 18px;
+    }
+    .page > *,
+    .grid > * {
+      min-width: 0;
     }
     .card {
       background: #2D2D2D;
@@ -1564,6 +1569,49 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       }
       .header h1 {
         font-size: 22px;
+      }
+    }
+    @media (max-width: 480px) {
+      body {
+        padding: 12px;
+      }
+      .topnav {
+        padding: 12px;
+        gap: 8px;
+      }
+      .topnav-logo {
+        width: 100%;
+        margin-right: 0;
+        justify-content: center;
+        font-size: 18px;
+      }
+      .topnav a {
+        flex: 1 1 calc(50% - 8px);
+        min-width: 0;
+        padding: 12px 10px;
+        font-size: 12px;
+      }
+      .header,
+      .card {
+        padding: 16px;
+      }
+      .header .subtitle,
+      .controls,
+      .metric-row,
+      .log-entry {
+        gap: 8px;
+      }
+      .metric-row,
+      .log-entry {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .log-time,
+      .log-level {
+        min-width: 0;
+      }
+      .gauge-value {
+        font-size: 24px;
       }
     }
   </style>
@@ -2071,8 +2119,9 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     .topnav a { display:inline-flex; align-items:center; justify-content:center; min-width:100px; padding:12px 16px; border-radius:0; background:#3A3A3A; color:#CCCCCC; text-decoration:none; font-weight:700; text-transform:uppercase; font-size:14px; transition: 0.2s; }
     .topnav a:hover { background:#444444; color:#FFF; }
     .topnav a.active { background:#009944; color:#fff; }
-    .page { max-width: 1100px; margin: 0 auto; display: grid; gap: 16px; }
+    .page { max-width: 1100px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
     .card { background: #2D2D2D; border: none; border-top: 4px solid #444; padding: 20px; }
+    .page > *, .two-col > * { min-width: 0; }
     h1, h2 { margin-top: 0; color: #fff; text-transform: uppercase; font-weight: 800; font-size: 20px; }
     h1 { font-size: 24px; font-weight: 900; }
     label { display: block; margin: 12px 0 4px; color: #AAA; font-size: 13px; font-weight: bold; text-transform: uppercase; }
@@ -2105,6 +2154,45 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     th, td { text-align: left; padding: 10px; border-bottom: 1px solid #444; font-size: 14px; font-weight: bold; }
     th { color: #AAA; text-transform: uppercase; font-size: 12px; }
     .small { font-size: 12px; color: #AAA; }
+    @media (max-width: 480px) {
+      body {
+        padding: 12px;
+      }
+      .topnav {
+        padding: 12px;
+        gap: 8px;
+      }
+      .topnav-logo {
+        width: 100%;
+        margin-right: 0;
+        justify-content: center;
+        font-size: 18px;
+      }
+      .topnav a {
+        flex: 1 1 calc(50% - 8px);
+        min-width: 0;
+        padding: 12px 10px;
+        font-size: 12px;
+      }
+      .card {
+        padding: 16px;
+      }
+      .row,
+      .button-row,
+      .status-grid,
+      .two-col {
+        grid-template-columns: 1fr;
+      }
+      .legend {
+        display: grid;
+        gap: 8px;
+      }
+      table {
+        display: block;
+        overflow-x: auto;
+        white-space: nowrap;
+      }
+    }
   </style>
 </head>
 <body>

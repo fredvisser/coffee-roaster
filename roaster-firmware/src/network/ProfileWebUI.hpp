@@ -63,6 +63,71 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
     #debugInfo strong { color:#CC0000; display:block; margin-bottom:8px; font-size:13px; text-transform:uppercase; }
     .debug-section { margin:10px 0; padding:8px; background:#2D2D2D; border-radius:0; border:1px solid #444; }
     .debug-section h3 { margin:0 0 6px 0; color:#009944; font-size:11px; text-transform:uppercase; }
+    .input-modal-card { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:20px; width:min(500px, calc(100vw - 32px)); }
+    @media (max-width: 480px) {
+      body {
+        padding: 0 0 12px;
+      }
+      .topnav {
+        padding: 12px;
+        gap: 8px;
+      }
+      .topnav-logo {
+        width: 100%;
+        margin-right: 0;
+        justify-content: center;
+        font-size: 18px;
+      }
+      .topnav a {
+        flex: 1 1 calc(50% - 8px);
+        min-width: 0;
+        padding: 12px 10px;
+        font-size: 12px;
+      }
+      .container {
+        padding: 12px;
+      }
+      h1 {
+        font-size: 22px;
+      }
+      .controls,
+      .control-group,
+      .row,
+      .legend {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .control-group > *,
+      .controls > *,
+      .row > *,
+      .legend > * {
+        width: 100%;
+      }
+      .input {
+        min-width: 0;
+        width: 100%;
+      }
+      .grid {
+        grid-template-columns: 1fr;
+      }
+      .graph-wrapper {
+        overflow: hidden;
+      }
+      label {
+        min-width: 0;
+      }
+      #debugInfo {
+        top: auto;
+        right: 12px;
+        left: 12px;
+        bottom: 12px;
+        max-width: none;
+        max-height: 45vh;
+      }
+      .input-modal-card {
+        padding: 16px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -138,7 +203,7 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
   <div id="toast" style="position:fixed; bottom:20px; right:20px; background:#161b22; border:1px solid #30363d; color:#c9d1d9; padding:10px 14px; border-radius:6px; box-shadow:0 8px 24px rgba(0,0,0,0.3); display:none; z-index:2000;"></div>
 
   <div id="inputModal" style="position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); display:none; align-items:center; justify-content:center; z-index:3000;">
-    <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:20px; min-width:400px; max-width:500px;">
+    <div class="input-modal-card">
       <h3 id="modalTitle" style="margin:0 0 16px; color:#fff; font-size:18px;"></h3>
       <input id="modalInput" type="text" class="input" style="width:100%; margin-bottom:16px;" />
       <div style="display:flex; gap:8px; justify-content:flex-end;">
@@ -275,6 +340,15 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
       }
       const minHeight = 300;
       const availableWidth = rect.width - 4;
+      if (availableWidth <= 360) {
+        graphPadding.left = 34;
+        graphPadding.right = 34;
+        graphPadding.bottom = 34;
+      } else {
+        graphPadding.left = 40;
+        graphPadding.right = 40;
+        graphPadding.bottom = 40;
+      }
       graphSize.width = Math.max(300, Math.min(availableWidth, 800));
       graphSize.height = Math.max(minHeight, Math.min(rect.width * 0.5, 500));
       return true;
