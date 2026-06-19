@@ -85,7 +85,7 @@ done
 echo ""
 echo "⚙️  Staging LVGL configuration..."
 
-LVGL_CONFIG_SOURCE="$SCRIPT_DIR/../simulator/lv_conf.h"
+LVGL_CONFIG_SOURCE="$ARDUINO_LIB_DIR/lvgl/lv_conf_template.h"
 LVGL_CONFIG_ROOT="$ARDUINO_LIB_DIR/lv_conf.h"
 LVGL_CONFIG_LIBRARY="$ARDUINO_LIB_DIR/lvgl/lv_conf.h"
 
