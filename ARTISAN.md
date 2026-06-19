@@ -17,11 +17,11 @@ The roaster firmware can stream roast data directly to Artisan once the device i
 2. Load the included settings file from `Artisan/artisan-settings.aset` using **Help > Load Settings...**.
 3. Confirm the loaded device configuration matches the roaster connection.
 
-![Artisan port configuration](./images/Artisan%20-%20Port%20Config.png)
+![Artisan port configuration](./images/Artisan - Port Config.png)
 
-![Artisan device configuration](./images/Artisan%20-%20Device%20Config.png)
+![Artisan device configuration](./images/Artisan - Device Config.png)
 
-![Artisan device configuration 2](./images/Artisan%20-%20Device%20Config2.png)
+![Artisan device configuration 2](./images/Artisan - Device Config2.png)
 
 ## Connect To The Roaster
 
@@ -29,7 +29,7 @@ The roaster firmware can stream roast data directly to Artisan once the device i
 2. In Artisan, enable the connection with the **ON** button.
 3. Confirm Artisan shows a successful WebSocket connection and starts receiving temperature data.
 
-![Artisan start roast screen](./images/Artisan%20-%20Start%20roast%20screen.png)
+![Artisan start roast screen](./images/Artisan - Start roast screen.png)
 
 ## Start A Roast
 

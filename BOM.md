@@ -40,7 +40,7 @@ The tables below call out which parts apply to both options and which ones are s
 | Item | Qty | Description | Role | Amazon | AliExpress | Notes |
 | --- | ---: | --- | --- | --- | --- | --- |
 | JC4827W543C board | 1 | ESP32-S3 display controller with integrated LCD and touch | Main controller and local UI | [Amazon display listing](https://www.amazon.com/ESP32-S3-Bluetooth-Compatible-Micropython-Capacitive/dp/B0FW9H5YZY/) | [AliExpress display listing](https://www.aliexpress.com/item/3256806543063048.html?spm=a2g0o.order_list.order_list_main.11.2caa1802G17NYU) | Replaces the old Nano plus Nextion split |
-| Current controller carrier or breakout PCB | 1 | Current-generation support board restored in `PCBs/` | Wiring distribution and mounting | N/A | N/A | Either order the finalized PCB, make your own custom PCB, or build the breakout on perf board |
+| Roaster Breakout PCB | 1 | Breakout board from `PCBs/Roaster Breakout/` | Wiring distribution and mounting | N/A | N/A | Use `Roaster Breakout.brd` and `Roaster Breakout.sch`, or build the breakout on perf board instead |
 | Perf board fallback | 1 | Generic through-hole prototyping board | Manual breakout-board build option | [Perf board example](https://www.amazon.com/dp/B072Z7Y19F?ref=ppx_yo2ov_dt_b_fed_asin_title) | TBD | Use this only if not ordering or fabricating a dedicated breakout PCB |
 | MAX6675 thermocouple module | 2 | K-type thermocouple amplifier module | Bean and exhaust sensing | TBD | TBD | Firmware expects two channels |
 | JC IO harness parts | Assorted | 4-pin 1.25 mm board-side and harness-side connector parts | Connects to JC4827W543C I/O | [4-pin JST 1.25 mm connectors](https://www.amazon.com/dp/B0DS3MCBBK?ref=ppx_yo2ov_dt_b_fed_asin_title&th=1) and [JST GH housing and terminal kit](https://www.amazon.com/CHENBO-Connector-Housing-Assortment-Terminal/dp/B077X8XV2J/) or [pre-crimped JST GH to Dupont leads](https://www.amazon.com/XUGERIP-JST-GH-Dupont-Pre-Crimped/dp/B0CW6J3NXM) | TBD | Use whichever harness approach best matches the current breakout and service plan |
@@ -74,21 +74,22 @@ The tables below call out which parts apply to both options and which ones are s
 | 1200 W popcorn popper | 1 | Base roasting chamber and blower assembly | Core roasting hardware | [Updated popper](https://www.amazon.com/dp/B0FKBZH5P5?ref=ppx_yo2ov_dt_b_fed_asin_title) | TBD | Modified for external heater and fan control |
 | Stock popper fan motor | 1 | Original motor retained from the popper | Airflow source | Included with popper | N/A | Option A only |
 | Brushless DC motor and controller | 1 set | Replacement motor and matched driver | Airflow source for custom fan conversion | [Brushless motor and controller](https://www.amazon.com/dp/B075ZSDR2T?ref=ppx_yo2ov_dt_b_fed_asin_title) | TBD | Option B only |
-| Motor dimmer or equivalent fan power stage | 1 | Fan power control hardware | Airflow control | TBD | [Motor dimmer example](https://www.aliexpress.com/item/2251832615710334.html) | Keep only if still required by the current control board or chosen fan path |
 
 ## Mechanical And Printed Parts
 
 | Item | Qty | Description | Role | Amazon | AliExpress | Notes |
 | --- | ---: | --- | --- | --- | --- | --- |
-| Enclosure Bottom | 1 | Main lower enclosure body | Supports popper base and internal hardware | N/A | N/A | Expected in `3D printing/`; replace with exact restored filename if it differs |
-| Enclosure Top | 1 | Upper enclosure shell | Covers and protects internal hardware | N/A | N/A | Expected in `3D printing/`; replace with exact restored filename if it differs |
-| PCB Standoff | 3 | Printed internal mounting post | Supports controller-side hardware | N/A | N/A | Expected in `3D printing/`; count taken from the legacy enclosure set |
-| Handle | 1 | Main carrying handle | Mechanical handling | N/A | N/A | Expected in `3D printing/`; often paired with a trim piece |
-| Handle - Trim | 1 | Cosmetic or fit trim for handle | Finish and fit | N/A | N/A | Expected in `3D printing/`; replace with exact restored filename if it differs |
-| Power Supply Mount | 1 | Printed mount for the PSU | Internal mechanical support | N/A | N/A | Expected in `3D printing/`; verify fit against the chosen supply |
-| Feet | 4 | Printed feet, commonly TPU | Stability and surface protection | N/A | N/A | Expected in `3D printing/`; TPU remains a good default if the current design still uses soft feet |
-| ASA custom fan and mount | 1 set | Replacement fan hardware for the custom airflow option | Supports the brushless motor conversion | N/A | N/A | Option B only; print these in ASA |
-| Restored PCB fabrication files | 1 set | Current fabrication outputs | Board manufacturing | N/A | N/A | Update with exact board names when the restored assets are finalized |
+| Enclosure Bottom.stl | 1 | Main lower enclosure body | Supports popper base and internal hardware | N/A | N/A | Current filename in `3D printing/` |
+| Enclosure Top.stl | 1 | Upper enclosure shell | Covers and protects internal hardware | N/A | N/A | Current filename in `3D printing/` |
+| Handle - Main.stl | 1 | Main carrying handle | Mechanical handling | N/A | N/A | Current filename in `3D printing/` |
+| Handle - Trim.stl | 1 | Cosmetic or fit trim for handle | Finish and fit | N/A | N/A | Current filename in `3D printing/` |
+| 12V - Power Supply Mount.stl | 1 | Printed mount for the power supply | Internal mechanical support | N/A | N/A | Current filename in `3D printing/`; verify fit for the selected supply |
+| Breakout Mount.stl | 1 | Printed mount for the breakout board | Supports controller-side hardware | N/A | N/A | Current filename in `3D printing/` |
+| Feet.stl | 1 set | Printed feet | Stability and surface protection | N/A | N/A | Current filename in `3D printing/`; TPU is still a good default |
+| BDC Fan Mount.stl | 1 | Printed fan mount for the custom airflow option | Supports the brushless motor conversion | N/A | N/A | Option B only |
+| Fan.stl | 1 | Printed fan for the custom airflow option | Airflow hardware for the brushless conversion | N/A | N/A | Option B only; print in ASA |
+| Roaster Enclosure v2.3mf | 1 | Combined enclosure project file | Print preparation and fit reference | N/A | N/A | Use this to inspect the assembled print set before slicing |
+| Roaster Breakout.brd and Roaster Breakout.sch | 1 set | Current breakout board design files | Board fabrication and reference | N/A | N/A | Located in `PCBs/Roaster Breakout/` |
 
 ## Fasteners And Consumables
 
@@ -99,11 +100,10 @@ The tables below call out which parts apply to both options and which ones are s
 | Heat shrink and cable management | Assorted | Insulation and strain relief | Safer wiring | TBD | TBD | Strongly recommended |
 | Super glue or equivalent adhesive | As needed | Adhesive for low-load mounting tasks | Switch and trim attachment | TBD | TBD | Use to mount the power switch after clipping the plastic tabs; use only where heat exposure is acceptable |
 
-## Next Editing Pass
+## Remaining Gaps
 
-Once the restored `3D printing/` and `PCBs/` assets are finalized in the working tree, replace the generic entries above with:
+The core v2 parts list is in place, but a few sourcing fields still need confirmation before this BOM is fully complete:
 
-- exact restored enclosure filenames if they differ from the legacy names above
-- exact PCB names and fabrication outputs
-- final quantities for fasteners and connectors
-- confirmed Amazon and AliExpress links for every remaining purchased part that is still marked `TBD`
+- remaining Amazon and AliExpress links still marked `TBD`
+- final quantities for connectors, heat shrink, and some fasteners
+- any additional board-fabrication outputs you want listed beyond `Roaster Breakout.brd` and `Roaster Breakout.sch`

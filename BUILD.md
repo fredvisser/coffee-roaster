@@ -70,8 +70,8 @@ Print the parts from the `3D printing/` folder. The current filenames are:
 - `Handle - Main.stl`
 - `Handle - Trim.stl`
 - `12V - Power Supply Mount.stl`
-- `Feet.stl`
 - `Breakout Mount.stl`
+- `Feet.stl`
 - `BDC Fan Mount.stl`
 - `Fan.stl`
 - `Roaster Enclosure v2.3mf`
@@ -167,7 +167,7 @@ Mount the probe so the tip is in the process air stream, not buried inside a clo
 
 Once the printed parts, controller hardware, and modified popper are ready, assemble the enclosure.
 
-1. Install the feet, standoffs, and power-supply mount.
+1. Install the feet, breakout mount, and power-supply mount.
 2. Mount the popper base to the enclosure bottom.
 3. Mount the display board, breakout hardware, SSR, power supply, and thermocouple modules.
 4. Mount the mains inlet and power switch.
