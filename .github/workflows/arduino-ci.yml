@@ -48,6 +48,11 @@ jobs:
         arduino-cli lib install "GFX Library for Arduino"
         arduino-cli lib install "Dev Device Pins"
         arduino-cli lib install "TAMC_GT911"
+
+    - name: Stage LVGL configuration
+      run: |
+        cp roaster-firmware/simulator/lv_conf.h "$HOME/Arduino/libraries/lv_conf.h"
+        cp roaster-firmware/simulator/lv_conf.h "$HOME/Arduino/libraries/lvgl/lv_conf.h"
         
     - name: Install async libraries from GitHub
       run: |

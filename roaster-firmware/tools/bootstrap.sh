@@ -83,6 +83,27 @@ for lib in "${LIBRARIES[@]}"; do
 done
 
 echo ""
+echo "⚙️  Staging LVGL configuration..."
+
+LVGL_CONFIG_SOURCE="$SCRIPT_DIR/../simulator/lv_conf.h"
+LVGL_CONFIG_ROOT="$ARDUINO_LIB_DIR/lv_conf.h"
+LVGL_CONFIG_LIBRARY="$ARDUINO_LIB_DIR/lvgl/lv_conf.h"
+
+if [ -f "$LVGL_CONFIG_SOURCE" ]; then
+    cp "$LVGL_CONFIG_SOURCE" "$LVGL_CONFIG_ROOT"
+    if [ -d "$ARDUINO_LIB_DIR/lvgl" ]; then
+        cp "$LVGL_CONFIG_SOURCE" "$LVGL_CONFIG_LIBRARY"
+        echo "✓ LVGL configuration staged"
+    else
+        echo "❌ Error: lvgl library directory not found at $ARDUINO_LIB_DIR/lvgl"
+        exit 1
+    fi
+else
+    echo "❌ Error: LVGL configuration not found at $LVGL_CONFIG_SOURCE"
+    exit 1
+fi
+
+echo ""
 echo "📥 Installing ESPAsyncWebServer and AsyncTCP..."
 echo "Note: These libraries must be installed manually from GitHub"
 
