@@ -53,6 +53,9 @@ jobs:
       run: |
         cp "$HOME/Arduino/libraries/lvgl/lv_conf_template.h" "$HOME/Arduino/libraries/lv_conf.h"
         cp "$HOME/Arduino/libraries/lvgl/lv_conf_template.h" "$HOME/Arduino/libraries/lvgl/lv_conf.h"
+        for config in "$HOME/Arduino/libraries/lv_conf.h" "$HOME/Arduino/libraries/lvgl/lv_conf.h"; do
+          perl -0pi -e 's/^#if 0 /#if 1 /m; s/^#define LV_FONT_MONTSERRAT_16 0$/#define LV_FONT_MONTSERRAT_16 1/m; s/^#define LV_FONT_MONTSERRAT_22 0$/#define LV_FONT_MONTSERRAT_22 1/m; s/^#define LV_FONT_MONTSERRAT_48 0$/#define LV_FONT_MONTSERRAT_48 1/m' "$config"
+        done
         
     - name: Install async libraries from GitHub
       run: |
