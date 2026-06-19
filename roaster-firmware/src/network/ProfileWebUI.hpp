@@ -77,8 +77,7 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
       </svg>
       Roaster Control
     </div>
-    <a href="/">Home</a>
-    <a href="/console">Console</a>
+    <a href="/">Console</a>
     <a class="active" href="/profile">Profiles</a>
     <a href="/pid">PID</a>
     <a href="/update">Update</a>

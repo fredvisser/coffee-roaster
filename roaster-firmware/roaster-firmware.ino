@@ -6,6 +6,7 @@
 #include <Preferences.h>
 #include <ElegantOTA.h> // v3.1.7+ with async mode enabled for ESPAsyncWebServer compatibility
 #include <ESP32Servo.h>
+#include <esp_heap_caps.h>
 #include <esp_task_wdt.h> // Hardware watchdog timer
 
 // Debug macros (must be defined before including src/network/Network.hpp)
@@ -79,6 +80,19 @@ PWMrelay fanRelay(FAN, HIGH);
 
 Servo bdcFan;
 
+static void configureJcHeapForPsram() {
+#if ROASTER_TARGET_BOARD == ROASTER_BOARD_JC4827W543C
+  if (!psramFound()) {
+    LOG_WARN("PSRAM not detected; leaving default heap allocation policy in place");
+    return;
+  }
+
+  // Prefer PSRAM for general allocations so internal DRAM remains available for TLS.
+  heap_caps_malloc_extmem_enable(0);
+  LOG_INFO("Configured heap allocator to prefer PSRAM for general allocations");
+#endif
+}
+
 // Create a roast profile object
 RoastProfile profile;
 ProfileManager profileManager;
@@ -95,6 +109,7 @@ int setpointProgress = 0;   // Roast time in seconds
 int bdcFanMs = 800;         // BDC fan servo pulse width (800-2000 µs)
 double fanTemp = 0;         // Inlet/fan temperature sensor (°F)
 int badReadingCount = 0;    // Track consecutive bad thermocouple readings
+char lastRejectedBeanReadReason[16] = "none";
 
 // Restart handling
 bool restartRequested = false;
@@ -112,6 +127,60 @@ WifiCredentials wifiCredentials;
 
 // Roaster state variable (enum defined in RoasterTypes.hpp)
 RoasterState roasterState = IDLE;
+
+inline bool shouldFilterBeanTempSpikes()
+{
+  return roasterState == START_ROAST || roasterState == ROASTING || roasterState == COOLING;
+}
+
+inline bool shouldFilterFanTempSpikes()
+{
+  return roasterState == START_ROAST || roasterState == ROASTING || roasterState == COOLING;
+}
+
+inline bool shouldEnforceFanTempSafety()
+{
+  if (roasterState == COOLING) {
+    return true;
+  }
+
+  if (roasterState != ROASTING) {
+    return false;
+  }
+
+  // During the roast start transition the heater is still off and the exhaust
+  // sensor should remain near ambient. Treat large fan-sensor excursions during
+  // that phase as implausible until heating has actually begun.
+  if (heaterOutputVal <= 0.0 && currentTemp < 140.0) {
+    return false;
+  }
+
+  return true;
+}
+
+inline void setLastRejectedBeanReadReason(const char *reason)
+{
+  strlcpy(lastRejectedBeanReadReason, reason ? reason : "unknown", sizeof(lastRejectedBeanReadReason));
+}
+
+inline bool isRoastActiveState()
+{
+  return roasterState == START_ROAST || roasterState == ROASTING;
+}
+
+inline void enterEmergencyErrorState(const char *faultCode, const char *displayMessage)
+{
+  roasterState = ERROR;
+  digitalWrite(HEATER, LOW);
+  resetRoastControllerState();
+  heaterRelay.setPWM(0);
+  fanRelay.setPWM(255);
+  bdcFan.writeMicroseconds(2000);
+  bdcFanMs = 2000;
+  systemLinkUpdateLastFault(faultCode);
+  systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, faultCode);
+  displayShowErrorMessage(displayMessage);
+}
 
 MAX6675 thermocouple(THERMOCOUPLE_SCK, TC1_CS, THERMOCOUPLE_MISO);
 MAX6675 thermocoupleFan(THERMOCOUPLE_SCK, TC2_CS, THERMOCOUPLE_MISO);
@@ -281,8 +350,29 @@ void setup()
       .idle_core_mask = 0,  // Don't watch idle tasks
       .trigger_panic = true // Reboot on timeout
   };
-  esp_task_wdt_init(&wdt_config);
-  esp_task_wdt_add(NULL);
+
+  esp_err_t wdtStatus = esp_task_wdt_status(NULL);
+  if (wdtStatus == ESP_ERR_INVALID_STATE) {
+    esp_err_t initResult = esp_task_wdt_init(&wdt_config);
+    if (initResult != ESP_OK) {
+      LOG_ERRORF("Failed to initialize task watchdog (%d)", static_cast<int>(initResult));
+    }
+  } else {
+    esp_err_t reconfigureResult = esp_task_wdt_reconfigure(&wdt_config);
+    if (reconfigureResult != ESP_OK) {
+      LOG_ERRORF("Failed to reconfigure task watchdog (%d)", static_cast<int>(reconfigureResult));
+    }
+  }
+
+  if (wdtStatus == ESP_ERR_NOT_FOUND) {
+    esp_err_t addResult = esp_task_wdt_add(NULL);
+    if (addResult != ESP_OK) {
+      LOG_ERRORF("Failed to subscribe loop task to watchdog (%d)", static_cast<int>(addResult));
+    }
+  }
+
+  configureJcHeapForPsram();
+
   // Load WiFi credentials from preferences
   // Initialize preferences with error checking
   if (!preferences.begin(PREFS_NAMESPACE, false))
@@ -396,11 +486,17 @@ void loop()
 
   if (tickTimer.isReady())
   {
-    displayTick();
-    handleDisplayActions();
+    if (!otaUpdateInProgress)
+    {
+      displayTick();
+      handleDisplayActions();
+    }
     heaterRelay.tick();
     fanRelay.tick();
-    wsCleanup();
+    if (!otaUpdateInProgress)
+    {
+      wsCleanup();
+    }
     ElegantOTA.loop(); // Handle OTA updates
     tickTimer.reset();
   }
@@ -410,6 +506,9 @@ void loop()
     static int readCycle = 0; // 0-7 counter for 1Hz fan updates
     static double lastValidTemp = 0;
     static bool firstReading = true;
+    static double lastValidFanTemp = 0;
+    static bool firstFanReading = true;
+    static int fanOverTempCount = 0;
 
     // Cycle 0, 2, 4, 6: Read Main Sensor (4 Hz)
     // Cycle 1, 3, 5, 7: Read Fan Sensor (4 Hz)
@@ -418,16 +517,23 @@ void loop()
     {
       // Read thermocouple with failure detection
       double reading = thermocouple.readFarenheit();
+      double previousAcceptedTemp = currentTemp;
 
       // 1. Range Check: MAX6675 returns ~2048°F when disconnected
       // We also check for negative values which are invalid for this application
       bool isRangeError = (reading < 0 || reading > SENSOR_FAULT_TEMP);
+      if (isRangeError)
+      {
+        setLastRejectedBeanReadReason("range");
+        LOG_WARNF("Temp range error ignored: raw=%.1fF accepted=%.1fF lastValid=%.1fF", reading, previousAcceptedTemp, lastValidTemp);
+      }
       
       // 2. Spike Check: Ignore physically impossible temperature jumps
       bool isSpike = false;
-      if (!isRangeError && !firstReading && abs(reading - lastValidTemp) > MAX_TEMP_JUMP) {
+      if (!isRangeError && !firstReading && shouldFilterBeanTempSpikes() && abs(reading - lastValidTemp) > MAX_TEMP_JUMP) {
         isSpike = true;
-        LOG_WARNF("Temp spike ignored: %.1f -> %.1f", lastValidTemp, reading);
+        setLastRejectedBeanReadReason("spike");
+        LOG_WARNF("Temp spike ignored: lastValid=%.1fF raw=%.1fF accepted=%.1fF", lastValidTemp, reading, previousAcceptedTemp);
       }
 
       if (isRangeError || isSpike)
@@ -436,17 +542,8 @@ void loop()
         if (badReadingCount >= MAX_BAD_READINGS)
         {
           // SENSOR FAILURE - EMERGENCY STOP
-          roasterState = ERROR;
-          digitalWrite(HEATER, LOW);
-          resetRoastControllerState();
-          heaterRelay.setPWM(0);
-          fanRelay.setPWM(255); // Full fan for safety
-          bdcFan.writeMicroseconds(2000);
-          bdcFanMs = 2000;
-          systemLinkUpdateLastFault("sensor_failed");
-          systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "sensor_failed");
           DEBUG_PRINTLN("EMERGENCY: Thermocouple failure detected!");
-          displayShowErrorMessage("Sensor Failed");
+          enterEmergencyErrorState("sensor_failed", "Sensor Failed");
         }
       }
       else
@@ -456,21 +553,26 @@ void loop()
         firstReading = false;
         badReadingCount = 0; // Reset counter on good reading
 
+        if (previousAcceptedTemp > 0.0) {
+          bool suspiciousLowLatch = reading <= 40.0 && previousAcceptedTemp >= 80.0;
+          bool largeAcceptedDrop = abs(reading - previousAcceptedTemp) >= 20.0;
+          if (suspiciousLowLatch || largeAcceptedDrop) {
+            LOG_WARNF("Bean temp accepted: prev=%.1fF raw=%.1fF new=%.1fF lastValid=%.1fF state=%d heater=%.1f", previousAcceptedTemp, reading, currentTemp, lastValidTemp, roasterState, heaterOutputVal);
+          }
+        }
+
+        if (isRoastActiveState() && currentTemp > MAX_ROAST_TEMP)
+        {
+          DEBUG_PRINTLN("EMERGENCY: Roast temperature limit exceeded!");
+          enterEmergencyErrorState("roast_over_temperature", "Roast Over Temp");
+        }
+
         // THERMAL RUNAWAY PROTECTION
-        if (currentTemp > MAX_SAFE_TEMP)
+        if (roasterState != ERROR && currentTemp > MAX_SAFE_TEMP)
         {
           // EMERGENCY SHUTDOWN
-          roasterState = ERROR;
-          digitalWrite(HEATER, LOW);
-          resetRoastControllerState();
-          heaterRelay.setPWM(0);
-          fanRelay.setPWM(255); // Full fan to cool down
-          bdcFan.writeMicroseconds(2000);
-          bdcFanMs = 2000;
-          systemLinkUpdateLastFault("over_temperature");
-          systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "over_temperature");
           DEBUG_PRINTLN("EMERGENCY: Thermal runaway detected!");
-          displayShowErrorMessage("Over Temp");
+          enterEmergencyErrorState("over_temperature", "Over Temp");
         }
       }
     }
@@ -478,24 +580,44 @@ void loop()
     else
     {
       double fReading = thermocoupleFan.readFarenheit();
-      // Simple range check for fan sensor
-      if (fReading > 0 && fReading < SENSOR_FAULT_TEMP) {
+      bool isFanRangeError = (fReading <= 0 || fReading > SENSOR_FAULT_TEMP);
+      if (isFanRangeError) {
+        fanOverTempCount = 0;
+        LOG_WARNF("Fan temp range error ignored: %.1f", fReading);
+      }
+
+      bool isFanSpike = false;
+      if (!isFanRangeError && !firstFanReading && shouldFilterFanTempSpikes() && abs(fReading - lastValidFanTemp) > MAX_TEMP_JUMP) {
+        isFanSpike = true;
+        fanOverTempCount = 0;
+        LOG_WARNF("Fan temp spike ignored: %.1f -> %.1f", lastValidFanTemp, fReading);
+      }
+
+      bool isImplausibleFanReading = false;
+      if (!isFanRangeError && !isFanSpike && heaterOutputVal <= 0.0 && currentTemp < 140.0) {
+        if (fReading > currentTemp + 30.0) {
+          isImplausibleFanReading = true;
+          fanOverTempCount = 0;
+          LOG_WARNF("Fan temp implausible with heater off ignored: bean=%.1fF fan=%.1fF", currentTemp, fReading);
+        }
+      }
+
+      if (!isFanRangeError && !isFanSpike && !isImplausibleFanReading) {
         fanTemp = fReading;
-        
-        // Safety check for fan sensor (cold inlet temp)
-        if (fanTemp > MAX_SAFE_FAN_TEMP) {
-          // EMERGENCY SHUTDOWN
-          roasterState = ERROR;
-          digitalWrite(HEATER, LOW);
-          resetRoastControllerState();
-          heaterRelay.setPWM(0);
-          fanRelay.setPWM(255); // Full fan to cool down
-          bdcFan.writeMicroseconds(2000);
-          bdcFanMs = 2000;
-          systemLinkUpdateLastFault("fan_over_temperature");
-          systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "fan_over_temperature");
-          DEBUG_PRINTLN("EMERGENCY: Fan/Exhaust Over Temp!");
-          displayShowErrorMessage("Exhaust Over Temp");
+        lastValidFanTemp = fReading;
+        firstFanReading = false;
+
+        // Require the over-temp reading to persist briefly so one noisy sample
+        // cannot immediately trip the roaster into an error state.
+        if (shouldEnforceFanTempSafety() && fanTemp > MAX_SAFE_FAN_TEMP) {
+          fanOverTempCount++;
+          LOG_WARNF("Fan temp over threshold (%d/3): %.1fF", fanOverTempCount, fanTemp);
+          if (fanOverTempCount >= 3) {
+            DEBUG_PRINTLN("EMERGENCY: Fan/Exhaust Over Temp!");
+            enterEmergencyErrorState("fan_over_temperature", "Exhaust Over Temp");
+          }
+        } else {
+          fanOverTempCount = 0;
         }
       }
     }
@@ -783,14 +905,14 @@ void loop()
   }
 
   // Broadcast system state via WebSocket to debug console
-  if (wsBroadcastTimer.isReady())
+  if (!otaUpdateInProgress && wsBroadcastTimer.isReady())
   {
     broadcastSystemState();
     broadcastLogs(50);  // Send last 50 log entries
     wsBroadcastTimer.reset();
   }
 
-  if (roastTraceTimer.isReady())
+  if (!otaUpdateInProgress && roastTraceTimer.isReady())
   {
     if (roasterState == ROASTING && pidValidation.isActive())
     {

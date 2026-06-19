@@ -35,6 +35,7 @@ unsigned long mdnsRetryAtMs = 0;
 bool wifiConnectAttemptActive = false;
 unsigned long wifiConnectAttemptStartedAtMs = 0;
 String lastReportedNetworkAddress;
+volatile bool networkAddressRefreshRequested = false;
 String lastRequestedWifiSsid;
 unsigned long lastWifiVisibilityScanAtMs = 0;
 bool wifiEventLoggingInitialized = false;
@@ -213,7 +214,7 @@ void ensureWifiEventLogging() {
       break;
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
       LOG_INFOF("WiFi event: STA got IP %s", WiFi.localIP().toString().c_str());
-      updateDisplayedNetworkAddress();
+      networkAddressRefreshRequested = true;
       preferences.putString("ssid", wifiCredentials.ssid);
       preferences.putString("password", wifiCredentials.password);
       break;
@@ -243,6 +244,7 @@ extern double heaterFeedforwardVal;
 extern int setpointProgress;
 extern int bdcFanMs;
 extern int badReadingCount;
+extern char lastRejectedBeanReadReason[16];
 extern double kp;
 extern double ki;
 extern double kd;
@@ -291,11 +293,91 @@ void refreshActiveProfileDisplay() {
 unsigned long ota_progress_millis = 0;
 bool otaUpdateInProgress = false;
 
+const char* getStateName(byte state);
+
+bool otaAllowedWhileCurrentState() {
+  return roasterState == IDLE;
+}
+
+String otaBusyMessage() {
+  String message = "OTA updates are only allowed while idle. Current state: ";
+  message += getStateName(roasterState);
+  return message;
+}
+
+String otaInProgressMessage() {
+  return "OTA update in progress. Background endpoints are temporarily unavailable.";
+}
+
+bool otaRequestAllowedDuringUpload(const String &url, WebRequestMethodComposite method) {
+  return (method == HTTP_GET && (url == "/update" || url == "/ota/start")) ||
+         (method == HTTP_POST && url == "/ota/upload");
+}
+
+class OtaStateGuardHandler : public AsyncWebHandler {
+public:
+  bool canHandle(AsyncWebServerRequest *request) const override {
+    const String url = request->url();
+    const WebRequestMethodComposite method = request->method();
+
+    if (otaUpdateInProgress) {
+      return !otaRequestAllowedDuringUpload(url, method);
+    }
+
+    if (otaAllowedWhileCurrentState()) {
+      return false;
+    }
+
+    return otaRequestAllowedDuringUpload(url, method);
+  }
+
+  void handleRequest(AsyncWebServerRequest *request) override {
+    if (otaUpdateInProgress) {
+      if (request->url() == "/update") {
+        String html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>OTA In Progress</title></head><body style=\"font-family:sans-serif;background:#111;color:#eee;padding:24px;\">";
+        html += "<h1>Firmware Update In Progress</h1><p>";
+        html += otaInProgressMessage();
+        html += "</p><p>Wait for the upload to finish before using the web UI again.</p></body></html>";
+        request->send(409, "text/html", html);
+        return;
+      }
+
+      request->send(409, "text/plain", otaInProgressMessage());
+      return;
+    }
+
+    if (request->url() == "/update") {
+      String html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>OTA Blocked</title></head><body style=\"font-family:sans-serif;background:#111;color:#eee;padding:24px;\">";
+      html += "<h1>Firmware Update Blocked</h1><p>";
+      html += otaBusyMessage();
+      html += "</p><p>Wait until the roaster returns to IDLE, then retry the update.</p></body></html>";
+      request->send(409, "text/html", html);
+      return;
+    }
+
+    request->send(409, "text/plain", otaBusyMessage());
+  }
+
+  bool isRequestHandlerTrivial() const override {
+    return false;
+  }
+};
+
+inline OtaStateGuardHandler otaStateGuardHandler;
+
 void onOTAStart() {
-  // Log when OTA has started
+  if (!otaAllowedWhileCurrentState()) {
+    LOG_ERRORF("OTA start should have been blocked while state=%s", getStateName(roasterState));
+  }
   otaUpdateInProgress = true;
+  ws.closeAll(1012, "OTA update in progress");
+  bool systemLinkIdle = systemLinkWaitForIdle(2000);
   ota_progress_millis = millis();
-  LOG_INFOF("OTA update started: freeHeap=%u, wifiRSSI=%d", ESP.getFreeHeap(), WiFi.RSSI());
+  size_t internalHeap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  LOG_INFOF("OTA update started: freeHeap=%u internalHeap=%u wifiRSSI=%d systemLinkIdle=%s", ESP.getFreeHeap(), static_cast<unsigned int>(internalHeap), WiFi.RSSI(), systemLinkIdle ? "true" : "false");
+  if (!systemLinkIdle) {
+    LOG_WARN("OTA start timed out waiting for SystemLink activity to drain");
+  }
 }
 
 void onOTAProgress(size_t current, size_t final) {
@@ -409,7 +491,7 @@ const char* getStateName(byte state) {
 
 // Serialize system state to JSON
 String getSystemStateJSON() {
-  DynamicJsonDocument doc(1280);
+  DynamicJsonDocument doc(1408);
   
   doc["timestamp"] = millis();
   doc["state"] = getStateName(roasterState);
@@ -436,6 +518,7 @@ String getSystemStateJSON() {
   
   JsonObject safety = doc.createNestedObject("safety");
   safety["badReadings"] = badReadingCount;
+  safety["lastRejectedReason"] = lastRejectedBeanReadReason;
   
   JsonObject memory = doc.createNestedObject("memory");
   memory["heapFree"] = ESP.getFreeHeap();
@@ -513,11 +596,13 @@ String networkAccessAddress() {
 void updateDisplayedNetworkAddress() {
   String currentAddress = networkAccessAddress();
   if (currentAddress == lastReportedNetworkAddress) {
+    networkAddressRefreshRequested = false;
     return;
   }
 
   displaySetWifiIp(currentAddress);
   lastReportedNetworkAddress = currentAddress;
+  networkAddressRefreshRequested = false;
 }
 
 bool mdnsHasSufficientInternalHeap(size_t &freeInternalHeap, size_t &largestInternalBlock) {
@@ -649,67 +734,9 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 
   networkServicesInitialized = true;
 
-  // Route for root / web page
+  // Default to the console app at the root URL.
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(200, "text/html", R"rawliteral(
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Roaster Links</title>
-  <style>
-    body { font-family: 'Segoe UI', Inter, -apple-system, sans-serif; background: #333333; color: #FFFFFF; margin: 0; padding: 24px; }
-    .page { max-width: 960px; margin: 0 auto; }
-    .topnav { max-width: 1100px; margin: 0 auto 20px; padding: 14px; display:flex; flex-wrap:wrap; gap:10px; background:#2D2D2D; border-bottom:2px solid #444; align-items:center; }
-    .topnav-logo { display:flex; align-items:center; gap:10px; margin-right:auto; font-weight:900; font-size:20px; color:#009944; text-transform:uppercase; letter-spacing:1px; }
-    .topnav a { display:inline-flex; align-items:center; justify-content:center; min-width:100px; padding:12px 16px; border-radius:0; background:#3A3A3A; color:#CCCCCC; text-decoration:none; font-weight:700; text-transform:uppercase; font-size:14px; transition: 0.2s; }
-    .topnav a:hover { background:#444444; color:#FFF; }
-    .topnav a.active { background:#009944; color:#fff; }
-    .card { max-width: 420px; margin: 0 auto; background: #2D2D2D; border: none; border-top: 4px solid #009944; padding: 24px; }
-    h1 { margin-top: 0; font-size: 24px; color: #fff; text-transform:uppercase; font-weight:900; }
-    p { color: #AAA; font-weight:bold; }
-    a { display: block; margin: 12px 0; padding: 14px 16px; text-decoration: none; color: #fff; font-weight: 700; text-transform:uppercase; text-align: center; background: #444444; }
-    a:hover { background: #555555; }
-    a.secondary { background: #009944; }
-    a.secondary:hover { background: #007A36; }
-    a.tertiary { background: #0050FF; }
-    a.tertiary:hover { background: #0030AA; }
-  </style>
-</head>
-<body>
-  <div class="page">
-    <nav class="topnav">
-      <div class="topnav-logo">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M4.5,10 C2.5,15 9,17 12,17 C15,17 21.5,15 19.5,10 C17.5,5 11,3 8,3 C5,3 6.5,5 4.5,10 Z" fill="#009944" />
-          <path d="M5,10 Q12,14 19,9" stroke="#2D2D2D" stroke-width="1.5" fill="none" />
-          <path d="M9,18 Q8,20 10,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
-          <path d="M12,19 Q11,21 13,23" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
-          <path d="M15,18 Q14,20 16,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
-        </svg>
-        Roaster Control
-      </div>
-      <a class="active" href="/">Home</a>
-      <a href="/console">Console</a>
-      <a href="/profile">Profiles</a>
-      <a href="/pid">PID</a>
-      <a href="/update">Update</a>
-      <a href="/systemlink">SystemLink</a>
-    </nav>
-    <div class="card">
-      <h1>Roaster Control</h1>
-      <p>Select a tool:</p>
-      <a href="/console">Debug Console</a>
-      <a class="secondary" href="/profile">Profile Editor</a>
-      <a class="tertiary" href="/pid">PID Tuning</a>
-      <a class="secondary" href="/update">Firmware Update</a>
-      <a href="/systemlink">SystemLink</a>
-    </div>
-  </div>
-</body>
-</html>
-)rawliteral");
+    request->redirect("/console");
   });
 
   // API endpoint: System state
@@ -1274,69 +1301,90 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0d1117;
-      color: #c9d1d9;
+      font-family: 'Segoe UI', Inter, -apple-system, sans-serif;
+      background: #333333;
+      color: #FFFFFF;
       padding: 20px;
       line-height: 1.5;
     }
     .topnav {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
       max-width: 1400px;
       margin: 0 auto 20px;
       padding: 14px;
-      background: #161b22;
-      border: 1px solid #30363d;
-      border-radius: 14px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      background: #2D2D2D;
+      border-bottom: 2px solid #444;
+      align-items: center;
+    }
+    .topnav-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-right: auto;
+      font-weight: 900;
+      font-size: 20px;
+      color: #009944;
+      text-transform: uppercase;
+      letter-spacing: 1px;
     }
     .topnav a {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      min-width: 120px;
-      padding: 10px 14px;
-      border-radius: 999px;
-      background: #21262d;
-      color: #c9d1d9;
+      min-width: 100px;
+      padding: 12px 16px;
+      border-radius: 0;
+      background: #3A3A3A;
+      color: #CCCCCC;
       text-decoration: none;
-      font-weight: 600;
+      font-weight: 700;
+      text-transform: uppercase;
+      font-size: 14px;
+      transition: 0.2s;
     }
-    .topnav a.active {
-      background: linear-gradient(135deg, #1f6feb, #58a6ff);
-      color: #fff;
+    .topnav a:hover { background: #444444; color: #FFF; }
+    .topnav a.active { background: #009944; color: #fff; }
+    .page {
+      max-width: 1400px;
+      margin: 0 auto;
+      display: grid;
+      gap: 18px;
     }
     .header {
-      background: linear-gradient(135deg, #1f6feb 0%, #0969da 100%);
+      background: #2D2D2D;
+      border: none;
+      border-top: 4px solid #009944;
       padding: 24px;
-      border-radius: 12px;
-      margin-bottom: 24px;
-      box-shadow: 0 8px 24px rgba(31, 111, 235, 0.2);
     }
     .header h1 {
       font-size: 28px;
-      font-weight: 600;
-      margin-bottom: 8px;
+      font-weight: 900;
       color: #fff;
+      text-transform: uppercase;
+      margin-bottom: 8px;
     }
     .header .subtitle {
-      color: rgba(255, 255, 255, 0.8);
+      color: #AAA;
       font-size: 14px;
       display: flex;
       align-items: center;
       gap: 16px;
+      flex-wrap: wrap;
+      font-weight: bold;
     }
     .status-badge {
       display: inline-flex;
       align-items: center;
       gap: 6px;
       padding: 4px 12px;
-      background: rgba(255, 255, 255, 0.15);
-      border-radius: 20px;
+      background: #222222;
+      border: 1px solid #444;
+      border-radius: 0;
       font-size: 12px;
-      font-weight: 500;
+      font-weight: 700;
+      text-transform: uppercase;
     }
     .status-dot {
       width: 8px;
@@ -1352,57 +1400,55 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 20px;
-      margin-bottom: 20px;
+      gap: 18px;
     }
     .card {
-      background: #161b22;
-      border: 1px solid #30363d;
-      border-radius: 8px;
+      background: #2D2D2D;
+      border: none;
+      border-top: 4px solid #444;
       padding: 20px;
-      transition: border-color 0.2s;
-    }
-    .card:hover {
-      border-color: #1f6feb;
     }
     .card-title {
       font-size: 16px;
-      font-weight: 600;
+      font-weight: 800;
       margin-bottom: 16px;
       color: #fff;
       display: flex;
       align-items: center;
       gap: 8px;
+      text-transform: uppercase;
     }
     .card-title::before {
       content: '';
       width: 4px;
       height: 16px;
-      background: #1f6feb;
-      border-radius: 2px;
+      background: #009944;
+      border-radius: 0;
     }
     .metric-row {
       display: flex;
       justify-content: space-between;
       padding: 10px 0;
-      border-bottom: 1px solid #21262d;
+      border-bottom: 1px solid #444;
     }
     .metric-row:last-child {
       border-bottom: none;
     }
     .metric-label {
-      color: #8b949e;
-      font-size: 14px;
+      color: #AAA;
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
     }
     .metric-value {
-      font-weight: 600;
+      font-weight: 900;
       font-size: 16px;
-      color: #58a6ff;
+      color: #FFFFFF;
       font-family: 'Courier New', monospace;
     }
     .metric-value.large {
       font-size: 32px;
-      color: #3fb950;
+      color: #009944;
     }
     .metric-value.warn {
       color: #f0883e;
@@ -1435,10 +1481,15 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       font-size: 13px;
       margin-top: 8px;
     }
+    .panel {
+      background: #222222;
+      border: 1px solid #444;
+      padding: 12px;
+    }
     .log-container {
-      background: #0d1117;
-      border: 1px solid #30363d;
-      border-radius: 6px;
+      background: #222222;
+      border: 1px solid #444;
+      border-radius: 0;
       padding: 12px;
       max-height: 400px;
       overflow-y: auto;
@@ -1448,29 +1499,30 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     .log-entry {
       padding: 6px 8px;
       margin: 2px 0;
-      border-radius: 4px;
+      border-radius: 0;
       display: flex;
       gap: 12px;
       border-left: 3px solid transparent;
+      background: #2D2D2D;
     }
     .log-entry.DEBUG { border-left-color: #8b949e; }
-    .log-entry.INFO { border-left-color: #58a6ff; }
+    .log-entry.INFO { border-left-color: #009944; }
     .log-entry.WARN { border-left-color: #f0883e; }
     .log-entry.ERROR { border-left-color: #f85149; background: rgba(248, 81, 73, 0.1); }
     .log-time {
-      color: #6e7681;
+      color: #AAA;
       min-width: 80px;
     }
     .log-level {
       min-width: 50px;
-      font-weight: 600;
+      font-weight: 700;
     }
     .log-level.DEBUG { color: #8b949e; }
-    .log-level.INFO { color: #58a6ff; }
+    .log-level.INFO { color: #009944; }
     .log-level.WARN { color: #f0883e; }
     .log-level.ERROR { color: #f85149; }
     .log-message {
-      color: #c9d1d9;
+      color: #FFFFFF;
       flex: 1;
     }
     .controls {
@@ -1480,22 +1532,22 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       flex-wrap: wrap;
     }
     .btn {
-      padding: 8px 16px;
-      background: #21262d;
-      border: 1px solid #30363d;
-      color: #c9d1d9;
-      border-radius: 6px;
+      padding: 12px 16px;
+      background: #444444;
+      border: none;
+      color: #fff;
+      border-radius: 0;
       cursor: pointer;
       font-size: 14px;
-      transition: all 0.2s;
+      font-weight: 700;
+      text-transform: uppercase;
+      transition: 0.2s;
     }
     .btn:hover {
-      background: #30363d;
-      border-color: #1f6feb;
+      background: #555555;
     }
     .btn.active {
-      background: #1f6feb;
-      border-color: #1f6feb;
+      background: #009944;
       color: #fff;
     }
     .full-width {
@@ -1513,40 +1565,50 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 </head>
 <body>
   <nav class="topnav">
-    <a href="/">Home</a>
-    <a class="active" href="/console">Console</a>
+    <div class="topnav-logo">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M4.5,10 C2.5,15 9,17 12,17 C15,17 21.5,15 19.5,10 C17.5,5 11,3 8,3 C5,3 6.5,5 4.5,10 Z" fill="#009944" />
+        <path d="M5,10 Q12,14 19,9" stroke="#2D2D2D" stroke-width="1.5" fill="none" />
+        <path d="M9,18 Q8,20 10,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
+        <path d="M12,19 Q11,21 13,23" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
+        <path d="M15,18 Q14,20 16,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
+      </svg>
+      Roaster Control
+    </div>
+    <a class="active" href="/">Console</a>
     <a href="/profile">Profiles</a>
     <a href="/pid">PID</a>
     <a href="/update">Update</a>
     <a href="/systemlink">SystemLink</a>
   </nav>
-  <div class="header">
-    <h1>☕ Coffee Roaster Debug Console</h1>
-    <div class="subtitle">
-      <span class="status-badge">
-        <span class="status-dot"></span>
-        <span id="stateText">Loading...</span>
-      </span>
-      <span id="uptime">Uptime: --</span>
-      <span>Last Update: <span id="lastUpdate">--</span></span>
+  <div class="page">
+    <div class="header">
+      <h1>Roaster Debug Console</h1>
+      <div class="subtitle">
+        <span class="status-badge">
+          <span class="status-dot"></span>
+          <span id="stateText">Loading...</span>
+        </span>
+        <span id="uptime">Uptime: --</span>
+        <span>Last Update: <span id="lastUpdate">--</span></span>
+      </div>
     </div>
-  </div>
 
   <div class="grid">
     <div class="card">
-      <div class="card-title">🌡️ Bean Temperature</div>
+      <div class="card-title">Bean Temperature</div>
       <div style="display: flex; justify-content: center; margin: 20px 0;">
         <svg id="tempGauge" width="200" height="200" viewBox="0 0 200 200">
-          <circle cx="100" cy="100" r="90" fill="none" stroke="#21262d" stroke-width="12"/>
+          <circle cx="100" cy="100" r="90" fill="none" stroke="#444" stroke-width="12"/>
           <path id="tempArc" fill="none" stroke="url(#tempGradient)" stroke-width="12" stroke-linecap="round"/>
           <text x="100" y="95" text-anchor="middle" font-size="36" font-weight="bold" fill="#fff" id="tempValue">--</text>
-          <text x="100" y="115" text-anchor="middle" font-size="16" fill="#8b949e">°F</text>
-          <text x="100" y="135" text-anchor="middle" font-size="13" fill="#58a6ff" id="tempTarget">Target: --</text>
+          <text x="100" y="115" text-anchor="middle" font-size="16" fill="#AAA">F</text>
+          <text x="100" y="135" text-anchor="middle" font-size="13" fill="#009944" id="tempTarget">Target: --</text>
           <defs>
             <linearGradient id="tempGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" style="stop-color:#58a6ff;stop-opacity:1" />
-              <stop offset="50%" style="stop-color:#3fb950;stop-opacity:1" />
-              <stop offset="100%" style="stop-color:#f85149;stop-opacity:1" />
+              <stop offset="0%" style="stop-color:#0050FF;stop-opacity:1" />
+              <stop offset="50%" style="stop-color:#009944;stop-opacity:1" />
+              <stop offset="100%" style="stop-color:#CC0000;stop-opacity:1" />
             </linearGradient>
           </defs>
         </svg>
@@ -1558,15 +1620,15 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     </div>
 
     <div class="card">
-      <div class="card-title">⚙️ Control Output</div>
+      <div class="card-title">Control Output</div>
       <div style="margin: 20px 0;">
         <div style="margin-bottom: 20px;">
           <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
             <span class="metric-label">Heater</span>
             <span class="metric-value" id="heaterOutput">--%</span>
           </div>
-          <div style="background: #21262d; border-radius: 8px; height: 24px; overflow: hidden;">
-            <div id="heaterBar" style="height: 100%; background: linear-gradient(90deg, #f0883e, #f85149); width: 0%; transition: width 0.3s;"></div>
+          <div class="panel" style="padding: 0; height: 24px; overflow: hidden;">
+            <div id="heaterBar" style="height: 100%; background: linear-gradient(90deg, #f0883e, #CC0000); width: 0%; transition: width 0.3s;"></div>
           </div>
         </div>
         <div style="margin-bottom: 20px;">
@@ -1574,8 +1636,8 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
             <span class="metric-label">PWM Fan</span>
             <span class="metric-value" id="pwmFan">--</span>
           </div>
-          <div style="background: #21262d; border-radius: 8px; height: 24px; overflow: hidden;">
-            <div id="fanBar" style="height: 100%; background: linear-gradient(90deg, #58a6ff, #3fb950); width: 0%; transition: width 0.3s;"></div>
+          <div class="panel" style="padding: 0; height: 24px; overflow: hidden;">
+            <div id="fanBar" style="height: 100%; background: linear-gradient(90deg, #0050FF, #009944); width: 0%; transition: width 0.3s;"></div>
           </div>
         </div>
         <div class="metric-row">
@@ -1586,14 +1648,14 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     </div>
 
     <div class="card">
-      <div class="card-title">📊 Roast Profile</div>
+      <div class="card-title">Roast Profile</div>
       <div style="margin: 20px 0;">
         <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
           <span class="metric-label">Progress</span>
           <span class="metric-value" id="profileProgress">--%</span>
         </div>
-        <div style="background: #21262d; border-radius: 8px; height: 32px; overflow: hidden; margin-bottom: 20px;">
-          <div id="progressBar" style="height: 100%; background: linear-gradient(90deg, #1f6feb, #58a6ff); width: 0%; transition: width 0.5s; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; color: #fff;"></div>
+        <div class="panel" style="padding: 0; height: 32px; overflow: hidden; margin-bottom: 20px;">
+          <div id="progressBar" style="height: 100%; background: linear-gradient(90deg, #009944, #0050FF); width: 0%; transition: width 0.5s; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; color: #fff;"></div>
         </div>
       </div>
       <div class="metric-row">
@@ -1607,10 +1669,14 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     </div>
 
     <div class="card">
-      <div class="card-title">🛡️ Safety & System</div>
+      <div class="card-title">Safety and System</div>
       <div class="metric-row">
         <span class="metric-label">Bad Readings</span>
         <span class="metric-value" id="badReadings">--</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-label">Last Reject</span>
+        <span class="metric-value" id="lastRejectedReason">--</span>
       </div>
       <div class="metric-row">
         <span class="metric-label">Free Heap</span>
@@ -1623,12 +1689,14 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     </div>
 
     <div class="card full-width">
-      <div class="card-title">� Live Temperature Chart</div>
-      <canvas id="tempChart" width="800" height="200" style="width: 100%; height: 200px;"></canvas>
+      <div class="card-title">Live Temperature Chart</div>
+      <div class="panel">
+        <canvas id="tempChart" width="800" height="200" style="width: 100%; height: 200px;"></canvas>
+      </div>
     </div>
 
     <div class="card full-width">
-      <div class="card-title">�📝 Debug Logs</div>
+      <div class="card-title">Debug Logs</div>
       <div class="controls">
         <button class="btn active" onclick="filterLogs('ALL')">All</button>
         <button class="btn" onclick="filterLogs('ERROR')">Errors</button>
@@ -1646,6 +1714,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
         </div>
       </div>
     </div>
+  </div>
   </div>
 
   <script>
@@ -1700,6 +1769,11 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       const badReadingsEl = document.getElementById('badReadings');
       badReadingsEl.textContent = badReadings;
       badReadingsEl.className = 'metric-value' + (badReadings > 5 ? ' error' : badReadings > 2 ? ' warn' : '');
+
+      const lastRejectedReason = data.safety?.lastRejectedReason || 'none';
+      const lastRejectedReasonEl = document.getElementById('lastRejectedReason');
+      lastRejectedReasonEl.textContent = lastRejectedReason;
+      lastRejectedReasonEl.className = 'metric-value' + (lastRejectedReason !== 'none' ? ' warn' : '');
 
       const heapFree = Math.round((data.memory?.heapFree || 0) / 1024);
       const heapSize = data.memory?.heapSize || 1;
@@ -1809,7 +1883,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       const height = canvas.height;
       
       // Clear canvas
-      ctx.fillStyle = '#0d1117';
+      ctx.fillStyle = '#222222';
       ctx.fillRect(0, 0, width, height);
       
       if (chartData.temps.length < 2) return;
@@ -1821,7 +1895,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       const tempRange = maxTemp - minTemp;
       
       // Draw grid
-      ctx.strokeStyle = '#21262d';
+      ctx.strokeStyle = '#444';
       ctx.lineWidth = 1;
       for (let i = 0; i <= 4; i++) {
         const y = (height / 4) * i;
@@ -1832,7 +1906,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       }
       
       // Draw setpoint line
-      ctx.strokeStyle = '#58a6ff';
+      ctx.strokeStyle = '#0050FF';
       ctx.lineWidth = 2;
       ctx.setLineDash([5, 5]);
       ctx.beginPath();
@@ -1846,7 +1920,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       ctx.setLineDash([]);
       
       // Draw temperature line
-      ctx.strokeStyle = '#3fb950';
+      ctx.strokeStyle = '#009944';
       ctx.lineWidth = 3;
       ctx.beginPath();
       chartData.temps.forEach((temp, i) => {
@@ -1858,7 +1932,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       ctx.stroke();
       
       // Draw labels
-      ctx.fillStyle = '#8b949e';
+      ctx.fillStyle = '#AAA';
       ctx.font = '12px monospace';
       ctx.textAlign = 'left';
       ctx.fillText(Math.round(maxTemp) + '°F', 5, 15);
@@ -1900,7 +1974,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       ws.onopen = () => {
         console.log('WebSocket connected');
         wsConnected = true;
-        document.querySelector('.status-dot').style.background = '#3fb950';
+        document.querySelector('.status-dot').style.background = '#009944';
         
         // Stop polling when WebSocket is connected
         if (pollingInterval) {
@@ -2040,8 +2114,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       </svg>
       Roaster Control
     </div>
-    <a href="/">Home</a>
-    <a href="/console">Console</a>
+    <a href="/">Console</a>
     <a href="/profile">Profiles</a>
     <a class="active" href="/pid">PID</a>
     <a href="/update">Update</a>
@@ -2415,6 +2488,8 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     request->send_P(200, "text/html", SYSTEMLINK_CONFIG_HTML);
   });
 
+  server.addHandler(&otaStateGuardHandler);
+
   // Start ElegantOTA for over-the-air updates
   ElegantOTA.begin(&server);  // Start ElegantOTA in async mode
   ElegantOTA.setAutoReboot(false);
@@ -2441,7 +2516,7 @@ void sendWsMessage(String message) {
 // WebSocket cleanup and maintainance
 void wsCleanup() {
 #ifdef ARDUINO_ARCH_ESP32
-  if (WiFi.status() == WL_CONNECTED) {
+  if (!otaUpdateInProgress && WiFi.status() == WL_CONNECTED) {
     ws.cleanupClients();
   }
 #endif
@@ -2451,6 +2526,7 @@ void wsCleanup() {
 // Call this periodically (e.g., every 5-10 seconds) from main loop
 void checkWiFiConnection(const WifiCredentials& wifiCredentials) {
 #ifdef ARDUINO_ARCH_ESP32
+  if (otaUpdateInProgress) return;
   if (wifiCredentials.ssid.length() == 0) return;
 
   static unsigned long lastCheck = 0;

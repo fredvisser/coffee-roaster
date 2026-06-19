@@ -177,8 +177,7 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
       </svg>
       Roaster Control
     </div>
-    <a href="/">Home</a>
-    <a href="/console">Console</a>
+    <a href="/">Console</a>
     <a href="/profile">Profiles</a>
     <a href="/pid">PID</a>
     <a href="/update">Update</a>
@@ -232,7 +231,7 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
       <div class="actions">
         <button class="primary" onclick="saveConfig()">Save Configuration</button>
         <button class="secondary" onclick="clearApiKey()">Clear Stored API Key</button>
-        <a class="button secondary" href="/">Back to Home</a>
+        <a class="button secondary" href="/">Back to Console</a>
       </div>
       <div class="status" id="status"></div>
     </div>

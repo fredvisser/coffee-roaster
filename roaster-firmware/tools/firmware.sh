@@ -14,6 +14,7 @@ Commands:
   upload    Compile and upload over serial
   ota       Compile and upload over ElegantOTA
   monitor   Open the serial monitor for the main firmware target
+    port      Show the detected serial port and any owning processes
   run       Compile, upload, and monitor over serial
   help      Show this help
 
@@ -65,6 +66,9 @@ case "$command_name" in
         ;;
     monitor)
         legacy_action="monitor"
+        ;;
+    port)
+        legacy_action="port"
         ;;
     run|all)
         legacy_action="all"

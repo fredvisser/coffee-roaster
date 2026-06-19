@@ -7,9 +7,11 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <esp_heap_caps.h>
 #include <esp_task_wdt.h>
 #include <esp_system.h>
 #include "../support/DebugLog.hpp"
+#include "../platform/BoardConfig.hpp"
 #include "../profiles/ProfileManager.hpp"
 #include "../control/StepResponseTuner.hpp"
 #include "../platform/RoasterTypes.hpp"
@@ -68,8 +70,13 @@ static const size_t SYSTEMLINK_REASON_MAX = 96;
 static const size_t SYSTEMLINK_PHASE_MAX = 32;
 static const size_t SYSTEMLINK_STATUS_MAX = 48;
 static const size_t SYSTEMLINK_RESET_REASON_MAX = 32;
+#if ROASTER_TARGET_BOARD == ROASTER_BOARD_JC4827W543C
+static const size_t SYSTEMLINK_MAX_TRACE_SAMPLES = 900;
+static const size_t SYSTEMLINK_MAX_HIGH_RATE_SAMPLES = 1800;
+#else
 static const size_t SYSTEMLINK_MAX_TRACE_SAMPLES = 1800;
 static const size_t SYSTEMLINK_MAX_HIGH_RATE_SAMPLES = 3600;
+#endif
 static const int SYSTEMLINK_STATUS_TAG_RETENTION_DAYS = 30;
 static const uint16_t SYSTEMLINK_HIGH_RATE_INTERVAL_MS = 250;
 
@@ -159,13 +166,13 @@ struct SystemLinkRoastSession {
   char outcomePhase[SYSTEMLINK_PHASE_MAX];
   char phase[SYSTEMLINK_PHASE_MAX];
   char resetReason[SYSTEMLINK_RESET_REASON_MAX];
-  RoastTraceSample samples[SYSTEMLINK_MAX_TRACE_SAMPLES];
+  RoastTraceSample *samples;
   HighRateTraceSample *highRateSamples;
 };
 
 static portMUX_TYPE systemLinkLock = portMUX_INITIALIZER_UNLOCKED;
-static TaskHandle_t systemLinkTagTaskHandle = nullptr;
-static TaskHandle_t systemLinkPublishTaskHandle = nullptr;
+static TaskHandle_t systemLinkWorkerTaskHandle = nullptr;
+extern bool otaUpdateInProgress;
 static SystemLinkConfig systemLinkConfig = {
   false,
   "https://dev-api.lifecyclesolutions.ni.com",
@@ -178,17 +185,93 @@ static SystemLinkRoastSession systemLinkSession = {};
 static SystemLinkRoastSession systemLinkPublishSession = {};
 static bool systemLinkPublishPending = false;
 static bool systemLinkPublishInProgress = false;
+static volatile uint32_t systemLinkActiveRequestCount = 0;
 static uint32_t systemLinkLastPublishAttemptMs = 0;
 static bool systemLinkTagsProvisioned = false;
+static uint32_t systemLinkLastTagProvisionAttemptMs = 0;  // Cooldown for tag provisioning
 static uint32_t systemLinkLastIdleChamberPublishMs = 0;
 static bool systemLinkLastTelemetrySentValid = false;
 static SystemLinkTelemetrySnapshot systemLinkLastTelemetrySent = {false, 0.0f, 0.0f, 0, IDLE, "", "", "", 0};
 
 static bool systemLinkIsTrackedRoastState(RoasterState state);
 static void systemLinkCopyString(char *dest, size_t destSize, const String &src);
+static bool systemLinkParseApiEndpoint(String &host, uint16_t &port);
+
+static void systemLinkActiveRequestEnter() {
+  portENTER_CRITICAL(&systemLinkLock);
+  systemLinkActiveRequestCount++;
+  portEXIT_CRITICAL(&systemLinkLock);
+}
+
+static void systemLinkActiveRequestLeave() {
+  portENTER_CRITICAL(&systemLinkLock);
+  if (systemLinkActiveRequestCount > 0) {
+    systemLinkActiveRequestCount--;
+  }
+  portEXIT_CRITICAL(&systemLinkLock);
+}
+
+static bool systemLinkHasActiveRequests() {
+  portENTER_CRITICAL(&systemLinkLock);
+  bool active = systemLinkActiveRequestCount > 0;
+  portEXIT_CRITICAL(&systemLinkLock);
+  return active;
+}
+
+static bool systemLinkWaitForIdle(uint32_t timeoutMs) {
+  uint32_t startedAt = millis();
+  while (systemLinkHasActiveRequests()) {
+    if (millis() - startedAt >= timeoutMs) {
+      return false;
+    }
+    delay(25);
+  }
+  return true;
+}
+
+static void systemLinkFeedWatchdog() {
+  if (xTaskGetCurrentTaskHandle() == systemLinkWorkerTaskHandle) {
+    return;
+  }
+  esp_task_wdt_reset();
+}
+
+static RoastTraceSample *systemLinkAllocateTraceBuffer() {
+#if ROASTER_TARGET_BOARD == ROASTER_BOARD_JC4827W543C
+  if (!psramFound()) {
+    return nullptr;
+  }
+  return static_cast<RoastTraceSample *>(heap_caps_malloc(sizeof(RoastTraceSample) * SYSTEMLINK_MAX_TRACE_SAMPLES,
+                                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#else
+  return static_cast<RoastTraceSample *>(malloc(sizeof(RoastTraceSample) * SYSTEMLINK_MAX_TRACE_SAMPLES));
+#endif
+}
+
+static HighRateTraceSample *systemLinkAllocateHighRateBuffer() {
+#if ROASTER_TARGET_BOARD == ROASTER_BOARD_JC4827W543C
+  if (!psramFound()) {
+    return nullptr;
+  }
+  return static_cast<HighRateTraceSample *>(heap_caps_malloc(sizeof(HighRateTraceSample) * SYSTEMLINK_MAX_HIGH_RATE_SAMPLES,
+                                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#else
+  return static_cast<HighRateTraceSample *>(malloc(sizeof(HighRateTraceSample) * SYSTEMLINK_MAX_HIGH_RATE_SAMPLES));
+#endif
+}
+
+static void systemLinkFreeTraceBuffer(SystemLinkRoastSession &session) {
+  if (session.samples != nullptr) {
+    free(session.samples);
+    session.samples = nullptr;
+  }
+  session.sampleCount = 0;
+  session.lastRecordedSecond = 0xFFFF;
+}
 
 static void systemLinkInvalidateTagPublishState() {
   systemLinkTagsProvisioned = false;
+  systemLinkLastTagProvisionAttemptMs = 0;  // Reset cooldown on config change
   systemLinkLastIdleChamberPublishMs = 0;
   systemLinkLastTelemetrySentValid = false;
   memset(&systemLinkLastTelemetrySent, 0, sizeof(systemLinkLastTelemetrySent));
@@ -502,18 +585,61 @@ static bool systemLinkHttpRequest(const String &method,
                                   size_t payloadLength,
                                   String &responseBody,
                                   int &statusCode) {
+  struct ActiveRequestGuard {
+    ActiveRequestGuard() { systemLinkActiveRequestEnter(); }
+    ~ActiveRequestGuard() { systemLinkActiveRequestLeave(); }
+  } activeRequestGuard;
+
   responseBody = "";
   statusCode = -1;
+
+  if (otaUpdateInProgress) {
+    LOG_WARNF("SystemLink: Skipping %s %s because OTA is in progress", method.c_str(), url.c_str());
+    return false;
+  }
+
+  // Log connection attempt with WiFi status and signal strength
+  wl_status_t wifiStatus = WiFi.status();
+  int32_t rssi = (wifiStatus == WL_CONNECTED) ? WiFi.RSSI() : 0;
+  uint32_t freeHeap = ESP.getFreeHeap();
+  uint32_t minFreeHeap = ESP.getMinFreeHeap();
+  LOG_DEBUGF("SystemLink: Attempting %s to %s (WiFi status=%d, RSSI=%d, freeHeap=%u, minFreeHeap=%u)", 
+             method.c_str(),
+             url.c_str(),
+             wifiStatus,
+             rssi,
+             static_cast<unsigned>(freeHeap),
+             static_cast<unsigned>(minFreeHeap));
+  
+  if (wifiStatus != WL_CONNECTED) {
+    LOG_WARNF("SystemLink: WiFi not connected (status=%d) when attempting %s to %s", 
+              wifiStatus, method.c_str(), url.c_str());
+    return false;
+  }
 
   WiFiClientSecure client;
   client.setInsecure();
 
-  HTTPClient http;
-  http.setConnectTimeout(4000);
-  http.setTimeout(5000);
+  String endpointHost;
+  uint16_t endpointPort;
+  if (systemLinkParseApiEndpoint(endpointHost, endpointPort)) {
+    IPAddress resolvedIp;
+    if (WiFi.hostByName(endpointHost.c_str(), resolvedIp)) {
+      String resolvedText = resolvedIp.toString();
+      LOG_DEBUGF("SystemLink: %s resolves to %s:%u", endpointHost.c_str(), resolvedText.c_str(), static_cast<unsigned>(endpointPort));
+    } else {
+      LOG_WARNF("SystemLink: DNS resolution failed for %s", endpointHost.c_str());
+    }
+  }
 
+  HTTPClient http;
+  // Increase timeouts: DNS resolution can be slow, TLS handshake can take time
+  http.setConnectTimeout(10000);  // 10 seconds for connection + TLS
+  http.setTimeout(15000);          // 15 seconds total request timeout
+
+  LOG_DEBUGF("SystemLink: Calling http.begin() for %s", url.c_str());
   if (!http.begin(client, url)) {
-    LOG_ERRORF("SystemLink: Failed to open %s", url.c_str());
+    LOG_ERRORF("SystemLink: http.begin() failed for %s (possible DNS or URL parse issue)", url.c_str());
     return false;
   }
 
@@ -523,7 +649,9 @@ static bool systemLinkHttpRequest(const String &method,
     http.addHeader("Content-Type", contentType);
   }
 
-  esp_task_wdt_reset();
+  systemLinkFeedWatchdog();
+  LOG_DEBUGF("SystemLink: Sending %s request with %d bytes payload", method.c_str(), payloadLength);
+  
   if (method == "POST") {
     statusCode = http.POST(const_cast<uint8_t *>(payload), payloadLength);
   } else if (method == "PUT") {
@@ -531,9 +659,26 @@ static bool systemLinkHttpRequest(const String &method,
   } else {
     statusCode = http.sendRequest(method.c_str(), const_cast<uint8_t *>(payload), payloadLength);
   }
+  
   responseBody = http.getString();
   http.end();
-  esp_task_wdt_reset();
+  systemLinkFeedWatchdog();
+
+  // Log detailed error for connection failures
+  if (statusCode < 0) {
+    char clientError[128] = {0};
+    int secureError = client.lastError(clientError, sizeof(clientError));
+    String errorText = HTTPClient::errorToString(statusCode);
+    LOG_ERRORF("SystemLink: HTTP request failed (statusCode=%d, error=%s, secureError=%d, secureDetail=%s) for %s %s", 
+               statusCode,
+               errorText.c_str(),
+               secureError,
+               clientError[0] != '\0' ? clientError : "none",
+               method.c_str(),
+               url.c_str());
+  } else if (statusCode >= 400) {
+    LOG_WARNF("SystemLink: HTTP %d response for %s %s", statusCode, method.c_str(), url.c_str());
+  }
 
   return statusCode >= 200 && statusCode < 300;
 }
@@ -635,6 +780,10 @@ static bool systemLinkParseCreatedEntityId(const String &responseBody, String &e
 static size_t systemLinkCsvLength(const SystemLinkRoastSession &session) {
   size_t total = strlen("elapsedSeconds,actualTempF,targetTempF,heaterOutput,fanTempF,fanOutput\n");
   char row[96];
+
+  if (session.samples == nullptr) {
+    return total;
+  }
 
   for (uint16_t index = 0; index < session.sampleCount; index++) {
     const RoastTraceSample &sample = session.samples[index];
@@ -877,7 +1026,7 @@ static bool systemLinkUploadHighRateTraceTable(const String &resultId,
     if (!systemLinkAppendHighRateTraceRows(tableId, session, startIndex, endIndex, endOfData)) {
       return false;
     }
-    esp_task_wdt_reset();
+    systemLinkFeedWatchdog();
   }
 
   return true;
@@ -887,7 +1036,17 @@ static bool systemLinkUploadTraceFile(const String &filename,
                                      const String &contentType,
                                      const SystemLinkRoastSession &session,
                                      String &uploadedUri) {
+  struct ActiveRequestGuard {
+    ActiveRequestGuard() { systemLinkActiveRequestEnter(); }
+    ~ActiveRequestGuard() { systemLinkActiveRequestLeave(); }
+  } activeRequestGuard;
+
   uploadedUri = "";
+
+  if (otaUpdateInProgress) {
+    LOG_WARN("SystemLink: Skipping trace upload because OTA is in progress");
+    return false;
+  }
 
   String host;
   uint16_t port;
@@ -927,6 +1086,12 @@ static bool systemLinkUploadTraceFile(const String &filename,
   client.print(csvHeader);
 
   char row[96];
+  if (session.samples == nullptr) {
+    client.print(suffix);
+    client.flush();
+    return true;
+  }
+
   for (uint16_t index = 0; index < session.sampleCount; index++) {
     const RoastTraceSample &sample = session.samples[index];
     int rowLen = snprintf(row,
@@ -944,7 +1109,7 @@ static bool systemLinkUploadTraceFile(const String &filename,
       return false;
     }
     client.write(reinterpret_cast<const uint8_t *>(row), static_cast<size_t>(rowLen));
-    esp_task_wdt_reset();
+    systemLinkFeedWatchdog();
   }
 
   client.print(suffix);
@@ -953,7 +1118,7 @@ static bool systemLinkUploadTraceFile(const String &filename,
   unsigned long waitStart = millis();
   while (!client.available() && client.connected() && millis() - waitStart < 7000UL) {
     delay(10);
-    esp_task_wdt_reset();
+    systemLinkFeedWatchdog();
   }
 
   if (!client.available()) {
@@ -1189,6 +1354,21 @@ static bool systemLinkEnsureRealtimeTags() {
     return true;
   }
 
+  // Implement exponential backoff for failed provisioning attempts
+  // Start at 5 seconds, increase on failure
+  uint32_t now = millis();
+  uint32_t minBackoffMs = 5000;  // 5 seconds minimum before retry
+  
+  if (systemLinkLastTagProvisionAttemptMs > 0) {
+    uint32_t timeSinceLastAttempt = now - systemLinkLastTagProvisionAttemptMs;
+    if (timeSinceLastAttempt < minBackoffMs) {
+      // Still in backoff period, don't attempt yet
+      return false;
+    }
+  }
+
+  systemLinkLastTagProvisionAttemptMs = now;
+  
   bool ok = true;
   ok &= systemLinkCreateOrUpdateTag(systemLinkTagPath("chamberTemp"), "DOUBLE", true, SYSTEMLINK_STATUS_TAG_RETENTION_DAYS);
   ok &= systemLinkCreateOrUpdateTag(systemLinkTagPath("targetTemp"), "DOUBLE", true, SYSTEMLINK_STATUS_TAG_RETENTION_DAYS);
@@ -1199,6 +1379,11 @@ static bool systemLinkEnsureRealtimeTags() {
   ok &= systemLinkCreateOrUpdateTag(systemLinkTagPath("resetReason"), "STRING", true, SYSTEMLINK_STATUS_TAG_RETENTION_DAYS);
   ok &= systemLinkCreateOrUpdateTag(systemLinkTagPath("bootCount"), "INT", true, SYSTEMLINK_STATUS_TAG_RETENTION_DAYS);
   systemLinkTagsProvisioned = ok;
+  
+  if (!ok) {
+    LOG_WARNF("SystemLink: Tag provisioning failed, will retry in %d ms", minBackoffMs);
+  }
+  
   return ok;
 }
 
@@ -1255,52 +1440,49 @@ static void systemLinkPublishRealtimeTags() {
   systemLinkLastTelemetrySentValid = true;
 }
 
-static void systemLinkTagTask(void *parameter) {
-  (void)parameter;
-  while (true) {
-    if (systemLinkHasRequiredConfig()) {
-      systemLinkPublishRealtimeTags();
-    }
-    vTaskDelay(pdMS_TO_TICKS(1000));
-  }
-}
-
-static void initSystemLinkTagTask() {
-  if (systemLinkTagTaskHandle != nullptr) {
-    return;
-  }
-
-  xTaskCreatePinnedToCore(systemLinkTagTask,
-                          "systemlink-tags",
-                          8192,
-                          nullptr,
-                          1,
-                          &systemLinkTagTaskHandle,
-                          0);
-}
-
 static void processPendingSystemLinkPublish();
 
-static void systemLinkPublishTask(void *parameter) {
+static void systemLinkWorkerTask(void *parameter) {
   (void)parameter;
+  uint32_t lastTagPublishMs = 0;
+
   while (true) {
+    if (otaUpdateInProgress) {
+      vTaskDelay(pdMS_TO_TICKS(500));
+      continue;
+    }
+
+    uint32_t now = millis();
+    if (systemLinkHasRequiredConfig() && (lastTagPublishMs == 0 || (now - lastTagPublishMs) >= 1000UL)) {
+      systemLinkPublishRealtimeTags();
+      lastTagPublishMs = now;
+    }
+
     processPendingSystemLinkPublish();
     vTaskDelay(pdMS_TO_TICKS(250));
   }
 }
 
-static void initSystemLinkPublishTask() {
-  if (systemLinkPublishTaskHandle != nullptr) {
+static void initSystemLinkWorkerTask() {
+  if (systemLinkWorkerTaskHandle != nullptr) {
     return;
   }
 
-  xTaskCreatePinnedToCore(systemLinkPublishTask,
-                          "systemlink-publish",
+  xTaskCreatePinnedToCore(systemLinkWorkerTask,
+                          "systemlink",
                           12288,
                           nullptr,
                           1,
-                          &systemLinkPublishTaskHandle,
+                          &systemLinkWorkerTaskHandle,
                           0);
+}
+
+static void initSystemLinkTagTask() {
+  initSystemLinkWorkerTask();
+}
+
+static void initSystemLinkPublishTask() {
+  initSystemLinkWorkerTask();
 }
 
 static void systemLinkSetSessionPhase(const char *phase) {
@@ -1315,12 +1497,15 @@ static void systemLinkMarkRoastStarted() {
   String activeId = profileManager.getActiveProfileId();
   String activeName;
   profileManager.loadProfileMeta(activeId, activeName);
-  HighRateTraceSample *highRateBuffer = static_cast<HighRateTraceSample *>(malloc(sizeof(HighRateTraceSample) * SYSTEMLINK_MAX_HIGH_RATE_SAMPLES));
+  RoastTraceSample *traceBuffer = systemLinkAllocateTraceBuffer();
+  HighRateTraceSample *highRateBuffer = systemLinkAllocateHighRateBuffer();
 
+  systemLinkFreeTraceBuffer(systemLinkSession);
   systemLinkFreeHighRateBuffer(systemLinkSession);
 
   portENTER_CRITICAL(&systemLinkLock);
   memset(&systemLinkSession, 0, sizeof(systemLinkSession));
+  systemLinkSession.samples = traceBuffer;
   systemLinkSession.highRateSamples = highRateBuffer;
   systemLinkSession.active = true;
   systemLinkSession.startedAtMs = millis();
@@ -1331,6 +1516,7 @@ static void systemLinkMarkRoastStarted() {
   systemLinkSession.finalTargetTempF = profile.getFinalTargetTemp();
   systemLinkSession.setpointCount = profile.getSetpointCount();
   systemLinkSession.outcome = SYSTEMLINK_OUTCOME_NONE;
+  systemLinkSession.traceOverflow = traceBuffer == nullptr;
   systemLinkSession.kp = kp;
   systemLinkSession.ki = ki;
   systemLinkSession.kd = kd;
@@ -1411,7 +1597,9 @@ static void systemLinkRecordRoastSample() {
   }
 
   systemLinkSession.lastRecordedSecond = elapsedSeconds;
-  if (systemLinkSession.sampleCount < SYSTEMLINK_MAX_TRACE_SAMPLES) {
+  if (systemLinkSession.samples == nullptr) {
+    systemLinkSession.traceOverflow = true;
+  } else if (systemLinkSession.sampleCount < SYSTEMLINK_MAX_TRACE_SAMPLES) {
     RoastTraceSample &sample = systemLinkSession.samples[systemLinkSession.sampleCount++];
     sample.elapsedSeconds = elapsedSeconds;
     sample.actualTenthsF = static_cast<int16_t>(lroundf(static_cast<float>(currentTemp) * 10.0f));
@@ -1472,6 +1660,8 @@ static void systemLinkRecordHighRateSample() {
 
 static void systemLinkFinishRoast(SystemLinkRoastOutcome outcome, const char *reason) {
   bool persistPending = false;
+  RoastTraceSample *stalePublishTraceBuffer = nullptr;
+  RoastTraceSample *droppedRoastTraceBuffer = nullptr;
   HighRateTraceSample *stalePublishBuffer = nullptr;
   HighRateTraceSample *droppedRoastBuffer = nullptr;
   portENTER_CRITICAL(&systemLinkLock);
@@ -1485,15 +1675,21 @@ static void systemLinkFinishRoast(SystemLinkRoastOutcome outcome, const char *re
   systemLinkAssignOutcome(systemLinkSession, outcome, reason, systemLinkSession.phase);
   systemLinkCopyString(systemLinkSession.phase, sizeof(systemLinkSession.phase), "publish_pending");
   if (!systemLinkPublishPending && !systemLinkPublishInProgress) {
+    RoastTraceSample *publishTraceBuffer = systemLinkSession.samples;
     HighRateTraceSample *publishBuffer = systemLinkSession.highRateSamples;
+    stalePublishTraceBuffer = systemLinkPublishSession.samples;
     stalePublishBuffer = systemLinkPublishSession.highRateSamples;
+    systemLinkSession.samples = nullptr;
     systemLinkSession.highRateSamples = nullptr;
     memcpy(&systemLinkPublishSession, &systemLinkSession, sizeof(SystemLinkRoastSession));
+    systemLinkPublishSession.samples = publishTraceBuffer;
     systemLinkPublishSession.highRateSamples = publishBuffer;
     systemLinkPublishPending = true;
     persistPending = true;
   } else {
+    droppedRoastTraceBuffer = systemLinkSession.samples;
     droppedRoastBuffer = systemLinkSession.highRateSamples;
+    systemLinkSession.samples = nullptr;
     systemLinkSession.highRateSamples = nullptr;
     LOG_WARN("SystemLink: Previous publish still active, dropping completed roast publish");
   }
@@ -1501,8 +1697,14 @@ static void systemLinkFinishRoast(SystemLinkRoastOutcome outcome, const char *re
   systemLinkTelemetry.state = roasterState;
   portEXIT_CRITICAL(&systemLinkLock);
 
+  if (stalePublishTraceBuffer != nullptr) {
+    free(stalePublishTraceBuffer);
+  }
   if (stalePublishBuffer != nullptr) {
     free(stalePublishBuffer);
+  }
+  if (droppedRoastTraceBuffer != nullptr) {
+    free(droppedRoastTraceBuffer);
   }
   if (droppedRoastBuffer != nullptr) {
     free(droppedRoastBuffer);
@@ -1645,7 +1847,7 @@ static bool systemLinkCreatePhaseSteps(const String &resultId, const SystemLinkR
     }
 
     delay(300);
-    esp_task_wdt_reset();
+    systemLinkFeedWatchdog();
   }
 
   return false;
@@ -1781,21 +1983,27 @@ static void processPendingSystemLinkPublish() {
     highRatePublished = systemLinkUploadHighRateTraceTable(resultId, systemLinkPublishSession, highRateTableId);
     // Allow TCP stack to clean up connections from high-rate chunk uploads
     delay(500);
-    esp_task_wdt_reset();
+    systemLinkFeedWatchdog();
   }
 
+  RoastTraceSample *completedPublishTraceBuffer = nullptr;
   HighRateTraceSample *completedPublishBuffer = nullptr;
 
   portENTER_CRITICAL(&systemLinkLock);
   systemLinkPublishInProgress = false;
   if (published) {
     systemLinkPublishPending = false;
+    completedPublishTraceBuffer = systemLinkPublishSession.samples;
     completedPublishBuffer = systemLinkPublishSession.highRateSamples;
+    systemLinkPublishSession.samples = nullptr;
     systemLinkPublishSession.highRateSamples = nullptr;
     memset(&systemLinkPublishSession, 0, sizeof(SystemLinkRoastSession));
   }
   portEXIT_CRITICAL(&systemLinkLock);
 
+  if (completedPublishTraceBuffer != nullptr) {
+    free(completedPublishTraceBuffer);
+  }
   if (completedPublishBuffer != nullptr) {
     free(completedPublishBuffer);
   }
@@ -1880,7 +2088,17 @@ static String systemLinkBuildCalibrationCsv(const StepResponseTuner &tuner) {
 static bool systemLinkUploadCalibrationCsv(const String &filename,
                                             const String &csvContent,
                                             String &uploadedUri) {
+  struct ActiveRequestGuard {
+    ActiveRequestGuard() { systemLinkActiveRequestEnter(); }
+    ~ActiveRequestGuard() { systemLinkActiveRequestLeave(); }
+  } activeRequestGuard;
+
   uploadedUri = "";
+
+  if (otaUpdateInProgress) {
+    LOG_WARN("SystemLink: Skipping calibration upload because OTA is in progress");
+    return false;
+  }
   String host;
   uint16_t port;
   if (!systemLinkParseApiEndpoint(host, port)) {
@@ -1924,7 +2142,7 @@ static bool systemLinkUploadCalibrationCsv(const String &filename,
     client.write(reinterpret_cast<const uint8_t *>(data), chunk);
     data += chunk;
     remaining -= chunk;
-    esp_task_wdt_reset();
+    systemLinkFeedWatchdog();
   }
   client.print(suffix);
   client.flush();
@@ -1932,7 +2150,7 @@ static bool systemLinkUploadCalibrationCsv(const String &filename,
   unsigned long waitStart = millis();
   while (!client.available() && client.connected() && millis() - waitStart < 7000UL) {
     delay(10);
-    esp_task_wdt_reset();
+    systemLinkFeedWatchdog();
   }
 
   if (!client.available()) {
