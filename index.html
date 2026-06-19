@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DIY Coffee Roaster</title>
-  <meta name="description" content="Open-source coffee roaster built from a popcorn popper, ESP32, and 3D-printed enclosure. Includes PCB, firmware, roast profiles, and Artisan integration.">
+  <meta name="description" content="Open-source v2 coffee roaster built around a JC4827W543C controller, documented with dedicated build, BOM, firmware, and Artisan guides.">
   <meta name="theme-color" content="#1a1a1a">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -16,10 +16,10 @@
     <div class="header-inner">
       <a class="logo" href="#top">DIY Coffee Roaster</a>
       <nav>
-        <a href="#whats-included">What's included</a>
-        <a href="#build">Build</a>
+        <a href="#overview">Overview</a>
+        <a href="#docs">Docs</a>
         <a href="#software">Software</a>
-        <a href="#parts">Parts</a>
+        <a href="#safety">Safety</a>
         <a href="https://github.com/fredvisser/coffee-roaster">GitHub</a>
       </nav>
     </div>
@@ -29,117 +29,111 @@
 
     <section class="hero">
       <div class="hero-text">
-        <h1>A home coffee roaster you can build yourself.</h1>
-        <p>Modified popcorn popper. ESP32 controller. PID temperature control. Roast profiles. Artisan logging. All open source.</p>
+        <h1>A home coffee roaster you can build.</h1>
+        <p>JC4827W543C controller. Modified popcorn popper. Dual thermocouples. PID roast control. Dedicated build, BOM, firmware, and Artisan docs.</p>
         <div class="hero-actions">
           <a class="btn btn-primary" href="https://github.com/fredvisser/coffee-roaster">View on GitHub</a>
-          <a class="btn btn-ghost" href="#whats-included">What's included</a>
+          <a class="btn btn-ghost" href="#docs">Read the docs</a>
         </div>
       </div>
       <div class="hero-image">
-        <img src="./images/Roaster%20-%20Front.jpeg" alt="Completed coffee roaster with JC4827W543C touchscreen controller and popcorn popper roasting chamber" width="600" height="800">
+        <img src="./images/v2-roasting.jpeg" alt="Current v2 coffee roaster during a roast" width="600" height="800">
       </div>
     </section>
 
     <section class="video-section reveal">
-      <video autoplay muted loop playsinline poster="./images/Roaster%20-%20Front.jpeg">
-        <source src="./images/roaster-overview.mp4" type="video/mp4">
-      </video>
+      <img src="./images/v2-wiring-complete.jpeg" alt="Completed v2 coffee roaster wiring inside the enclosure" loading="lazy">
     </section>
 
-    <section id="whats-included" class="section reveal">
-      <h2>What's in the repo</h2>
-      <p class="section-desc">This repository now centers on the current controller firmware, UI, and roast tooling for the JC4827W543C-based roaster.</p>
+    <section id="overview" class="section reveal">
+      <h2>Current v2 build</h2>
+      <p class="section-desc">This site now points to the current v2 documentation instead of duplicating a second build guide. The repository centers on the JC4827W543C controller, the updated enclosure, and the active firmware toolchain.</p>
 
       <div class="card-grid">
         <article class="card">
+          <div class="card-label">Hardware</div>
+          <h3>Two fan-build options</h3>
+          <p>The v2 build supports either the stock popper fan motor with a 24 V supply and DC speed controller, or a custom ASA fan with a brushless 12 V motor path.</p>
+          <img src="./images/v2-roasting.jpeg" alt="Current v2 roaster in use" loading="lazy">
+        </article>
+
+        <article class="card">
+          <div class="card-label">Build</div>
+          <h3>Documented assembly flow</h3>
+          <p>The printed parts, breakout board, popper modification steps, wiring order, and first power-up checks now live in the dedicated build guide.</p>
+          <img src="./images/v2-wiring-in-process.jpeg" alt="Current v2 enclosure wiring in progress" loading="lazy">
+        </article>
+
+        <article class="card">
           <div class="card-label">Firmware</div>
-          <h3>Controller and UI</h3>
-          <p>ESP32-S3 firmware for the JC4827W543C panel with roast state management, PID temperature control, touchscreen UI, WiFi connectivity, and OTA updates.</p>
-          <img src="./images/Roaster%20-%20Bottom.jpeg" alt="Bottom of the 3D-printed enclosure" loading="lazy">
+          <h3>Controller and web tools</h3>
+          <p>The JC4827W543C firmware includes the touchscreen UI, profile editor, debug console, PID workflow, OTA updates, and a REST API.</p>
+          <img src="./images/debug-console.png" alt="Roaster debug console" loading="lazy">
         </article>
 
         <article class="card">
-          <div class="card-label">Profiles</div>
-          <h3>Roast workflow tooling</h3>
-          <p>Browser-based profile editing, debug console views, PID workflow pages, and OTA update tooling are built into the firmware image.</p>
-          <img src="./images/wiring-3.jpeg" alt="Custom PCB installed in the enclosure with wiring connected" loading="lazy">
-        </article>
-
-        <article class="card">
-          <div class="card-label">Firmware</div>
-          <h3>ESP32 control software</h3>
-          <p>State machine for roast lifecycle. PID temperature control. Dual thermocouple monitoring. Profile-based setpoint interpolation. WiFi with WebSocket streaming. OTA updates. REST API.</p>
-          <img src="./images/Artisan%20-%20Start%20roast%20screen.png" alt="Artisan roast logging software connected to the roaster" loading="lazy">
-        </article>
-
-        <article class="card">
-          <div class="card-label">Popper Mod</div>
-          <h3>Roasting chamber</h3>
-          <p>Step-by-step guide to disassemble a 1200W popcorn popper, rewire the heater and fan, remove the stock thermostat, and install a thermocouple in the roasting chamber.</p>
-          <img src="./images/popper-mod-7.jpeg" alt="Thermocouple installed in the roasting chamber" loading="lazy">
+          <div class="card-label">Artisan</div>
+          <h3>External roast logging</h3>
+          <p>Artisan setup is documented separately now, with the settings file, connection flow, and screenshots moved out of the root README.</p>
+          <img src="./images/Artisan - Start roast screen.png" alt="Artisan connected to the roaster" loading="lazy">
         </article>
       </div>
     </section>
 
-    <section id="build" class="section section-alt reveal">
-      <h2>How the build works</h2>
-      <p class="section-desc">Four phases — popper modification, controller wiring, firmware deployment, and roast validation.</p>
+    <section id="docs" class="section section-alt reveal">
+      <h2>Read the docs</h2>
+      <p class="section-desc">The v2 hardware and software instructions now live in dedicated markdown guides. Use these as the source of truth instead of the landing page.</p>
 
-      <div class="steps">
-        <div class="step">
-          <span class="step-num">1</span>
-          <div>
-            <h3>Modify the popper</h3>
-            <p>Disassemble the popcorn popper, rework the heater and fan wiring, remove the stock thermostat behavior, and install the thermocouples.</p>
-          </div>
-        </div>
-        <div class="step">
-          <span class="step-num">2</span>
-          <div>
-            <h3>Wire the controller</h3>
-            <p>Connect the JC4827W543C controller to the heater, fan, and thermocouple interfaces. Confirm safe defaults before applying power.</p>
-          </div>
-        </div>
-        <div class="step">
-          <span class="step-num">3</span>
-          <div>
-            <h3>Flash firmware</h3>
-            <p>Build with the firmware wrapper scripts, upload over USB or OTA, and verify the touchscreen UI plus web console come up cleanly.</p>
-          </div>
-        </div>
-        <div class="step">
-          <span class="step-num">4</span>
-          <div>
-            <h3>Validate and roast</h3>
-            <p>Configure WiFi, create or activate a roast profile, verify the safety checks, and then start the roast from the device UI.</p>
-          </div>
-        </div>
+      <div class="card-grid docs-grid">
+        <article class="card">
+          <div class="card-label">Guide</div>
+          <h3>Build instructions</h3>
+          <p>Step-by-step user-facing assembly instructions with current printed-part names, breakout-board references, wiring guidance, and build photos.</p>
+          <p><a href="https://github.com/fredvisser/coffee-roaster/blob/main/BUILD.md">Open BUILD.md</a></p>
+        </article>
+        <article class="card">
+          <div class="card-label">Guide</div>
+          <h3>Bill of materials</h3>
+          <p>Parts list with Amazon and AliExpress sources, two motor-build variants, and notes for the JC controller wiring and popper conversion.</p>
+          <p><a href="https://github.com/fredvisser/coffee-roaster/blob/main/BOM.md">Open BOM.md</a></p>
+        </article>
+        <article class="card">
+          <div class="card-label">Guide</div>
+          <h3>Firmware workflows</h3>
+          <p>Bootstrap, build, upload, OTA, tests, and runtime interfaces for the current JC4827W543C firmware target.</p>
+          <p><a href="https://github.com/fredvisser/coffee-roaster/blob/main/roaster-firmware/README.md">Open firmware README</a></p>
+        </article>
+        <article class="card">
+          <div class="card-label">Guide</div>
+          <h3>Artisan setup</h3>
+          <p>WebSocket logging setup, settings import, screenshots, and first connection steps are now in a dedicated Artisan document.</p>
+          <p><a href="https://github.com/fredvisser/coffee-roaster/blob/main/ARTISAN.md">Open ARTISAN.md</a></p>
+        </article>
       </div>
 
       <div class="build-photos">
         <figure>
-          <img src="./images/IMG_6463.jpeg" alt="Inside the enclosure showing PCB, power supply, SSR, and wiring" loading="lazy">
-          <figcaption>Internals</figcaption>
+          <img src="./images/popper-mod-7.jpeg" alt="Thermocouple installed in the roasting chamber" loading="lazy">
+          <figcaption>Popper thermocouple install</figcaption>
         </figure>
         <figure>
-          <img src="./images/Roaster%20-%20Apart.jpeg" alt="Enclosure opened showing all internal components" loading="lazy">
-          <figcaption>Case open</figcaption>
+          <img src="./images/roaster-breakout-perfboard.png" alt="Perfboard breakout layout for the roaster controller" loading="lazy">
+          <figcaption>Perfboard breakout reference</figcaption>
         </figure>
         <figure>
-          <img src="./images/popper-mod-3.jpeg" alt="Popper disassembled showing heater and fan motor wiring" loading="lazy">
-          <figcaption>Popper wiring</figcaption>
+          <img src="./images/v2-wiring-in-process.jpeg" alt="V2 internal wiring in progress" loading="lazy">
+          <figcaption>Current v2 wiring</figcaption>
         </figure>
         <figure>
-          <img src="./images/wiring-1.jpeg" alt="Power supply and solid-state relay mounted in the enclosure" loading="lazy">
-          <figcaption>PSU and SSR</figcaption>
+          <img src="./images/v2-wiring-complete.jpeg" alt="Completed v2 internal wiring" loading="lazy">
+          <figcaption>Validation-ready build</figcaption>
         </figure>
       </div>
     </section>
 
     <section id="software" class="section reveal">
       <h2>Software</h2>
-      <p class="section-desc">The firmware runs on the JC4827W543C ESP32-S3 display board. It includes a touchscreen UI, web interface, and Artisan integration.</p>
+      <p class="section-desc">The firmware runs on the JC4827W543C ESP32-S3 display board and is documented separately from the hardware build. The runtime surface includes the touchscreen UI, browser tools, OTA updates, and Artisan-compatible data streaming.</p>
 
       <div class="features-list">
         <div class="feature">
@@ -169,7 +163,7 @@
       </div>
     </section>
 
-    <section class="section section-alt safety-callout reveal">
+    <section id="safety" class="section section-alt safety-callout reveal">
       <h2>Safety</h2>
       <p class="section-desc">This project controls line voltage and high temperatures. The firmware has safety systems, but understand the risks before building.</p>
       <div class="safety-items">
@@ -180,37 +174,12 @@
       </div>
     </section>
 
-    <section id="parts" class="section reveal">
-      <h2>Parts list</h2>
-      <p class="section-desc">Core runtime components for the current controller build.</p>
-
-      <div class="parts-table-wrap">
-        <table class="parts-table">
-          <thead>
-            <tr><th>Part</th><th>Source</th></tr>
-          </thead>
-          <tbody>
-            <tr><td>1200W Popcorn Popper</td><td><a href="https://www.amazon.com/gp/product/B091GGYCQW">Amazon</a></td></tr>
-            <tr><td>JC4827W543C ESP32-S3 Display Board</td><td>Integrated controller and touchscreen</td></tr>
-            <tr><td>24V Power Supply</td><td><a href="https://www.amazon.com/gp/product/B018RE4CWW">Amazon</a></td></tr>
-            <tr><td>DC-DC Buck Converter</td><td><a href="https://www.amazon.com/gp/product/B01MQGMOKI">Amazon</a></td></tr>
-            <tr><td>Solid-State Relay (SSR-40DA)</td><td><a href="https://www.aliexpress.us/item/2255800713623525.html">AliExpress</a></td></tr>
-            <tr><td>K-Type Thermocouple + MAX6675</td><td><a href="https://a.co/d/eH93XEv">Amazon</a></td></tr>
-            <tr><td>Motor Dimmer Module</td><td><a href="https://www.aliexpress.com/item/2251832615710334.html">AliExpress</a></td></tr>
-            <tr><td>Power Inlet Socket</td><td><a href="https://www.amazon.com/gp/product/B07PVP8CLT">Amazon</a></td></tr>
-            <tr><td>JST XH2.54 Connector Kit</td><td><a href="https://www.amazon.com/gp/product/B09DBGVX5C">Amazon</a></td></tr>
-            <tr><td>Silicone Wire (22ga + 16ga)</td><td><a href="https://www.aliexpress.us/item/2255800441309579.html">AliExpress</a></td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
     <section class="section cta reveal">
       <h2>Get started</h2>
-      <p>Clone the repo, print the case, order the PCB, and start building.</p>
+      <p>Start with the build guide and BOM, then follow the firmware and Artisan docs as you bring the roaster online.</p>
       <div class="hero-actions">
-        <a class="btn btn-primary" href="https://github.com/fredvisser/coffee-roaster">View on GitHub</a>
-        <a class="btn btn-ghost" href="https://github.com/fredvisser/coffee-roaster/tree/main/roaster-firmware">Firmware docs</a>
+        <a class="btn btn-primary" href="https://github.com/fredvisser/coffee-roaster/blob/main/BUILD.md">Build guide</a>
+        <a class="btn btn-ghost" href="https://github.com/fredvisser/coffee-roaster/blob/main/BOM.md">BOM</a>
       </div>
     </section>
 
@@ -220,7 +189,7 @@
     <span>DIY Coffee Roaster — open source</span>
     <nav>
       <a href="https://github.com/fredvisser/coffee-roaster">GitHub</a>
-      <a href="https://artisan-scope.org">Artisan</a>
+      <a href="https://github.com/fredvisser/coffee-roaster/blob/main/ARTISAN.md">Artisan guide</a>
       <a href="https://cad.onshape.com/documents/ee717da6534241d41072245e/w/709854c2acbee5e38b890bec/e/be6e653fbb47fc1f3247d478?renderMode=0&uiState=65b72c2e65c4bf7511b63553">CAD</a>
     </nav>
   </footer>

@@ -50,7 +50,7 @@ Canonical developer entrypoints:
 
 ## Roast Data and Artisan
 
-The firmware can stream roast data to [Artisan](https://artisan-scope.org) over WebSockets. The repository includes an Artisan settings file in `Artisan/`.
+The firmware can stream roast data to [Artisan](https://artisan-scope.org) over WebSockets. For setup and connection steps, see [ARTISAN.md](ARTISAN.md). The repository includes an Artisan settings file in `Artisan/`.
 
 ## Firmware REST API (summary)
 
@@ -70,20 +70,4 @@ Notes:
 
 ## Artisan
 
-Send roast data wirelessly to [Artisan](https://artisan-scope.org) to visualize and record roasts.
-
-### Configure Artisan
-
-1. Download and install [Artisan](https://artisan-scope.org)
-2. Configure the Artisan to connect to the Roaster via WebSockets. Apply the `Artisan/astisan-settings.aset` file (**Help»Load Settings…**) or manually configure the settings as documented below.
-   1. Configure Port settings (**Config»Port…**)
-      ![Artisan Port configuration dialog](./images/Artisan%20-%20Port%20Config.png)
-   2. Configure Device settings (**Config»Device…**)
-      ![Artisan Device configuration dialog](./images/Artisan%20-%20Device%20Config.png)
-      ![Artisan Device configuration dialog 2](./images/Artisan%20-%20Device%20Config2.png)
-
-### Run
-
-1. Press the **ON** button to enable the Roaster connection. You should `WebSocket connected` along with the current roaster and setpoint temperatures.
-   ![Artisan start roast screen](./images/Artisan%20-%20Start%20roast%20screen.png)
-2. Press **Start Roast** on the Roaster and the recording should automatically start within Artisan.
+For complete Artisan setup, settings import, and connection steps, see [ARTISAN.md](ARTISAN.md).
