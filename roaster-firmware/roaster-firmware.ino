@@ -41,6 +41,11 @@
 #include "src/control/RoastControlLoop.hpp"
 #include "src/control/RoastSessionLifecycle.hpp"
 #include "src/integrations/SystemLink.hpp"
+
+extern char activeFaultCode[32];
+extern char activeFaultMessage[96];
+bool canClearErrorState();
+
 #include "src/network/Network.hpp"
 
 Preferences preferences;
@@ -110,6 +115,8 @@ int bdcFanMs = 800;         // BDC fan servo pulse width (800-2000 µs)
 double fanTemp = 0;         // Inlet/fan temperature sensor (°F)
 int badReadingCount = 0;    // Track consecutive bad thermocouple readings
 char lastRejectedBeanReadReason[16] = "none";
+char activeFaultCode[32] = "none";
+char activeFaultMessage[96] = "";
 
 // Restart handling
 bool restartRequested = false;
@@ -168,8 +175,78 @@ inline bool isRoastActiveState()
   return roasterState == START_ROAST || roasterState == ROASTING;
 }
 
+inline void setActiveFault(const char *faultCode, const char *displayMessage)
+{
+  strlcpy(activeFaultCode, faultCode ? faultCode : "unknown_fault", sizeof(activeFaultCode));
+  strlcpy(activeFaultMessage, displayMessage ? displayMessage : "Controller fault detected.", sizeof(activeFaultMessage));
+}
+
+inline String formatBeanSensorFaultMessage(double reading)
+{
+  char buffer[96];
+  const char *reason = strcmp(lastRejectedBeanReadReason, "spike") == 0 ? "unstable" : "range error";
+  snprintf(buffer, sizeof(buffer), "Bean sensor %s (raw %.1fF)", reason, reading);
+  return String(buffer);
+}
+
+inline bool canClearErrorState()
+{
+  return badReadingCount == 0 && currentTemp < COOLING_TARGET_TEMP && fanTemp < MAX_SAFE_FAN_TEMP;
+}
+
+inline String formatErrorRecoveryBlockedMessage()
+{
+  if (badReadingCount > 0)
+  {
+    return String("Sensor fault still active. Fix wiring or sensor signal first.");
+  }
+
+  if (currentTemp >= COOLING_TARGET_TEMP)
+  {
+    char buffer[96];
+    snprintf(buffer, sizeof(buffer), "Bean temp %.1fF is still above the 140F safe-idle limit.", currentTemp);
+    return String(buffer);
+  }
+
+  if (fanTemp >= MAX_SAFE_FAN_TEMP)
+  {
+    char buffer[96];
+    snprintf(buffer, sizeof(buffer), "Fan temp %.1fF is still above the %.0fF safety limit.", fanTemp, MAX_SAFE_FAN_TEMP);
+    return String(buffer);
+  }
+
+  return String("Fault lockout remains active until the controller reports a safe state.");
+}
+
+inline void clearEmergencyErrorState()
+{
+  LOG_INFOF("Clearing error state: fault=%s bean=%.1fF fan=%.1fF", activeFaultCode, currentTemp, fanTemp);
+
+  roasterState = IDLE;
+  coolingStartTime = 0;
+  roastStartedAtMs = 0;
+  setpointTemp = 0;
+  setpointFanSpeed = 0;
+  heaterOutputVal = 0;
+  heaterPidTrimVal = 0;
+  heaterFeedforwardVal = 0;
+  badReadingCount = 0;
+  setActiveFault("none", "");
+
+  digitalWrite(HEATER, LOW);
+  resetRoastControllerState();
+  heaterRelay.setPWM(0);
+  fanRelay.setPWM(0);
+  bdcFan.writeMicroseconds(800);
+  bdcFanMs = 800;
+
+  systemLinkUpdateLastFault("none");
+  displayShowScreen(DisplayScreen::Start);
+}
+
 inline void enterEmergencyErrorState(const char *faultCode, const char *displayMessage)
 {
+  setActiveFault(faultCode, displayMessage);
   roasterState = ERROR;
   digitalWrite(HEATER, LOW);
   resetRoastControllerState();
@@ -179,7 +256,7 @@ inline void enterEmergencyErrorState(const char *faultCode, const char *displayM
   bdcFanMs = 2000;
   systemLinkUpdateLastFault(faultCode);
   systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, faultCode);
-  displayShowErrorMessage(displayMessage);
+  displayShowErrorMessage(activeFaultMessage);
 }
 
 MAX6675 thermocouple(THERMOCOUPLE_SCK, TC1_CS, THERMOCOUPLE_MISO);
@@ -543,7 +620,8 @@ void loop()
         {
           // SENSOR FAILURE - EMERGENCY STOP
           DEBUG_PRINTLN("EMERGENCY: Thermocouple failure detected!");
-          enterEmergencyErrorState("sensor_failed", "Sensor Failed");
+          String message = formatBeanSensorFaultMessage(reading);
+          enterEmergencyErrorState("sensor_failed", message.c_str());
         }
       }
       else
@@ -833,8 +911,8 @@ void loop()
 
       // ERROR state logged when entered, not every loop iteration
 
-      // Only exit ERROR state through hardware reset
-      // No automatic recovery to ensure user acknowledges the fault
+      // ERROR remains latched until the user explicitly requests a reset and
+      // the controller reports safe temperatures with valid sensor data.
       break;
     }
 
@@ -956,6 +1034,22 @@ void handleStartRoastCommand()
 
 void handleStopRoastCommand()
 {
+  if (roasterState == ERROR)
+  {
+    if (canClearErrorState())
+    {
+      clearEmergencyErrorState();
+    }
+    else
+    {
+      String blockedMessage = formatErrorRecoveryBlockedMessage();
+      setActiveFault(activeFaultCode, blockedMessage.c_str());
+      displayShowErrorMessage(activeFaultMessage);
+      LOG_WARNF("Error reset blocked: fault=%s bean=%.1fF fan=%.1fF badReadings=%d", activeFaultCode, currentTemp, fanTemp, badReadingCount);
+    }
+    return;
+  }
+
   finalizeValidationIfRunning(false, "user_stop");
   systemLinkMarkCoolingPhaseStarted(SYSTEMLINK_OUTCOME_TERMINATED, "user_stop");
 

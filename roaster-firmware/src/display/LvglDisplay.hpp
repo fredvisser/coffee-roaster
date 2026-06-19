@@ -1174,7 +1174,7 @@ inline void updateDerivedLabels()
   setButtonText(networkProfileButton, "Wi-Fi");
   setButtonText(wifiApplyButton, "Apply");
   setButtonText(networkBackButton, "Back");
-  setButtonText(roastStopButton, activeScreen == DisplayScreen::Error ? "Force cooling" : "STOP");
+  setButtonText(roastStopButton, activeScreen == DisplayScreen::Error ? "Safe idle" : "STOP");
   setButtonText(coolingStopButton, "Stop cooling");
   setButtonText(profilePrevButton, "Use");
   setButtonText(profileNextButton, activeScreen == DisplayScreen::ProfileList ? "Graph" : "Copy");
@@ -1279,7 +1279,7 @@ inline void updateDerivedLabels()
   {
     lv_label_set_text(mainEyebrowLabel, "FAULT LOCKOUT");
     lv_label_set_text(errorLabel, errorMessageText.length() > 0 ? errorMessageText.c_str() : "Controller fault detected.");
-    lv_label_set_text(mainSupportLabel, "Roast start is disabled until the controller reports a safe state.");
+    lv_label_set_text(mainSupportLabel, "Safe idle is available after valid sensors return and the roaster cools below 140F.");
   }
   else if (activeScreen == DisplayScreen::ProfileList)
   {

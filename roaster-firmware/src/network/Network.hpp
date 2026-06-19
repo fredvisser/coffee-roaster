@@ -519,6 +519,11 @@ String getSystemStateJSON() {
   JsonObject safety = doc.createNestedObject("safety");
   safety["badReadings"] = badReadingCount;
   safety["lastRejectedReason"] = lastRejectedBeanReadReason;
+
+  JsonObject fault = doc.createNestedObject("fault");
+  fault["code"] = activeFaultCode;
+  fault["message"] = activeFaultMessage;
+  fault["canClear"] = canClearErrorState();
   
   JsonObject memory = doc.createNestedObject("memory");
   memory["heapFree"] = ESP.getFreeHeap();

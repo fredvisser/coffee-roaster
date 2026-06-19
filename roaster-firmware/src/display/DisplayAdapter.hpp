@@ -233,8 +233,8 @@ inline String displayReadProfileNameInput()
 inline void displayShowErrorMessage(const char *message)
 {
 #if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_LVGL
-  LvglDisplay::showScreen(DisplayScreen::Error);
   LvglDisplay::setErrorMessageText(String(message));
+  LvglDisplay::showScreen(DisplayScreen::Error);
 #else
   (void)message;
 #endif

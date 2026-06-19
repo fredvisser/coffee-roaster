@@ -551,12 +551,24 @@ ota_upload_firmware() {
     for attempt in 1 2 3; do
         base_url=$(ota_base_url)
         print_info "Starting OTA session at $base_url (attempt $attempt/3)"
-        if ! ota_start_session "$base_url" "${auth_args[@]}"; then
+        if [[ ${#auth_args[@]} -gt 0 ]]; then
+            ota_start_session "$base_url" "${auth_args[@]}"
+        else
+            ota_start_session "$base_url"
+        fi
+
+        if [[ $? -ne 0 ]]; then
             print_info "OTA start request failed on attempt $attempt"
             cat /tmp/ota_start.log 2>/dev/null || true
         else
             print_info "Uploading $(basename "$firmware_bin") via OTA..."
-            if ota_send_firmware "$base_url" "$firmware_bin" "${auth_args[@]}"; then
+            if [[ ${#auth_args[@]} -gt 0 ]]; then
+                ota_send_firmware "$base_url" "$firmware_bin" "${auth_args[@]}"
+            else
+                ota_send_firmware "$base_url" "$firmware_bin"
+            fi
+
+            if [[ $? -eq 0 ]]; then
                 print_success "OTA upload accepted by device"
                 print_info "Device should reboot after the delayed restart window"
                 ota_cache_host "${OTA_RESOLVED_HOST:-$OTA_HOST}"
