@@ -742,7 +742,7 @@ void loop()
                        heaterOutputVal,
                        roastStartedAtMs > 0 ? (millis() - roastStartedAtMs) / 1000UL : 0UL,
                        MAX_SAFE_FAN_TEMP);
-            enterEmergencyErrorState("fan_over_temperature", "Exhaust Over Temp");
+            enterEmergencyErrorState("fan_over_temperature", "Fan over temp");
           }
         } else {
           fanOverTempCount = 0;

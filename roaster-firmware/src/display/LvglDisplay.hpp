@@ -1051,18 +1051,18 @@ inline void refreshScreenLayout()
 
   if (showCoolingControls)
   {
-    lv_obj_set_size(mainCard, 304, 144);
+    lv_obj_set_size(mainCard, 304, BoardConfig::DisplayHeight - topY - 14);
     lv_obj_align(mainCard, LV_ALIGN_TOP_LEFT, 12, 44);
     lv_obj_set_style_border_color(mainCard, lv_color_hex(ColorAccentCool), 0);
     lv_obj_set_style_border_width(mainCard, 1, 0);
     lv_obj_set_style_bg_color(mainCard, lv_color_hex(ColorPanel), 0);
 
     lv_obj_align_to(mainEyebrowLabel, mainCard, LV_ALIGN_TOP_LEFT, 14, 18);
-    lv_obj_align_to(currentTempLabel, mainCard, LV_ALIGN_LEFT_MID, 14, 0);
+    lv_obj_align_to(currentTempLabel, mainCard, LV_ALIGN_TOP_LEFT, 14, 42);
     lv_obj_set_width(mainBodyLabel, 276);
-    lv_obj_align_to(mainBodyLabel, mainCard, LV_ALIGN_BOTTOM_LEFT, 14, -32);
+    lv_obj_align_to(mainBodyLabel, currentTempLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 16);
     lv_obj_set_width(mainSupportLabel, 276);
-    lv_obj_align_to(mainSupportLabel, mainCard, LV_ALIGN_BOTTOM_LEFT, 14, -12);
+    lv_obj_align_to(mainSupportLabel, mainBodyLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
 
     lv_obj_set_size(coolingStopButton, 116, 124);
     lv_obj_align(coolingStopButton, LV_ALIGN_TOP_RIGHT, -12, 44);
