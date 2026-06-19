@@ -27,6 +27,7 @@ enum RoasterState
 #define MAX_ROAST_TEMP 460.0      // Maximum temperature during roast (°F)
 #define COOLING_TARGET_TEMP 140   // Target temperature for cooling (°F)
 #define MAX_SAFE_FAN_TEMP 150.0   // Maximum safe inlet/fan temperature (°F)
+#define FAN_TEMP_SAFETY_ARM_DELAY_MS 5000UL  // Delay exhaust-temp shutdown briefly after roast entry
 
 // Sensor failure detection
 #define MAX_BAD_READINGS 5        // Consecutive bad readings before sensor failure

@@ -891,6 +891,9 @@ inline void refreshScreenLayout()
   lv_obj_align(titleLabel, LV_ALIGN_TOP_LEFT, 28, 7);
   lv_obj_align(stateLabel, LV_ALIGN_TOP_RIGHT, -12, 7);
 
+  setWidgetHidden(accentDot, showErrorControls);
+  setWidgetHidden(titleLabel, showErrorControls);
+
   setWidgetHidden(mainCard, !showMainCard);
   setWidgetHidden(footerCard, !showFooterCard);
   setWidgetHidden(mainEyebrowLabel, !(showStartControls || showRoastControls || showCoolingControls || showErrorControls));
@@ -1056,7 +1059,9 @@ inline void refreshScreenLayout()
 
     lv_obj_align_to(mainEyebrowLabel, mainCard, LV_ALIGN_TOP_LEFT, 14, 18);
     lv_obj_align_to(currentTempLabel, mainCard, LV_ALIGN_LEFT_MID, 14, 0);
+    lv_obj_set_width(mainBodyLabel, 276);
     lv_obj_align_to(mainBodyLabel, mainCard, LV_ALIGN_BOTTOM_LEFT, 14, -32);
+    lv_obj_set_width(mainSupportLabel, 276);
     lv_obj_align_to(mainSupportLabel, mainCard, LV_ALIGN_BOTTOM_LEFT, 14, -12);
 
     lv_obj_set_size(coolingStopButton, 116, 124);
@@ -1065,16 +1070,17 @@ inline void refreshScreenLayout()
 
   if (showErrorControls)
   {
-    lv_obj_set_size(mainCard, 314, 136);
+    lv_obj_set_size(mainCard, 304, BoardConfig::DisplayHeight - topY - 14);
     lv_obj_align(mainCard, LV_ALIGN_TOP_LEFT, 12, 44);
     lv_obj_set_style_border_color(mainCard, lv_color_hex(ColorAccentFault), 0);
     lv_obj_set_style_border_width(mainCard, 1, 0);
     lv_obj_set_style_bg_color(mainCard, lv_color_hex(ColorPanel), 0);
 
     lv_obj_align_to(mainEyebrowLabel, mainCard, LV_ALIGN_TOP_LEFT, 14, 14);
-    lv_obj_set_width(errorLabel, 280);
+    lv_obj_set_width(errorLabel, 272);
     lv_obj_align_to(errorLabel, mainCard, LV_ALIGN_TOP_LEFT, 14, 40);
-    lv_obj_align_to(mainSupportLabel, mainCard, LV_ALIGN_BOTTOM_LEFT, 14, -12);
+    lv_obj_set_width(mainSupportLabel, 272);
+    lv_obj_align_to(mainSupportLabel, errorLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 12);
 
     lv_obj_set_size(roastStopButton, 116, 84);
     lv_obj_align(roastStopButton, LV_ALIGN_TOP_RIGHT, -12, 44);

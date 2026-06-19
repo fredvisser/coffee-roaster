@@ -162,6 +162,14 @@ inline bool shouldEnforceFanTempSafety()
     return false;
   }
 
+  if (roastStartedAtMs == 0) {
+    return false;
+  }
+
+  if (millis() - roastStartedAtMs < FAN_TEMP_SAFETY_ARM_DELAY_MS) {
+    return false;
+  }
+
   return true;
 }
 
@@ -586,6 +594,8 @@ void loop()
     static double lastValidFanTemp = 0;
     static bool firstFanReading = true;
     static int fanOverTempCount = 0;
+    static bool fanTempSafetyArmedLogged = false;
+    static bool fanTempSafetyDelayLogged = false;
 
     // Cycle 0, 2, 4, 6: Read Main Sensor (4 Hz)
     // Cycle 1, 3, 5, 7: Read Fan Sensor (4 Hz)
@@ -658,6 +668,7 @@ void loop()
     else
     {
       double fReading = thermocoupleFan.readFarenheit();
+      const bool fanTempSafetyArmed = shouldEnforceFanTempSafety();
       bool isFanRangeError = (fReading <= 0 || fReading > SENSOR_FAULT_TEMP);
       if (isFanRangeError) {
         fanOverTempCount = 0;
@@ -685,13 +696,52 @@ void loop()
         lastValidFanTemp = fReading;
         firstFanReading = false;
 
+        if (roasterState == ROASTING && !fanTempSafetyArmed) {
+          if (roastStartedAtMs > 0 && !fanTempSafetyDelayLogged) {
+            unsigned long warmupRemainingMs = FAN_TEMP_SAFETY_ARM_DELAY_MS;
+            unsigned long elapsedRoastMs = millis() - roastStartedAtMs;
+            if (elapsedRoastMs < FAN_TEMP_SAFETY_ARM_DELAY_MS) {
+              warmupRemainingMs = FAN_TEMP_SAFETY_ARM_DELAY_MS - elapsedRoastMs;
+            } else {
+              warmupRemainingMs = 0;
+            }
+
+            LOG_INFOF("Fan temp safety delayed: remaining=%lums bean=%.1fF fan=%.1fF heater=%.1f",
+                      warmupRemainingMs,
+                      currentTemp,
+                      fanTemp,
+                      heaterOutputVal);
+            fanTempSafetyDelayLogged = true;
+          }
+          fanTempSafetyArmedLogged = false;
+        } else if (fanTempSafetyArmed && !fanTempSafetyArmedLogged) {
+          LOG_INFOF("Fan temp safety armed: elapsed=%lus bean=%.1fF fan=%.1fF heater=%.1f threshold=%.1fF",
+                    roastStartedAtMs > 0 ? (millis() - roastStartedAtMs) / 1000UL : 0UL,
+                    currentTemp,
+                    fanTemp,
+                    heaterOutputVal,
+                    MAX_SAFE_FAN_TEMP);
+          fanTempSafetyArmedLogged = true;
+        }
+
         // Require the over-temp reading to persist briefly so one noisy sample
         // cannot immediately trip the roaster into an error state.
-        if (shouldEnforceFanTempSafety() && fanTemp > MAX_SAFE_FAN_TEMP) {
+        if (fanTempSafetyArmed && fanTemp > MAX_SAFE_FAN_TEMP) {
           fanOverTempCount++;
-          LOG_WARNF("Fan temp over threshold (%d/3): %.1fF", fanOverTempCount, fanTemp);
+          LOG_WARNF("Fan temp over threshold (%d/3): %.1fF bean=%.1fF heater=%.1f elapsed=%lus",
+                    fanOverTempCount,
+                    fanTemp,
+                    currentTemp,
+                    heaterOutputVal,
+                    roastStartedAtMs > 0 ? (millis() - roastStartedAtMs) / 1000UL : 0UL);
           if (fanOverTempCount >= 3) {
             DEBUG_PRINTLN("EMERGENCY: Fan/Exhaust Over Temp!");
+            LOG_ERRORF("Fan temp safety trip: bean=%.1fF fan=%.1fF heater=%.1f elapsed=%lus threshold=%.1fF",
+                       currentTemp,
+                       fanTemp,
+                       heaterOutputVal,
+                       roastStartedAtMs > 0 ? (millis() - roastStartedAtMs) / 1000UL : 0UL,
+                       MAX_SAFE_FAN_TEMP);
             enterEmergencyErrorState("fan_over_temperature", "Exhaust Over Temp");
           }
         } else {
@@ -788,6 +838,7 @@ void loop()
                   decision.bandIndex,
                   decision.feedforward);
         LOG_INFOF("Roast started: Target=%.0fF, Setpoints=%d", (float)getEffectiveFinalTargetTemp(), profile.getSetpointCount());
+        LOG_INFOF("Fan temp safety warmup: delay=%lums threshold=%.1fF", FAN_TEMP_SAFETY_ARM_DELAY_MS, MAX_SAFE_FAN_TEMP);
         sendWsMessage("{ \"pushMessage\": \"startRoasting\" }");
       }
 
