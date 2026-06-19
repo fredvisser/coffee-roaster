@@ -23,14 +23,15 @@
 #include <PWMrelay.h>
 #include <AutoPID.h>
 #include <ESP32Servo.h>
+#include "../../src/platform/BoardConfig.hpp"
 #include "../../src/profiles/RoastProfile.hpp"
 
 // Pin definitions (from main firmware)
-#define TC1_CS 10
-#define TC2_CS 9
-#define HEATER A0
-#define FAN A1
-#define BDCFAN D5
+static constexpr int TC1_CS = BoardConfig::BeanThermocoupleChipSelectPin;
+static constexpr int TC2_CS = BoardConfig::FanThermocoupleChipSelectPin;
+static constexpr int HEATER = BoardConfig::HeaterPwmPin;
+static constexpr int FAN = BoardConfig::FanPwmPin;
+static constexpr int BDCFAN = BoardConfig::BdcFanServoPin;
 
 // Safety limits
 #define MAX_TEST_TEMP 350.0
