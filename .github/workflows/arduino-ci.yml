@@ -44,6 +44,10 @@ jobs:
         arduino-cli lib install "PWMrelay"
         arduino-cli lib install "ArduinoJson"
         arduino-cli lib install "ElegantOTA@3.1.7"
+        arduino-cli lib install "lvgl"
+        arduino-cli lib install "GFX Library for Arduino"
+        arduino-cli lib install "Dev Device Pins"
+        arduino-cli lib install "TAMC_GT911"
         
     - name: Install async libraries from GitHub
       run: |
