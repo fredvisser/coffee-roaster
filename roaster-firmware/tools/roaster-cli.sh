@@ -2,11 +2,11 @@
 # Coffee Roaster - Legacy compile/upload runner
 # Canonical entrypoints are tools/firmware.sh and tools/tests.sh.
 
-set -eo pipefail
+set -euo pipefail
 
 # Configuration
-TARGET_BOARD="${ROASTER_TARGET_BOARD:-current}"
-DEFAULT_BOARD_FQBN="esp32:esp32:nano_nora"
+TARGET_BOARD="${ROASTER_TARGET_BOARD:-jc4827w543c}"
+DEFAULT_BOARD_FQBN="esp32:esp32:esp32s3:UploadSpeed=921600,USBMode=hwcdc,CDCOnBoot=cdc,MSCOnBoot=default,DFUOnBoot=default,UploadMode=default,CPUFreq=240,FlashMode=dio,FlashSize=4M,PartitionScheme=no_fs,DebugLevel=none,PSRAM=opi,LoopCore=1,EventsCore=1,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default"
 BOARD_FQBN="${BOARD_FQBN:-$DEFAULT_BOARD_FQBN}"
 SERIAL_PORT="${SERIAL_PORT:-auto}"
 BAUD_RATE=115200
@@ -22,17 +22,11 @@ FIRMWARE_DIR="$(cd "$TOOLS_DIR/.." && pwd)"
 TESTS_DIR="$FIRMWARE_DIR/tests"
 CLI_NAME="${ROASTER_CLI_NAME:-$0}"
 
-BUILD_EXTRA_FLAGS="-DROASTER_TARGET_BOARD=ROASTER_BOARD_CURRENT -DROASTER_DISPLAY_BACKEND=ROASTER_DISPLAY_BACKEND_NONE"
+BUILD_EXTRA_FLAGS="-DROASTER_TARGET_BOARD=ROASTER_BOARD_JC4827W543C -DROASTER_DISPLAY_BACKEND=ROASTER_DISPLAY_BACKEND_LVGL"
 
 case "$TARGET_BOARD" in
     jc4827w543c)
-        if [[ "$BOARD_FQBN" == "$DEFAULT_BOARD_FQBN" ]]; then
-            BOARD_FQBN="esp32:esp32:esp32s3:UploadSpeed=921600,USBMode=hwcdc,CDCOnBoot=cdc,MSCOnBoot=default,DFUOnBoot=default,UploadMode=default,CPUFreq=240,FlashMode=dio,FlashSize=4M,PartitionScheme=no_fs,DebugLevel=none,PSRAM=opi,LoopCore=1,EventsCore=1,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default"
-        fi
         BUILD_EXTRA_FLAGS="-DROASTER_TARGET_BOARD=ROASTER_BOARD_JC4827W543C -DROASTER_DISPLAY_BACKEND=ROASTER_DISPLAY_BACKEND_LVGL"
-        ;;
-    current)
-        BUILD_EXTRA_FLAGS="-DROASTER_TARGET_BOARD=ROASTER_BOARD_CURRENT -DROASTER_DISPLAY_BACKEND=ROASTER_DISPLAY_BACKEND_NONE"
         ;;
     *)
         echo "Unknown ROASTER_TARGET_BOARD: $TARGET_BOARD" >&2
@@ -637,8 +631,8 @@ show_port_status() {
 list_tests() {
     print_header "Available Targets"
     echo "Canonical entrypoints:"
-    echo "  ./tools/firmware.sh build --board current"
-    echo "  ./tools/tests.sh compile safety --board current"
+    echo "  ./tools/firmware.sh build --board jc4827w543c"
+    echo "  ./tools/tests.sh compile safety --board jc4827w543c"
     echo "  ./tools/firmware.sh port --board jc4827w543c"
     echo ""
     echo "Legacy numeric targets:"

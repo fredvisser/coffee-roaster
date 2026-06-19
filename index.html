@@ -37,7 +37,7 @@
         </div>
       </div>
       <div class="hero-image">
-        <img src="./images/Roaster%20-%20Front.jpeg" alt="Completed coffee roaster with 3D-printed red enclosure, Nextion display, and popcorn popper roasting chamber" width="600" height="800">
+        <img src="./images/Roaster%20-%20Front.jpeg" alt="Completed coffee roaster with JC4827W543C touchscreen controller and popcorn popper roasting chamber" width="600" height="800">
       </div>
     </section>
 
@@ -49,20 +49,20 @@
 
     <section id="whats-included" class="section reveal">
       <h2>What's in the repo</h2>
-      <p class="section-desc">This isn't just firmware. The repository covers the full build — enclosure, electronics, software, and operating docs.</p>
+      <p class="section-desc">This repository now centers on the current controller firmware, UI, and roast tooling for the JC4827W543C-based roaster.</p>
 
       <div class="card-grid">
         <article class="card">
-          <div class="card-label">3D Printing</div>
-          <h3>Enclosure and hardware</h3>
-          <p>Printable case (top, bottom, handle, feet, standoffs), power supply mount, and an <a href="https://cad.onshape.com/documents/ee717da6534241d41072245e/w/709854c2acbee5e38b890bec/e/be6e653fbb47fc1f3247d478?renderMode=0&uiState=65b72c2e65c4bf7511b63553">OnShape CAD model</a> you can modify. PLA works fine; paint for a finished look.</p>
+          <div class="card-label">Firmware</div>
+          <h3>Controller and UI</h3>
+          <p>ESP32-S3 firmware for the JC4827W543C panel with roast state management, PID temperature control, touchscreen UI, WiFi connectivity, and OTA updates.</p>
           <img src="./images/Roaster%20-%20Bottom.jpeg" alt="Bottom of the 3D-printed enclosure" loading="lazy">
         </article>
 
         <article class="card">
-          <div class="card-label">PCB</div>
-          <h3>Custom control board</h3>
-          <p>Eagle schematic and board files for the interface PCB. Hosts an Arduino Nano ESP32, fan speed controller, and JST connectors for the display, thermocouples, and SSR. Order from JLCPCB, PCBWay, or similar.</p>
+          <div class="card-label">Profiles</div>
+          <h3>Roast workflow tooling</h3>
+          <p>Browser-based profile editing, debug console views, PID workflow pages, and OTA update tooling are built into the firmware image.</p>
           <img src="./images/wiring-3.jpeg" alt="Custom PCB installed in the enclosure with wiring connected" loading="lazy">
         </article>
 
@@ -84,35 +84,35 @@
 
     <section id="build" class="section section-alt reveal">
       <h2>How the build works</h2>
-      <p class="section-desc">Four phases — printing, popper mod, assembly, and software setup.</p>
+      <p class="section-desc">Four phases — popper modification, controller wiring, firmware deployment, and roast validation.</p>
 
       <div class="steps">
         <div class="step">
           <span class="step-num">1</span>
           <div>
-            <h3>Print the enclosure</h3>
-            <p>Print the case parts in PLA. Optionally sand, prime, and paint for a finished appliance look. The 3MF file is in the repo.</p>
+            <h3>Modify the popper</h3>
+            <p>Disassemble the popcorn popper, rework the heater and fan wiring, remove the stock thermostat behavior, and install the thermocouples.</p>
           </div>
         </div>
         <div class="step">
           <span class="step-num">2</span>
           <div>
-            <h3>Modify the popper</h3>
-            <p>Disassemble the popcorn popper. Rewire heater and fan. Remove the bimetallic thermostat strip. Drill and install the thermocouple.</p>
+            <h3>Wire the controller</h3>
+            <p>Connect the JC4827W543C controller to the heater, fan, and thermocouple interfaces. Confirm safe defaults before applying power.</p>
           </div>
         </div>
         <div class="step">
           <span class="step-num">3</span>
           <div>
-            <h3>Wire and assemble</h3>
-            <p>Mount the PCB, Nextion display, power supply, and SSR in the case. Build the wire harnesses and connect everything.</p>
+            <h3>Flash firmware</h3>
+            <p>Build with the firmware wrapper scripts, upload over USB or OTA, and verify the touchscreen UI plus web console come up cleanly.</p>
           </div>
         </div>
         <div class="step">
           <span class="step-num">4</span>
           <div>
-            <h3>Flash and roast</h3>
-            <p>Upload firmware via USB or OTA. Load Nextion display firmware from SD card. Connect WiFi, create a profile, and go.</p>
+            <h3>Validate and roast</h3>
+            <p>Configure WiFi, create or activate a roast profile, verify the safety checks, and then start the roast from the device UI.</p>
           </div>
         </div>
       </div>
@@ -139,7 +139,7 @@
 
     <section id="software" class="section reveal">
       <h2>Software</h2>
-      <p class="section-desc">The firmware runs on an Arduino Nano ESP32. It includes a touchscreen UI, web interface, and Artisan integration.</p>
+      <p class="section-desc">The firmware runs on the JC4827W543C ESP32-S3 display board. It includes a touchscreen UI, web interface, and Artisan integration.</p>
 
       <div class="features-list">
         <div class="feature">
@@ -151,8 +151,8 @@
           <p>Closed-loop PID keeps the roasting chamber on target. Dual thermocouples monitor chamber and exhaust temperatures.</p>
         </div>
         <div class="feature">
-          <h3>Nextion touchscreen</h3>
-          <p>3.5" display shows real-time temps, profile progress, and settings. Start/stop roasts and edit profiles on the device.</p>
+          <h3>Integrated touchscreen</h3>
+          <p>The JC4827W543C panel shows real-time temperatures, profile progress, PID workflow screens, and system status directly on the device.</p>
         </div>
         <div class="feature">
           <h3>Web interface</h3>
@@ -182,7 +182,7 @@
 
     <section id="parts" class="section reveal">
       <h2>Parts list</h2>
-      <p class="section-desc">Everything needed for the build. Most parts ship from Amazon and AliExpress.</p>
+      <p class="section-desc">Core runtime components for the current controller build.</p>
 
       <div class="parts-table-wrap">
         <table class="parts-table">
@@ -191,9 +191,7 @@
           </thead>
           <tbody>
             <tr><td>1200W Popcorn Popper</td><td><a href="https://www.amazon.com/gp/product/B091GGYCQW">Amazon</a></td></tr>
-            <tr><td>Arduino Nano ESP32</td><td><a href="https://www.amazon.com/dp/B0C947BHK5">Amazon</a></td></tr>
-            <tr><td>Nextion 3.5" Display</td><td><a href="https://www.aliexpress.us/item/3256803271061345.html">AliExpress</a> · <a href="https://www.amazon.com/gp/product/B0BBLB54XM">Amazon</a></td></tr>
-            <tr><td>Custom PCB (Rev I)</td><td>Eagle files in repo</td></tr>
+            <tr><td>JC4827W543C ESP32-S3 Display Board</td><td>Integrated controller and touchscreen</td></tr>
             <tr><td>24V Power Supply</td><td><a href="https://www.amazon.com/gp/product/B018RE4CWW">Amazon</a></td></tr>
             <tr><td>DC-DC Buck Converter</td><td><a href="https://www.amazon.com/gp/product/B01MQGMOKI">Amazon</a></td></tr>
             <tr><td>Solid-State Relay (SSR-40DA)</td><td><a href="https://www.aliexpress.us/item/2255800713623525.html">AliExpress</a></td></tr>

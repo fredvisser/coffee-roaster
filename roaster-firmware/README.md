@@ -1,6 +1,6 @@
 # Coffee Roaster Firmware
 
-ESP32-based coffee roaster control system with PID temperature control, dual fan management, and web interface.
+ESP32-S3 JC4827W543C-based coffee roaster control system with PID temperature control, dual fan management, LVGL touchscreen UI, and web interfaces.
 
 ## Features
 
@@ -9,7 +9,7 @@ ESP32-based coffee roaster control system with PID temperature control, dual fan
 - **Dual Fan Control**: 
   - PWM fan for bean agitation
   - BDC fan with servo control for air circulation
-- **Local Display**: LVGL-based onboard display support with a headless current-board build path
+- **Local Display**: LVGL-based onboard touchscreen UI on the JC4827W543C panel
 - **Network Features**: 
   - WiFi connectivity
   - WebSocket real-time monitoring
@@ -25,13 +25,12 @@ ESP32-based coffee roaster control system with PID temperature control, dual fan
 
 ## Hardware Requirements
 
-- ESP32 development board (tested on ESP32 Nano)
+- JC4827W543C ESP32-S3 display board
 - MAX6675 thermocouple amplifiers (x2)
 - Heating element with PWM control circuit
 - PWM fan
 - BDC fan with servo control
-- Optional local display hardware for LVGL-enabled targets
-- See `../PCBs/` for custom control board design
+- Integrated local display and touch hardware on the JC4827W543C board
 
 ## Building
 
@@ -117,10 +116,10 @@ The automated `./tools/bootstrap.sh` script handles this configuration automatic
 
 ```bash
 # Compile
-arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware.ino
+./tools/firmware.sh build --board jc4827w543c
 
 # Upload
-arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora roaster-firmware.ino
+./tools/firmware.sh upload --board jc4827w543c
 ```
 
 ### Build Artifacts
@@ -232,9 +231,7 @@ Comprehensive test suite covering:
 ./tools/tests.sh run safety
 
 # Or run individual test suites
-arduino-cli compile --fqbn esp32:esp32:nano_nora tests/test_safety/test_safety.ino
-arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora tests/test_safety/test_safety.ino
-arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
+./tools/tests.sh run safety --board jc4827w543c
 ```
 
 See `tests/README.md` for complete testing documentation.

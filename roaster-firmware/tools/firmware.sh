@@ -19,13 +19,12 @@ Commands:
   help      Show this help
 
 Boards:
-    current       Legacy Nano ESP32 controller target
-    jc4827w543c   Default ESP32-S3 JC4827W543C display board target
+    jc4827w543c   ESP32-S3 JC4827W543C display board target
 
 Examples:
   ./tools/firmware.sh build
   ./tools/firmware.sh build --board jc4827w543c
-  OTA_HOST=roaster-dev.local ./tools/firmware.sh ota --board current
+    OTA_HOST=roaster-dev.local ./tools/firmware.sh ota --board jc4827w543c
 EOF
 }
 

@@ -14,7 +14,7 @@
  * - Heating element
  * - PWM fan
  * - BDC fan with servo control
- * - Nextion display (optional for full tests)
+ * - JC4827W543C display board
  */
 
 #include "Arduino.h"

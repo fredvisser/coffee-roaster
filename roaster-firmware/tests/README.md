@@ -48,7 +48,7 @@ tests/
 
 ### Hardware Requirements (for hardware validation only)
 
-- ESP32 development board (nano_nora or compatible)
+- JC4827W543C ESP32-S3 display board
 - Roaster control board with:
   - MAX6675 thermocouple amplifiers (x2)
   - Heating element control circuit
@@ -76,9 +76,7 @@ Legacy compatibility note: `./run_tests.sh` still works and forwards to the new 
 #### Profile Management Tests
 ```bash
 cd roaster-firmware
-arduino-cli compile --fqbn esp32:esp32:nano_nora tests/test_profiles/test_profiles.ino
-arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora tests/test_profiles/test_profiles.ino
-arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
+./tools/tests.sh run profiles --board jc4827w543c
 ```
 
 Tests covered:
@@ -91,9 +89,7 @@ Tests covered:
 
 #### PID Controller Tests
 ```bash
-arduino-cli compile --fqbn esp32:esp32:nano_nora tests/test_pid/test_pid.ino
-arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora tests/test_pid/test_pid.ino
-arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
+./tools/tests.sh run pid --board jc4827w543c
 ```
 
 Tests covered:
@@ -106,9 +102,7 @@ Tests covered:
 
 #### State Machine Tests
 ```bash
-arduino-cli compile --fqbn esp32:esp32:nano_nora tests/test_state_machine/test_state_machine.ino
-arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora tests/test_state_machine/test_state_machine.ino
-arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
+./tools/tests.sh run state --board jc4827w543c
 ```
 
 Tests covered:
@@ -120,9 +114,7 @@ Tests covered:
 
 #### Safety System Tests
 ```bash
-arduino-cli compile --fqbn esp32:esp32:nano_nora tests/test_safety/test_safety.ino
-arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora tests/test_safety/test_safety.ino
-arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
+./tools/tests.sh run safety --board jc4827w543c
 ```
 
 Tests covered (CRITICAL):
@@ -155,9 +147,7 @@ Tests covered (CRITICAL):
 ### Running Hardware Tests
 
 ```bash
-arduino-cli compile --fqbn esp32:esp32:nano_nora tests/hardware_validation/hardware_validation.ino
-arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora tests/hardware_validation/hardware_validation.ino
-arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
+./tools/tests.sh run hardware --board jc4827w543c
 ```
 
 Tests covered:
@@ -306,7 +296,7 @@ cd roaster-firmware && ./tools/tests.sh compile profiles
 
 5. Compile and run:
    ```bash
-   arduino-cli compile --fqbn esp32:esp32:nano_nora tests/your_test.ino
+   ./tools/tests.sh compile your-suite --board jc4827w543c
    ```
 
 ### Test Naming Conventions

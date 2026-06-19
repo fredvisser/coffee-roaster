@@ -27,7 +27,6 @@ Suites:
   step-response
 
 Boards:
-  current
   jc4827w543c
 
 Examples:

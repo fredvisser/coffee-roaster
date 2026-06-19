@@ -6,9 +6,6 @@ on:
   pull_request:
     branches: [ main ]
 
-env:
-  BOARD_FQBN: esp32:esp32:nano_nora
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -39,7 +36,6 @@ jobs:
         
     - name: Install required libraries
       run: |
-        arduino-cli lib install "Easy Nextion Library"
         arduino-cli lib install "MAX6675 library"
         arduino-cli lib install "SimpleTimer"
         arduino-cli lib install "AutoPID"
@@ -171,7 +167,7 @@ jobs:
   #     
   #   - name: Flash test firmware
   #     run: |
-  #       arduino-cli upload -p /dev/ttyUSB0 --fqbn esp32:esp32:nano_nora roaster-firmware/tests/unit_tests.ino
+  #       ./tools/tests.sh upload unit --board jc4827w543c
   #       
   #   - name: Run tests and capture output
   #     run: |
