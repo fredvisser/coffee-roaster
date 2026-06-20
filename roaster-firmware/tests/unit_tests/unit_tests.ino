@@ -6,9 +6,9 @@
  *
  * To run these tests:
  * 1. Install AUnit library: arduino-cli lib install "AUnit"
- * 2. Compile: arduino-cli compile --fqbn esp32:esp32:nano_nora unit_tests.ino
- * 3. Upload: arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora unit_tests.ino
- * 4. Monitor: arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
+ * 2. Compile: ./tools/tests.sh compile unit --board jc4827w543c
+ * 3. Upload: ./tools/tests.sh upload unit --board jc4827w543c
+ * 4. Monitor: ./tools/tests.sh monitor unit --board jc4827w543c
  */
 
 #include <AUnitVerbose.h> // Verbose runner prints PASS results
@@ -84,9 +84,7 @@ void loop()
  *    - Emergency shutdown procedures
  *
  * To run a specific test suite:
- * arduino-cli compile --fqbn esp32:esp32:nano_nora tests/test_profiles.ino
- * arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora tests/test_profiles.ino
- * arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
+ * ./tools/tests.sh run profiles --board jc4827w543c
  */
 
 // Example tests to demonstrate the framework

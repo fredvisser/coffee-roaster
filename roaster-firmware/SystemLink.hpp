@@ -10,9 +10,9 @@
 #include <esp_task_wdt.h>
 #include <esp_system.h>
 #include "DebugLog.hpp"
-#include "ProfileManager.hpp"
+#include "src/profiles/ProfileManager.hpp"
 #include "StepResponseTuner.hpp"
-#include "Types.hpp"
+#include "src/platform/Types.hpp"
 
 extern Preferences preferences;
 extern ProfileManager profileManager;

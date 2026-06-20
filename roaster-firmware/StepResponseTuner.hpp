@@ -6,7 +6,7 @@
 #include <string.h>
 
 #include "DebugLog.hpp"
-#include "CalibrationTypes.hpp"
+#include "src/platform/CalibrationTypes.hpp"
 
 class StepResponseTuner {
 public:

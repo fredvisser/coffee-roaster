@@ -220,6 +220,7 @@ code {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  background: var(--bg);
 }
 
 .card .card-label {
@@ -246,10 +247,15 @@ code {
 .card > p a { font-weight: 500; }
 
 .card > img {
-  width: 100%;
-  height: 220px;
-  object-fit: cover;
-  border-top: 1px solid var(--border);
+  width: calc(100% - 24px);
+  max-height: 260px;
+  object-fit: contain;
+  align-self: center;
+  margin: 0 12px 12px;
+  padding: 10px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
 
 /* ── Steps ────────────────────────────────────── */

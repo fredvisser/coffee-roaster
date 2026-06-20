@@ -40,7 +40,6 @@ tests/
 
 4. **Project Dependencies**
    ```bash
-   arduino-cli lib install "EasyNextionLibrary"
    arduino-cli lib install "MAX6675 library"
    arduino-cli lib install "SimpleTimer"
    arduino-cli lib install "AutoPID"
@@ -49,7 +48,7 @@ tests/
 
 ### Hardware Requirements (for hardware validation only)
 
-- ESP32 development board (nano_nora or compatible)
+- JC4827W543C ESP32-S3 display board
 - Roaster control board with:
   - MAX6675 thermocouple amplifiers (x2)
   - Heating element control circuit
@@ -61,14 +60,23 @@ tests/
 
 Unit tests verify software logic without requiring hardware. They test algorithms, data structures, and control flow.
 
+Canonical test entrypoint:
+
+```bash
+cd roaster-firmware
+./tools/tests.sh list
+./tools/tests.sh compile safety
+./tools/tests.sh run pid
+```
+
+Legacy compatibility note: `./run_tests.sh` still works and forwards to the new `tools/` entrypoints.
+
 ### Running Individual Test Suites
 
 #### Profile Management Tests
 ```bash
 cd roaster-firmware
-arduino-cli compile --fqbn esp32:esp32:nano_nora tests/test_profiles/test_profiles.ino
-arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora tests/test_profiles/test_profiles.ino
-arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
+./tools/tests.sh run profiles --board jc4827w543c
 ```
 
 Tests covered:
@@ -81,9 +89,7 @@ Tests covered:
 
 #### PID Controller Tests
 ```bash
-arduino-cli compile --fqbn esp32:esp32:nano_nora tests/test_pid/test_pid.ino
-arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora tests/test_pid/test_pid.ino
-arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
+./tools/tests.sh run pid --board jc4827w543c
 ```
 
 Tests covered:
@@ -96,9 +102,7 @@ Tests covered:
 
 #### State Machine Tests
 ```bash
-arduino-cli compile --fqbn esp32:esp32:nano_nora tests/test_state_machine/test_state_machine.ino
-arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora tests/test_state_machine/test_state_machine.ino
-arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
+./tools/tests.sh run state --board jc4827w543c
 ```
 
 Tests covered:
@@ -110,9 +114,7 @@ Tests covered:
 
 #### Safety System Tests
 ```bash
-arduino-cli compile --fqbn esp32:esp32:nano_nora tests/test_safety/test_safety.ino
-arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora tests/test_safety/test_safety.ino
-arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
+./tools/tests.sh run safety --board jc4827w543c
 ```
 
 Tests covered (CRITICAL):
@@ -126,9 +128,7 @@ Tests covered (CRITICAL):
 ### Running All Unit Tests
 
 ```bash
-arduino-cli compile --fqbn esp32:esp32:nano_nora tests/unit_tests/unit_tests.ino
-arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora tests/unit_tests/unit_tests.ino
-arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
+./tools/tests.sh run unit
 ```
 
 ## Running Hardware Validation Tests
@@ -147,9 +147,7 @@ arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
 ### Running Hardware Tests
 
 ```bash
-arduino-cli compile --fqbn esp32:esp32:nano_nora tests/hardware_validation/hardware_validation.ino
-arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora tests/hardware_validation/hardware_validation.ino
-arduino-cli monitor -p /dev/cu.usbserial-* -c baudrate=115200
+./tools/tests.sh run hardware --board jc4827w543c
 ```
 
 Tests covered:
@@ -230,10 +228,10 @@ Before committing changes, run:
 
 ```bash
 # Quick compile check
-arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/roaster-firmware.ino
+cd roaster-firmware && ./tools/firmware.sh build
 
 # Run unit tests (if you have hardware)
-arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/tests/test_profiles/test_profiles.ino
+cd roaster-firmware && ./tools/tests.sh compile profiles
 ```
 
 ## Test Coverage
@@ -250,13 +248,11 @@ arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/tests/test_pro
 | Heater Control | ✓ | ✓ | High |
 | Fan Control | ✓ | ✓ | High |
 | Network/WiFi | ✗ | ✗ | Low |
-| Nextion Display | ✗ | ✗ | Low |
 
 ### Areas for Improvement
 
 - Network communication tests
 - WebSocket message handling
-- Nextion display integration tests
 - Long-duration roast tests
 - Temperature ramp rate tests
 - Power cycle/recovery tests
@@ -300,7 +296,7 @@ arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware/tests/test_pro
 
 5. Compile and run:
    ```bash
-   arduino-cli compile --fqbn esp32:esp32:nano_nora tests/your_test.ino
+   ./tools/tests.sh compile your-suite --board jc4827w543c
    ```
 
 ### Test Naming Conventions

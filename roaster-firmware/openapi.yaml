@@ -16,7 +16,7 @@ info:
     - MAX6675 thermocouple sensors
     - PWM fan control
     - BDC servo fan control
-    - Nextion HMI display
+    - Optional local display hardware for LVGL-enabled targets
   version: 1.0.0
   contact:
     name: Coffee Roaster Project
@@ -24,7 +24,7 @@ info:
     name: MIT
 
 servers:
-  - url: http://roaster.local
+  - url: http://roaster-dev.local
     description: mDNS hostname (requires Bonjour/Avahi)
   - url: http://192.168.1.100
     description: Direct IP address (replace with actual IP)
