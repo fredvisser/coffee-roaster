@@ -30,38 +30,69 @@
     <section class="hero">
       <div class="hero-text">
         <h1>A home coffee roaster you can build.</h1>
-        <p>JC4827W543C controller. Modified popcorn popper. Dual thermocouples. PID roast control. Dedicated build, BOM, firmware, and Artisan docs.</p>
+        <p>An open-source coffee roaster built from a modified popcorn popper, a JC4827W543C touchscreen controller, dual thermocouples, and PID-based heat control.</p>
         <div class="hero-actions">
           <a class="btn btn-primary" href="https://github.com/fredvisser/coffee-roaster">View on GitHub</a>
           <a class="btn btn-ghost" href="#docs">Read the docs</a>
         </div>
       </div>
       <div class="hero-image">
-        <img src="./images/v2-roasting.jpeg" alt="Current v2 coffee roaster during a roast" width="600" height="800">
+        <img src="./images/v2-roaster-hero.jpeg" alt="V2 coffee roaster hero view" width="600" height="800">
       </div>
     </section>
 
-    <section class="video-section reveal">
-      <img src="./images/v2-wiring-complete.jpeg" alt="Completed v2 coffee roaster wiring inside the enclosure" loading="lazy">
+    <section class="section video-section reveal">
+      <div class="video-intro">
+        <h2>See the roaster in action</h2>
+        <p class="section-desc">A quick look at the hardware, the end of a roast, and the manual bean dump after roasting.</p>
+      </div>
+
+      <div class="video-showcase">
+        <figure class="video-card video-card-featured">
+          <video autoplay muted loop playsinline controls preload="metadata">
+            <source src="./images/Roaster-demo.mp4" type="video/mp4">
+            Your browser does not support the demo video tag.
+          </video>
+          <figcaption>Roaster overview with the live controller UI and roast workflow.</figcaption>
+        </figure>
+
+        <div class="video-card-grid">
+          <figure class="video-card">
+            <video muted playsinline controls preload="metadata">
+              <source src="./images/End-of-roast.mp4" type="video/mp4">
+              Your browser does not support the end-of-roast video tag.
+            </video>
+            <figcaption>End-of-roast sequence as the batch finishes and cooling begins.</figcaption>
+          </figure>
+
+          <figure class="video-card">
+            <video muted playsinline controls preload="metadata">
+              <source src="./images/Pouring-beans.mp4" type="video/mp4">
+              Your browser does not support the bean-drop video tag.
+            </video>
+            <figcaption>Manual bean dump after the roast completes.</figcaption>
+          </figure>
+        </div>
+      </div>
     </section>
 
     <section id="overview" class="section reveal">
-      <h2>Current v2 build</h2>
-      <p class="section-desc">This site now points to the current v2 documentation instead of duplicating a second build guide. The repository centers on the JC4827W543C controller, the updated enclosure, and the active firmware toolchain.</p>
+      <h2>What this project includes</h2>
+      <p class="section-desc">This project combines a modified popcorn popper, custom enclosure parts, a touchscreen controller, and firmware for roasting, logging, and browser-based control.</p>
 
       <div class="card-grid">
         <article class="card">
           <div class="card-label">Hardware</div>
-          <h3>Two fan-build options</h3>
-          <p>The v2 build supports either the stock popper fan motor with a 24 V supply and DC speed controller, or a custom ASA fan with a brushless 12 V motor path.</p>
-          <img src="./images/v2-roasting.jpeg" alt="Current v2 roaster in use" loading="lazy">
+          <h3>Two airflow options</h3>
+          <p>Build it with the stock popper fan and DC speed control, or use the printed ASA fan with a brushless 12 V motor.</p>
+          <img src="./images/v2-roasting.jpeg" alt="V2 roaster in use" loading="lazy">
         </article>
 
         <article class="card">
           <div class="card-label">Build</div>
           <h3>Documented assembly flow</h3>
-          <p>The printed parts, breakout board, popper modification steps, wiring order, and first power-up checks now live in the dedicated build guide.</p>
-          <img src="./images/v2-wiring-in-process.jpeg" alt="Current v2 enclosure wiring in progress" loading="lazy">
+          <p>The build guide covers printed parts, breakout-board assembly, popper modification, wiring order, and first power-up checks.</p>
+          <img src="./images/v2-wiring-in-process.jpeg" alt="V2 enclosure wiring in progress" loading="lazy">
         </article>
 
         <article class="card">
@@ -74,7 +105,7 @@
         <article class="card">
           <div class="card-label">Artisan</div>
           <h3>External roast logging</h3>
-          <p>Artisan setup is documented separately now, with the settings file, connection flow, and screenshots moved out of the root README.</p>
+          <p>Connect the roaster to Artisan over WebSocket for live roast curves, logging, and post-roast analysis.</p>
           <img src="./images/Artisan - Start roast screen.png" alt="Artisan connected to the roaster" loading="lazy">
         </article>
       </div>
@@ -82,13 +113,13 @@
 
     <section id="docs" class="section section-alt reveal">
       <h2>Read the docs</h2>
-      <p class="section-desc">The v2 hardware and software instructions now live in dedicated markdown guides. Use these as the source of truth instead of the landing page.</p>
+      <p class="section-desc">Use these guides for the hardware build, parts list, firmware workflows, and Artisan setup.</p>
 
       <div class="card-grid docs-grid">
         <article class="card">
           <div class="card-label">Guide</div>
           <h3>Build instructions</h3>
-          <p>Step-by-step user-facing assembly instructions with current printed-part names, breakout-board references, wiring guidance, and build photos.</p>
+          <p>Step-by-step assembly instructions with printed-part references, breakout-board guidance, wiring details, and build photos.</p>
           <p><a href="https://github.com/fredvisser/coffee-roaster/blob/main/BUILD.md">Open BUILD.md</a></p>
         </article>
         <article class="card">
@@ -100,13 +131,13 @@
         <article class="card">
           <div class="card-label">Guide</div>
           <h3>Firmware workflows</h3>
-          <p>Bootstrap, build, upload, OTA, tests, and runtime interfaces for the current JC4827W543C firmware target.</p>
+          <p>Bootstrap, build, upload, OTA, tests, and runtime interfaces for the JC4827W543C firmware target.</p>
           <p><a href="https://github.com/fredvisser/coffee-roaster/blob/main/roaster-firmware/README.md">Open firmware README</a></p>
         </article>
         <article class="card">
           <div class="card-label">Guide</div>
           <h3>Artisan setup</h3>
-          <p>WebSocket logging setup, settings import, screenshots, and first connection steps are now in a dedicated Artisan document.</p>
+          <p>WebSocket logging setup, settings import, screenshots, and first connection steps for Artisan.</p>
           <p><a href="https://github.com/fredvisser/coffee-roaster/blob/main/ARTISAN.md">Open ARTISAN.md</a></p>
         </article>
       </div>
@@ -116,17 +147,17 @@
           <img src="./images/popper-mod-7.jpeg" alt="Thermocouple installed in the roasting chamber" loading="lazy">
           <figcaption>Popper thermocouple install</figcaption>
         </figure>
-        <figure>
+        <figure class="build-photo-diagram">
           <img src="./images/roaster-breakout-perfboard.png" alt="Perfboard breakout layout for the roaster controller" loading="lazy">
           <figcaption>Perfboard breakout reference</figcaption>
         </figure>
         <figure>
           <img src="./images/v2-wiring-in-process.jpeg" alt="V2 internal wiring in progress" loading="lazy">
-          <figcaption>Current v2 wiring</figcaption>
+          <figcaption>Internal wiring</figcaption>
         </figure>
         <figure>
           <img src="./images/v2-wiring-complete.jpeg" alt="Completed v2 internal wiring" loading="lazy">
-          <figcaption>Validation-ready build</figcaption>
+          <figcaption>Completed build</figcaption>
         </figure>
       </div>
     </section>

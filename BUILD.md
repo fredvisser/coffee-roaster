@@ -119,6 +119,10 @@ Mount the controller components so that:
 
 If you are making a breakout board on perf board, finish that assembly before starting the enclosure wiring.
 
+![Roaster breakout PCB](images/v2-pcb.png)
+
+![Roaster breakout schematic](images/v2-schematic.png)
+
 ![Perfboard breakout example](images/roaster-breakout-perfboard.png)
 
 ![Controller hardware layout](images/v2-wiring-in-process.jpeg)
