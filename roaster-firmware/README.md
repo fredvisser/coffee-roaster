@@ -109,6 +109,26 @@ arduino-cli compile --fqbn esp32:esp32:nano_nora roaster-firmware.ino
 arduino-cli upload -p /dev/cu.usbserial-* --fqbn esp32:esp32:nano_nora roaster-firmware.ino
 ```
 
+### Configure WiFi via USB
+
+After flashing the firmware, connect a serial terminal at 115200 baud and send the following line, with a literal Tab between the SSID and password:
+
+```text
+WIFI MyNetwork<Tab>correct-horse-battery-staple
+```
+
+The firmware saves the credentials to NVS and immediately attempts to reconnect. It reports the SSID but never echoes the password. To erase stored credentials, send:
+
+```text
+WIFI CLEAR
+```
+
+For example, on macOS:
+
+```bash
+screen /dev/cu.usbmodem* 115200
+```
+
 ### Build Artifacts
 
 Compiled firmware is automatically copied to `build/roaster-firmware.bin`:

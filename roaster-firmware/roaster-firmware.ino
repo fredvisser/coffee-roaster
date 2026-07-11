@@ -65,6 +65,7 @@ SimpleTimer controlLoopTimer(250);
 SimpleTimer stateMachineTimer(500);
 SimpleTimer wsBroadcastTimer(1000);  // WebSocket broadcast every 1 second
 SimpleTimer roastTraceTimer(1000);   // Roast trace capture every 1 second
+SimpleTimer wifiFieldLimitTimer(500);
 
 // PWM is used to control fan and heater outputs
 PWMrelay heaterRelay(HEATER, HIGH);
@@ -129,6 +130,64 @@ double appliedKd = kd;
 bool pidScheduleConfigured = false;
 bool pidScheduleActive = false;
 int activePidBandIndex = -1;
+
+void handleSerialWifiProvisioning()
+{
+  static String command;
+
+  while (Serial.available() > 0)
+  {
+    char character = static_cast<char>(Serial.read());
+    if (character == '\r')
+    {
+      continue;
+    }
+
+    if (character != '\n')
+    {
+      if (command.length() < 256)
+      {
+        command += character;
+      }
+      else
+      {
+        command = "";
+        Serial.println("WiFi command rejected: too long");
+      }
+      continue;
+    }
+
+    if (command == "WIFI CLEAR")
+    {
+      preferences.remove("ssid");
+      preferences.remove("password");
+      wifiCredentials = {};
+      WiFi.disconnect();
+      Serial.println("WiFi credentials cleared");
+    }
+    else if (command.startsWith("WIFI "))
+    {
+      int separator = command.indexOf('\t', 5);
+      if (separator <= 5 || separator == command.length() - 1)
+      {
+        Serial.println("Usage: WIFI <ssid><TAB><password>");
+      }
+      else
+      {
+        String ssid = command.substring(5, separator);
+        String password = command.substring(separator + 1);
+        preferences.putString("ssid", ssid);
+        preferences.putString("password", password);
+        wifiCredentials.ssid = ssid;
+        wifiCredentials.password = password;
+        Serial.printf("WiFi credentials saved for SSID '%s'; reconnecting\n", ssid.c_str());
+        requestWifiConnection(wifiCredentials);
+      }
+    }
+
+    command = "";
+  }
+}
 
 // Helper function for reliable Nextion reads with retry logic
 int readNextionWithRetry(const char *component, int retries = 2)
@@ -532,6 +591,8 @@ void loop()
   // If loop hangs for >10 seconds, system will reset
   esp_task_wdt_reset();
 
+  handleSerialWifiProvisioning();
+
   // Reset boot count if system has been stable for 10 seconds
   static bool bootCountReset = false;
   if (!bootCountReset && millis() > 10000) {
@@ -551,6 +612,14 @@ void loop()
     wsCleanup();
     ElegantOTA.loop(); // Handle OTA updates
     tickTimer.reset();
+  }
+
+  // Nextion only applies page-local commands while the target page is active.
+  if (wifiFieldLimitTimer.isReady())
+  {
+    myNex.writeNum("ConfigWifi.ssid.txt_maxl", 32);
+    myNex.writeNum("ConfigWifi.password.txt_maxl", 63);
+    wifiFieldLimitTimer.reset();
   }
 
   if (checkTempTimer.isReady())
@@ -980,17 +1049,32 @@ void trigger2()
 
 void trigger3()
 { // Apply WiFi credentials
-  // Update global WiFi credentials
-  wifiCredentials.ssid = myNex.readStr("ConfigWifi.ssid.txt");
-  wifiCredentials.password = myNex.readStr("ConfigWifi.password.txt");
-  myNex.writeStr("ConfigWifi.ip.txt", "Connecting...");
-  String ip = initializeWifi(wifiCredentials);
-  myNex.writeStr("ConfigWifi.ip.txt", ip);
-  if (ip != "Failed to connect to WiFi")
+  String ssid = myNex.readStr("ConfigWifi.ssid.txt");
+  String password = myNex.readStr("ConfigWifi.password.txt");
+  LOG_INFOF("Nextion WiFi save requested: SSID length=%u, password length=%u", (unsigned int)ssid.length(), (unsigned int)password.length());
+
+  if (ssid.length() == 0 || password.length() == 0)
   {
-    preferences.putString("ssid", wifiCredentials.ssid);
-    preferences.putString("password", wifiCredentials.password);
+    LOG_WARN("Nextion WiFi save rejected: empty SSID or password read from display");
+    myNex.writeStr("ConfigWifi.ip.txt", "Enter SSID and password");
+    return;
   }
+
+  if (wifiCredentials.ssid.startsWith(ssid) && wifiCredentials.ssid.length() > ssid.length())
+  {
+    LOG_WARNF("Nextion WiFi save rejected: SSID length %u is a truncated prefix of saved SSID length %u",
+              (unsigned int)ssid.length(), (unsigned int)wifiCredentials.ssid.length());
+    myNex.writeStr("ConfigWifi.ip.txt", "SSID was truncated");
+    return;
+  }
+
+  // Save before connecting so the background retry loop can continue after a slow association.
+  preferences.putString("ssid", ssid);
+  preferences.putString("password", password);
+  wifiCredentials.ssid = ssid;
+  wifiCredentials.password = password;
+  myNex.writeStr("ConfigWifi.ip.txt", "Connecting...");
+  requestWifiConnection(wifiCredentials);
 }
 
 void trigger4()

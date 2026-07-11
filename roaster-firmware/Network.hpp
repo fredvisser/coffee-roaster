@@ -26,6 +26,8 @@ String json;
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
 AsyncWebSocket ws("/WebSocket");
+bool networkServicesInitialized = false;
+bool wifiConnectionPending = false;
 
 // External variables from main firmware
 extern double currentTemp;
@@ -283,6 +285,16 @@ void initWebSocket() {
   server.addHandler(&ws);
 }
 
+void requestWifiConnection(const WifiCredentials& wifiCredentials) {
+  if (wifiCredentials.ssid.length() == 0) {
+    return;
+  }
+
+  wifiConnectionPending = true;
+  WiFi.disconnect();
+  WiFi.begin(wifiCredentials.ssid, wifiCredentials.password);
+}
+
 String initializeWifi(const WifiCredentials& wifiCredentials) {
   if (wifiCredentials.ssid.length() == 0) {
     Serial.println("No WiFi credentials - skipping WiFi setup");
@@ -290,7 +302,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   }
 
   // Connect to Wi-Fi
-  WiFi.begin(wifiCredentials.ssid, wifiCredentials.password);
+  requestWifiConnection(wifiCredentials);
   int attempts = 0;
   // Reduced blocking wait to 3 seconds to allow faster boot
   while (WiFi.status() != WL_CONNECTED && attempts < 3) {
@@ -303,8 +315,14 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi not connected yet - continuing boot (will retry in background)");
   } else {
+    wifiConnectionPending = false;
     Serial.println(WiFi.localIP());
   }
+
+  if (networkServicesInitialized) {
+    return WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "Connecting...";
+  }
+  networkServicesInitialized = true;
 
   // Initialize mDNS regardless of current connection state (it might connect later)
   if (!MDNS.begin("roaster")) {
@@ -325,17 +343,118 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Roaster Links</title>
   <style>
-    body { font-family: Arial, sans-serif; background: #0d1117; color: #c9d1d9; margin: 0; padding: 24px; }
-    .page { max-width: 960px; margin: 0 auto; }
-    .topnav { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 auto 20px; padding: 14px; background: #161b22; border: 1px solid #30363d; border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); }
-    .topnav a { display: inline-flex; align-items: center; justify-content: center; min-width: 120px; padding: 10px 14px; border-radius: 999px; background: #21262d; color: #c9d1d9; text-decoration: none; font-weight: 600; }
-    .topnav a.active { background: linear-gradient(135deg, #1f6feb, #58a6ff); color: #fff; }
-    .card { max-width: 420px; margin: 0 auto; background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 24px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
-    h1 { margin-top: 0; font-size: 24px; color: #fff; }
-    p { color: #8b949e; }
-    a { display: block; margin: 12px 0; padding: 12px 16px; border-radius: 8px; text-decoration: none; color: #fff; font-weight: 600; text-align: center; background: linear-gradient(135deg, #1f6feb, #58a6ff); }
-    a.secondary { background: linear-gradient(135deg, #3fb950, #2ea043); }
-    a.tertiary { background: linear-gradient(135deg, #f0883e, #f85149); }
+    :root {
+      --bg: #130f0c;
+      --bg-soft: #201813;
+      --panel: rgba(33, 24, 18, 0.9);
+      --panel-strong: rgba(25, 19, 15, 0.96);
+      --border: rgba(233, 186, 104, 0.18);
+      --text: #f6eee3;
+      --muted: #c6b29b;
+      --gold: #e9ba68;
+      --copper: #b96a33;
+      --accent: #d98d43;
+      --teal: #6bb8ad;
+      --shadow: 0 22px 52px rgba(0,0,0,0.35);
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: Georgia, 'Times New Roman', serif;
+      background:
+        radial-gradient(circle at top left, rgba(233, 186, 104, 0.18), transparent 28%),
+        radial-gradient(circle at bottom right, rgba(107, 184, 173, 0.12), transparent 24%),
+        linear-gradient(160deg, var(--bg) 0%, #2b2019 50%, #0f1012 100%);
+      color: var(--text);
+      margin: 0;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .page { max-width: 1060px; margin: 0 auto; }
+    .topnav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 0 auto 20px;
+      padding: 14px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+    }
+    .topnav a {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 120px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(233, 186, 104, 0.08);
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 14px;
+    }
+    .topnav a.active { background: linear-gradient(135deg, var(--gold), var(--copper)); color: #22170f; border-color: transparent; }
+    .shell {
+      background: var(--panel-strong);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    .hero {
+      padding: 28px;
+      background: linear-gradient(135deg, rgba(185, 106, 51, 0.38), rgba(63, 40, 26, 0.16));
+      border-bottom: 1px solid rgba(233, 186, 104, 0.12);
+    }
+    .eyebrow {
+      color: var(--gold);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+    h1 { margin: 0 0 10px; font-size: 34px; color: var(--text); }
+    .hero p { margin: 0; color: var(--muted); max-width: 700px; line-height: 1.6; }
+    .content { padding: 24px; display: grid; gap: 18px; }
+    .quick-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+    .card {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(233, 186, 104, 0.1);
+      border-radius: 18px;
+      padding: 20px;
+    }
+    .card h2 { margin: 0 0 10px; font-size: 18px; color: var(--text); }
+    .card p { margin: 0; color: var(--muted); line-height: 1.55; }
+    .actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .action-link {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 18px;
+      border-radius: 18px;
+      text-decoration: none;
+      color: var(--text);
+      border: 1px solid rgba(233, 186, 104, 0.1);
+      background: linear-gradient(160deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+    }
+    .action-link strong { font-size: 17px; }
+    .action-link span { color: var(--muted); font-size: 14px; line-height: 1.5; }
+    .action-link.primary { background: linear-gradient(135deg, rgba(233, 186, 104, 0.95), rgba(185, 106, 51, 0.95)); color: #24170e; border-color: transparent; }
+    .action-link.primary span { color: rgba(36, 23, 14, 0.82); }
+    .action-link.cool { border-color: rgba(107, 184, 173, 0.22); }
+    .action-link.alert { border-color: rgba(217, 141, 67, 0.28); }
+    .meta { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
+    .meta span { padding: 8px 12px; border-radius: 999px; background: rgba(255,255,255,0.04); border: 1px solid rgba(233, 186, 104, 0.08); }
+    @media (max-width: 640px) {
+      body { padding: 14px; }
+      .hero, .content { padding: 18px; }
+      h1 { font-size: 28px; }
+    }
   </style>
 </head>
 <body>
@@ -348,14 +467,36 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       <a href="/update">Update</a>
       <a href="/systemlink">SystemLink</a>
     </nav>
-    <div class="card">
-      <h1>Roaster Control</h1>
-      <p>Select a tool:</p>
-      <a href="/console">Debug Console</a>
-      <a class="secondary" href="/profile">Profile Editor</a>
-      <a class="tertiary" href="/pid">PID Tuning</a>
-      <a class="secondary" href="/update">Firmware Update</a>
-      <a href="/systemlink">SystemLink</a>
+    <div class="shell">
+      <div class="hero">
+        <div class="eyebrow">Embedded Web Tools</div>
+        <h1>Roaster control surfaces</h1>
+        <p>Use the browser tools for live diagnostics, roast profile editing, PID workflow tuning, firmware updates, and optional SystemLink publishing. This surface is hosted directly on the controller.</p>
+      </div>
+      <div class="content">
+        <div class="meta">
+          <span>Hosted on-device</span>
+          <span>Works over local Wi-Fi</span>
+          <span>Profile and PID safe to adjust live</span>
+        </div>
+        <div class="quick-grid">
+          <div class="card">
+            <h2>Live monitoring</h2>
+            <p>The console shows real-time temperatures, heater output, roast progress, memory pressure, and debug logs in one place.</p>
+          </div>
+          <div class="card">
+            <h2>Editing workflows</h2>
+            <p>Profile and PID pages keep configuration close to the machine so you can tune without reflashing or plugging in over USB.</p>
+          </div>
+        </div>
+        <div class="actions">
+          <a class="action-link primary" href="/console"><strong>Debug Console</strong><span>Live temps, control output, safety counters, and log stream.</span></a>
+          <a class="action-link cool" href="/profile"><strong>Profile Editor</strong><span>Adjust temperature and fan curves with direct graph editing.</span></a>
+          <a class="action-link alert" href="/pid"><strong>PID Workflow</strong><span>Apply gains manually or run step-response tuning.</span></a>
+          <a class="action-link" href="/update"><strong>Firmware Update</strong><span>Open the OTA updater exposed by the device.</span></a>
+          <a class="action-link cool" href="/systemlink"><strong>SystemLink</strong><span>Configure remote publishing, IDs, and API credentials.</span></a>
+        </div>
+      </div>
     </div>
   </div>
 </body>
@@ -923,13 +1064,31 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Roaster Debug Console</title>
   <style>
+    :root {
+      --bg: #130f0c;
+      --bg-soft: #201813;
+      --panel: rgba(33, 24, 18, 0.9);
+      --panel-strong: rgba(25, 19, 15, 0.96);
+      --border: rgba(233, 186, 104, 0.16);
+      --text: #f6eee3;
+      --muted: #c6b29b;
+      --gold: #e9ba68;
+      --copper: #b96a33;
+      --teal: #6bb8ad;
+      --red: #d86f52;
+      --shadow: 0 22px 52px rgba(0,0,0,0.35);
+    }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0d1117;
-      color: #c9d1d9;
-      padding: 20px;
+      font-family: Georgia, 'Times New Roman', serif;
+      background:
+        radial-gradient(circle at top left, rgba(233, 186, 104, 0.18), transparent 26%),
+        radial-gradient(circle at bottom right, rgba(107, 184, 173, 0.12), transparent 22%),
+        linear-gradient(160deg, var(--bg) 0%, #2b2019 48%, #0f1012 100%);
+      color: var(--text);
+      padding: 24px;
       line-height: 1.5;
+      min-height: 100vh;
     }
     .topnav {
       display: flex;
@@ -938,10 +1097,11 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       max-width: 1400px;
       margin: 0 auto 20px;
       padding: 14px;
-      background: #161b22;
-      border: 1px solid #30363d;
-      border-radius: 14px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
     }
     .topnav a {
       display: inline-flex;
@@ -950,41 +1110,48 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       min-width: 120px;
       padding: 10px 14px;
       border-radius: 999px;
-      background: #21262d;
-      color: #c9d1d9;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(233, 186, 104, 0.08);
+      color: var(--text);
       text-decoration: none;
-      font-weight: 600;
+      font-weight: 700;
     }
     .topnav a.active {
-      background: linear-gradient(135deg, #1f6feb, #58a6ff);
-      color: #fff;
+      background: linear-gradient(135deg, var(--gold), var(--copper));
+      color: #22170f;
+      border-color: transparent;
     }
     .header {
-      background: linear-gradient(135deg, #1f6feb 0%, #0969da 100%);
-      padding: 24px;
-      border-radius: 12px;
+      max-width: 1400px;
+      margin: 0 auto 24px;
+      background: linear-gradient(135deg, rgba(185, 106, 51, 0.4), rgba(63, 40, 26, 0.16));
+      padding: 28px;
+      border-radius: 24px;
+      border: 1px solid rgba(233, 186, 104, 0.14);
       margin-bottom: 24px;
-      box-shadow: 0 8px 24px rgba(31, 111, 235, 0.2);
+      box-shadow: var(--shadow);
     }
     .header h1 {
-      font-size: 28px;
-      font-weight: 600;
-      margin-bottom: 8px;
-      color: #fff;
+      font-size: 32px;
+      font-weight: 700;
+      margin-bottom: 10px;
+      color: var(--text);
     }
     .header .subtitle {
-      color: rgba(255, 255, 255, 0.8);
+      color: var(--muted);
       font-size: 14px;
       display: flex;
       align-items: center;
       gap: 16px;
+      flex-wrap: wrap;
     }
     .status-badge {
       display: inline-flex;
       align-items: center;
       gap: 6px;
       padding: 4px 12px;
-      background: rgba(255, 255, 255, 0.15);
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(233, 186, 104, 0.1);
       border-radius: 20px;
       font-size: 12px;
       font-weight: 500;
@@ -1005,22 +1172,27 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
       gap: 20px;
       margin-bottom: 20px;
+      max-width: 1400px;
+      margin-left: auto;
+      margin-right: auto;
     }
     .card {
-      background: #161b22;
-      border: 1px solid #30363d;
-      border-radius: 8px;
+      background: var(--panel-strong);
+      border: 1px solid var(--border);
+      border-radius: 18px;
       padding: 20px;
-      transition: border-color 0.2s;
+      transition: border-color 0.2s, transform 0.2s;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
     }
     .card:hover {
-      border-color: #1f6feb;
+      border-color: rgba(233, 186, 104, 0.3);
+      transform: translateY(-1px);
     }
     .card-title {
       font-size: 16px;
-      font-weight: 600;
+      font-weight: 700;
       margin-bottom: 16px;
-      color: #fff;
+      color: var(--text);
       display: flex;
       align-items: center;
       gap: 8px;
@@ -1029,7 +1201,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       content: '';
       width: 4px;
       height: 16px;
-      background: #1f6feb;
+      background: linear-gradient(180deg, var(--gold), var(--copper));
       border-radius: 2px;
     }
     .metric-row {
@@ -1042,24 +1214,24 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       border-bottom: none;
     }
     .metric-label {
-      color: #8b949e;
+      color: var(--muted);
       font-size: 14px;
     }
     .metric-value {
-      font-weight: 600;
+      font-weight: 700;
       font-size: 16px;
-      color: #58a6ff;
+      color: var(--gold);
       font-family: 'Courier New', monospace;
     }
     .metric-value.large {
       font-size: 32px;
-      color: #3fb950;
+      color: var(--teal);
     }
     .metric-value.warn {
-      color: #f0883e;
+      color: var(--accent);
     }
     .metric-value.error {
-      color: #f85149;
+      color: var(--red);
     }
     .gauge-container {
       position: relative;
@@ -1087,9 +1259,9 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       margin-top: 8px;
     }
     .log-container {
-      background: #0d1117;
-      border: 1px solid #30363d;
-      border-radius: 6px;
+      background: #140f0c;
+      border: 1px solid rgba(233, 186, 104, 0.1);
+      border-radius: 12px;
       padding: 12px;
       max-height: 400px;
       overflow-y: auto;
@@ -1105,9 +1277,9 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       border-left: 3px solid transparent;
     }
     .log-entry.DEBUG { border-left-color: #8b949e; }
-    .log-entry.INFO { border-left-color: #58a6ff; }
-    .log-entry.WARN { border-left-color: #f0883e; }
-    .log-entry.ERROR { border-left-color: #f85149; background: rgba(248, 81, 73, 0.1); }
+    .log-entry.INFO { border-left-color: var(--teal); }
+    .log-entry.WARN { border-left-color: var(--accent); }
+    .log-entry.ERROR { border-left-color: var(--red); background: rgba(216, 111, 82, 0.12); }
     .log-time {
       color: #6e7681;
       min-width: 80px;
@@ -1117,11 +1289,11 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       font-weight: 600;
     }
     .log-level.DEBUG { color: #8b949e; }
-    .log-level.INFO { color: #58a6ff; }
-    .log-level.WARN { color: #f0883e; }
-    .log-level.ERROR { color: #f85149; }
+    .log-level.INFO { color: var(--teal); }
+    .log-level.WARN { color: var(--accent); }
+    .log-level.ERROR { color: var(--red); }
     .log-message {
-      color: #c9d1d9;
+      color: var(--text);
       flex: 1;
     }
     .controls {
@@ -1132,32 +1304,33 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     }
     .btn {
       padding: 8px 16px;
-      background: #21262d;
-      border: 1px solid #30363d;
-      color: #c9d1d9;
-      border-radius: 6px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(233, 186, 104, 0.1);
+      color: var(--text);
+      border-radius: 999px;
       cursor: pointer;
       font-size: 14px;
       transition: all 0.2s;
     }
     .btn:hover {
-      background: #30363d;
-      border-color: #1f6feb;
+      background: rgba(255,255,255,0.08);
+      border-color: rgba(233, 186, 104, 0.3);
     }
     .btn.active {
-      background: #1f6feb;
-      border-color: #1f6feb;
-      color: #fff;
+      background: linear-gradient(135deg, var(--gold), var(--copper));
+      border-color: transparent;
+      color: #22170f;
     }
     .full-width {
       grid-column: 1 / -1;
     }
     @media (max-width: 768px) {
+      body { padding: 14px; }
       .grid {
         grid-template-columns: 1fr;
       }
       .header h1 {
-        font-size: 22px;
+        font-size: 24px;
       }
     }
   </style>
@@ -1172,7 +1345,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     <a href="/systemlink">SystemLink</a>
   </nav>
   <div class="header">
-    <h1>☕ Coffee Roaster Debug Console</h1>
+    <h1>Coffee Roaster Debug Console</h1>
     <div class="subtitle">
       <span class="status-badge">
         <span class="status-dot"></span>
@@ -1274,12 +1447,12 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     </div>
 
     <div class="card full-width">
-      <div class="card-title">� Live Temperature Chart</div>
+      <div class="card-title">Live Temperature Chart</div>
       <canvas id="tempChart" width="800" height="200" style="width: 100%; height: 200px;"></canvas>
     </div>
 
     <div class="card full-width">
-      <div class="card-title">�📝 Debug Logs</div>
+      <div class="card-title">Debug Logs</div>
       <div class="controls">
         <button class="btn active" onclick="filterLogs('ALL')">All</button>
         <button class="btn" onclick="filterLogs('ERROR')">Errors</button>
@@ -1636,39 +1809,71 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PID Workflow</title>
   <style>
-    body { font-family: Arial, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
-    .topnav { display: flex; flex-wrap: wrap; gap: 10px; max-width: 920px; margin: 0 auto 16px; padding: 14px; background: #161b22; border: 1px solid #30363d; border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); }
-    .topnav a { display: inline-flex; align-items: center; justify-content: center; min-width: 120px; padding: 10px 14px; border-radius: 999px; background: #21262d; color: #c9d1d9; text-decoration: none; font-weight: 600; }
-    .topnav a.active { background: linear-gradient(135deg, #1f6feb, #58a6ff); color: #fff; }
-    .page { max-width: 920px; margin: 0 auto; display: grid; gap: 16px; }
-    .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
-    h1, h2 { margin-top: 0; color: #fff; }
-    label { display: block; margin: 12px 0 4px; color: #8b949e; }
-    input { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #30363d; background: #0d1117; color: #c9d1d9; }
-    button { margin-top: 14px; width: 100%; padding: 12px; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; }
+    :root {
+      --bg: #130f0c;
+      --bg-soft: #201813;
+      --panel: rgba(33, 24, 18, 0.9);
+      --panel-strong: rgba(25, 19, 15, 0.96);
+      --border: rgba(233, 186, 104, 0.16);
+      --text: #f6eee3;
+      --muted: #c6b29b;
+      --gold: #e9ba68;
+      --copper: #b96a33;
+      --teal: #6bb8ad;
+      --shadow: 0 22px 52px rgba(0,0,0,0.35);
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: Georgia, 'Times New Roman', serif;
+      background:
+        radial-gradient(circle at top left, rgba(233, 186, 104, 0.18), transparent 28%),
+        radial-gradient(circle at bottom right, rgba(107, 184, 173, 0.12), transparent 24%),
+        linear-gradient(160deg, var(--bg) 0%, #2b2019 48%, #0f1012 100%);
+      color: var(--text);
+      padding: 24px;
+      min-height: 100vh;
+    }
+    .topnav { display: flex; flex-wrap: wrap; gap: 10px; max-width: 1080px; margin: 0 auto 16px; padding: 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); backdrop-filter: blur(10px); }
+    .topnav a { display: inline-flex; align-items: center; justify-content: center; min-width: 120px; padding: 10px 14px; border-radius: 999px; background: rgba(255,255,255,0.05); border: 1px solid rgba(233, 186, 104, 0.08); color: var(--text); text-decoration: none; font-weight: 700; }
+    .topnav a.active { background: linear-gradient(135deg, var(--gold), var(--copper)); color: #22170f; border-color: transparent; }
+    .page { max-width: 1080px; margin: 0 auto; display: grid; gap: 18px; }
+    .hero { background: linear-gradient(135deg, rgba(185, 106, 51, 0.38), rgba(63, 40, 26, 0.16)); border: 1px solid rgba(233, 186, 104, 0.14); border-radius: 24px; padding: 26px; box-shadow: var(--shadow); }
+    .eyebrow { color: var(--gold); text-transform: uppercase; letter-spacing: 0.12em; font-size: 12px; font-weight: 700; margin-bottom: 10px; }
+    .card { background: var(--panel-strong); border: 1px solid var(--border); border-radius: 18px; padding: 22px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.03); }
+    h1, h2 { margin-top: 0; color: var(--text); }
+    p.note { color: var(--muted); line-height: 1.55; }
+    label { display: block; margin: 12px 0 6px; color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; }
+    input { width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(233, 186, 104, 0.16); background: #18130f; color: var(--text); }
+    input:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 3px rgba(233, 186, 104, 0.12); }
+    button { margin-top: 14px; width: 100%; padding: 12px; border: none; border-radius: 999px; font-weight: 700; cursor: pointer; }
     button:disabled { opacity: 0.45; cursor: not-allowed; }
-    .primary { background: linear-gradient(135deg, #1f6feb, #58a6ff); color: #fff; }
-    .secondary { background: linear-gradient(135deg, #3fb950, #2ea043); color: #fff; }
-    .tertiary { background: linear-gradient(135deg, #f0883e, #f85149); color: #fff; }
-    .note { color: #8b949e; font-size: 13px; margin-top: 8px; }
+    .primary { background: linear-gradient(135deg, var(--gold), var(--copper)); color: #22170f; }
+    .secondary { background: linear-gradient(135deg, #6bb8ad, #3d857e); color: #f6eee3; }
+    .tertiary { background: linear-gradient(135deg, #d98d43, #c55745); color: #fff7ef; }
+    .note { color: var(--muted); font-size: 13px; margin-top: 8px; }
     .row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
     .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
     .button-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 16px; }
-    .metric { background: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 12px; }
-    .metric-label { color: #8b949e; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
-    .metric-value { color: #fff; font-size: 20px; font-weight: 700; margin-top: 6px; }
-    .chart { margin-top: 16px; background: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 12px; }
+    .metric { background: #18130f; border: 1px solid rgba(233, 186, 104, 0.1); border-radius: 14px; padding: 12px; }
+    .metric-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .metric-value { color: var(--text); font-size: 20px; font-weight: 700; margin-top: 6px; }
+    .chart { margin-top: 16px; background: #18130f; border: 1px solid rgba(233, 186, 104, 0.1); border-radius: 14px; padding: 12px; }
     .chart canvas { width: 100%; height: 260px; display: block; }
-    .legend { display: flex; gap: 18px; margin-top: 10px; color: #8b949e; font-size: 12px; }
+    .legend { display: flex; gap: 18px; margin-top: 10px; color: var(--muted); font-size: 12px; }
     .legend span { display: inline-flex; align-items: center; gap: 8px; }
     .legend span::before { content: ""; width: 18px; height: 3px; border-radius: 999px; display: inline-block; }
-    .legend .actual::before { background: #58a6ff; }
-    .legend .setpoint::before { background: #f2cc60; }
+    .legend .actual::before { background: var(--teal); }
+    .legend .setpoint::before { background: var(--gold); }
     table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-    th, td { text-align: left; padding: 10px; border-bottom: 1px solid #30363d; font-size: 14px; }
-    th { color: #8b949e; }
-    .small { font-size: 12px; color: #8b949e; }
+    th, td { text-align: left; padding: 10px; border-bottom: 1px solid rgba(233, 186, 104, 0.1); font-size: 14px; }
+    th { color: var(--muted); }
+    .small { font-size: 12px; color: var(--muted); }
+    @media (max-width: 768px) {
+      body { padding: 14px; }
+      .row { grid-template-columns: 1fr; }
+      .button-row { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -1681,9 +1886,13 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     <a href="/systemlink">SystemLink</a>
   </nav>
   <div class="page">
-    <div class="card">
+    <div class="hero">
+      <div class="eyebrow">Tuning Workflow</div>
       <h1>PID Workflow</h1>
       <p class="note">Apply manual gains directly, or run the step-response PID tuning workflow. The tuner applies open-loop step inputs at 2 temperature bands, fits FOPDT models, and calculates SIMC PID gains.</p>
+    </div>
+    <div class="card">
+      <h2>Manual PID</h2>
       <div class="row">
         <div>
           <label for="kp">Kp</label>
@@ -2058,8 +2267,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 
   // Start server
   server.begin();
-  return "roaster.local";
-  // return WiFi.localIP().toString();
+  return WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "Connecting...";
 }
 
 // Send WebSocket message to all connected clients
@@ -2111,13 +2319,14 @@ void checkWiFiConnection(const WifiCredentials& wifiCredentials) {
     
     // Non-blocking reconnect: just start the process and return
     // The next check (in 10s) will verify if it worked
-    WiFi.disconnect();
-    WiFi.begin(wifiCredentials.ssid.c_str(), wifiCredentials.password.c_str());
+    requestWifiConnection(wifiCredentials);
     
   } else {
-    if (reconnectAttempts > 0) {
+    if (reconnectAttempts > 0 || wifiConnectionPending) {
       DEBUG_PRINTF("WiFi reconnected! IP: %s\n", WiFi.localIP().toString().c_str());
+      myNex.writeStr("ConfigWifi.ip.txt", WiFi.localIP().toString());
       reconnectAttempts = 0;
+      wifiConnectionPending = false;
     }
   }
 #endif

@@ -11,14 +11,27 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SystemLink Configuration</title>
   <style>
+    :root {
+      --bg: #130f0c;
+      --panel: rgba(33, 24, 18, 0.9);
+      --panel-strong: rgba(25, 19, 15, 0.96);
+      --border: rgba(233, 186, 104, 0.18);
+      --text: #f6eee3;
+      --muted: #c6b29b;
+      --gold: #e9ba68;
+      --copper: #b96a33;
+      --teal: #6bb8ad;
+      --shadow: 0 22px 52px rgba(0,0,0,0.35);
+    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       font-family: Georgia, 'Times New Roman', serif;
       background:
-        radial-gradient(circle at top left, rgba(245, 208, 66, 0.16), transparent 28%),
-        linear-gradient(160deg, #1d1a15 0%, #30261d 48%, #111214 100%);
-      color: #f3eadb;
+        radial-gradient(circle at top left, rgba(233, 186, 104, 0.18), transparent 28%),
+        radial-gradient(circle at bottom right, rgba(107, 184, 173, 0.12), transparent 24%),
+        linear-gradient(160deg, var(--bg) 0%, #2b2019 48%, #0f1012 100%);
+      color: var(--text);
       min-height: 100vh;
       padding: 24px;
     }
@@ -29,10 +42,11 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
-      background: rgba(24, 21, 18, 0.92);
-      border: 1px solid rgba(242, 203, 117, 0.22);
+      background: var(--panel);
+      border: 1px solid var(--border);
       border-radius: 16px;
-      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
     }
     .topnav a {
       display: inline-flex;
@@ -42,30 +56,38 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
       padding: 10px 14px;
       border-radius: 999px;
       background: rgba(255, 255, 255, 0.06);
-      border: 1px solid rgba(242, 203, 117, 0.14);
-      color: #f3eadb;
+      border: 1px solid rgba(233, 186, 104, 0.1);
+      color: var(--text);
       text-decoration: none;
       font-weight: 700;
       font-size: 14px;
     }
     .topnav a.active {
-      background: linear-gradient(135deg, #f2cb75, #c48337);
+      background: linear-gradient(135deg, var(--gold), var(--copper));
       color: #22180e;
       border-color: transparent;
     }
     .shell {
       max-width: 880px;
       margin: 0 auto;
-      background: rgba(24, 21, 18, 0.92);
-      border: 1px solid rgba(242, 203, 117, 0.22);
+      background: var(--panel-strong);
+      border: 1px solid var(--border);
       border-radius: 20px;
       overflow: hidden;
-      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+      box-shadow: var(--shadow);
     }
     .hero {
       padding: 28px;
-      background: linear-gradient(135deg, rgba(191, 128, 44, 0.35), rgba(73, 42, 19, 0.15));
-      border-bottom: 1px solid rgba(242, 203, 117, 0.15);
+      background: linear-gradient(135deg, rgba(185, 106, 51, 0.38), rgba(63, 40, 26, 0.16));
+      border-bottom: 1px solid rgba(233, 186, 104, 0.12);
+    }
+    .eyebrow {
+      color: var(--gold);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 10px;
     }
     h1 {
       margin: 0 0 8px;
@@ -73,7 +95,7 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
       letter-spacing: 0.02em;
     }
     .subtitle {
-      color: #dbcab6;
+      color: var(--muted);
       font-size: 15px;
       line-height: 1.5;
       max-width: 620px;
@@ -85,7 +107,7 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
     }
     .card {
       background: rgba(255, 255, 255, 0.03);
-      border: 1px solid rgba(242, 203, 117, 0.12);
+      border: 1px solid rgba(233, 186, 104, 0.1);
       border-radius: 16px;
       padding: 20px;
     }
@@ -102,7 +124,7 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
       display: block;
       margin-bottom: 8px;
       font-size: 13px;
-      color: #dbcab6;
+      color: var(--muted);
       text-transform: uppercase;
       letter-spacing: 0.08em;
     }
@@ -110,16 +132,16 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
     input[type="password"] {
       width: 100%;
       padding: 12px 14px;
-      border: 1px solid rgba(242, 203, 117, 0.18);
+      border: 1px solid rgba(233, 186, 104, 0.16);
       border-radius: 12px;
       background: #181614;
-      color: #f7f0e4;
+      color: var(--text);
       font-size: 15px;
     }
     input:focus {
       outline: none;
-      border-color: #f2cb75;
-      box-shadow: 0 0 0 3px rgba(242, 203, 117, 0.14);
+      border-color: var(--gold);
+      box-shadow: 0 0 0 3px rgba(233, 186, 104, 0.14);
     }
     .toggle {
       display: flex;
@@ -153,28 +175,28 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
       opacity: 0.95;
     }
     .primary {
-      background: linear-gradient(135deg, #f2cb75, #c48337);
+      background: linear-gradient(135deg, var(--gold), var(--copper));
       color: #22180e;
     }
     .secondary {
       background: rgba(255, 255, 255, 0.08);
-      color: #f3eadb;
-      border: 1px solid rgba(242, 203, 117, 0.14);
+      color: var(--text);
+      border: 1px solid rgba(233, 186, 104, 0.12);
     }
     .status {
       min-height: 24px;
-      color: #dbcab6;
+      color: var(--muted);
       font-size: 14px;
     }
     .meta {
       display: flex;
       gap: 18px;
       flex-wrap: wrap;
-      color: #bca890;
+      color: var(--muted);
       font-size: 14px;
     }
     .hint {
-      color: #bca890;
+      color: var(--muted);
       font-size: 13px;
       line-height: 1.5;
       margin-top: 8px;
@@ -197,6 +219,7 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
   </nav>
   <div class="shell">
     <div class="hero">
+      <div class="eyebrow">Publishing Integration</div>
       <h1>SystemLink</h1>
       <div class="subtitle">Configure optional publishing to NI SystemLink. The roaster can write live tags during a roast and publish a test result, including a 1 Hz roast trace CSV, when the roast passes, is terminated, or errors out.</div>
     </div>

@@ -11,56 +11,90 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Roast Profile Editor</title>
   <style>
+    :root {
+      --bg: #130f0c;
+      --bg-soft: #201813;
+      --panel: rgba(33, 24, 18, 0.9);
+      --panel-strong: rgba(25, 19, 15, 0.96);
+      --border: rgba(233, 186, 104, 0.16);
+      --text: #f6eee3;
+      --muted: #c6b29b;
+      --gold: #e9ba68;
+      --copper: #b96a33;
+      --teal: #6bb8ad;
+      --violet: #b791ff;
+      --danger: #d86f52;
+      --shadow: 0 22px 52px rgba(0,0,0,0.35);
+    }
     * { box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background:#0d1117; color:#c9d1d9; margin:0; padding:0; }
-    .topnav { max-width: 1100px; margin: 16px auto 0; padding: 14px; display:flex; flex-wrap:wrap; gap:10px; background:#161b22; border:1px solid #30363d; border-radius:14px; box-shadow:0 8px 24px rgba(0,0,0,0.2); }
-    .topnav a { display:inline-flex; align-items:center; justify-content:center; min-width:120px; padding:10px 14px; border-radius:999px; background:#21262d; color:#c9d1d9; text-decoration:none; font-weight:600; }
-    .topnav a.active { background:linear-gradient(135deg, #1f6feb, #58a6ff); color:#fff; }
-    .container { max-width: 1100px; margin: 0 auto; padding: 16px; }
-    .header { display:flex; flex-direction:column; gap:12px; margin-bottom:16px; }
-    h1 { font-size: 24px; color:#fff; margin:0; }
+    body {
+      font-family: Georgia, 'Times New Roman', serif;
+      background:
+        radial-gradient(circle at top left, rgba(233, 186, 104, 0.18), transparent 28%),
+        radial-gradient(circle at bottom right, rgba(107, 184, 173, 0.12), transparent 24%),
+        linear-gradient(160deg, var(--bg) 0%, #2b2019 48%, #0f1012 100%);
+      color: var(--text);
+      margin: 0;
+      padding: 24px;
+      min-height: 100vh;
+    }
+    .topnav { max-width: 1180px; margin: 0 auto 16px; padding: 14px; display:flex; flex-wrap:wrap; gap:10px; background:var(--panel); border:1px solid var(--border); border-radius:16px; box-shadow:var(--shadow); backdrop-filter: blur(10px); }
+    .topnav a { display:inline-flex; align-items:center; justify-content:center; min-width:120px; padding:10px 14px; border-radius:999px; background:rgba(255,255,255,0.05); border:1px solid rgba(233, 186, 104, 0.08); color:var(--text); text-decoration:none; font-weight:700; font-size:14px; }
+    .topnav a.active { background:linear-gradient(135deg, var(--gold), var(--copper)); color:#22170f; border-color:transparent; }
+    .container { max-width: 1180px; margin: 0 auto; padding: 0; }
+    .header { display:flex; flex-direction:column; gap:14px; margin-bottom:18px; background: linear-gradient(135deg, rgba(185, 106, 51, 0.38), rgba(63, 40, 26, 0.16)); border:1px solid rgba(233, 186, 104, 0.14); border-radius:24px; padding:24px; box-shadow: var(--shadow); }
+    .eyebrow { color: var(--gold); text-transform: uppercase; letter-spacing: 0.12em; font-size: 12px; font-weight: 700; }
+    h1 { font-size: 32px; color:var(--text); margin:0; }
+    .subtitle { color: var(--muted); line-height: 1.6; max-width: 760px; margin: 0; }
     .controls { display:flex; gap:8px; flex-wrap: wrap; align-items: center; }
-    .control-group { display:flex; gap:8px; padding:8px; background:#161b22; border-radius:6px; border:1px solid #30363d; flex-wrap: wrap; }
-    .control-group.primary { border-color:#1f6feb; }
-    .btn { padding:10px 14px; background:#21262d; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; cursor:pointer; font-size:14px; white-space:nowrap; transition: all 0.2s; }
-    .btn:hover { background:#30363d; border-color:#1f6feb; }
-    .btn:active { background:#30363d; }
-    .btn.primary { background:#1f6feb; border-color:#1f6feb; color:#fff; font-weight:600; }
-    .btn.primary:hover { background:#1a56db; }
-    .btn.danger { background:#da3633; border-color:#da3633; color:#fff; }
-    .btn.danger:hover { background:#b62324; }
-    .input { padding:10px; background:#0d1117; border:1px solid #30363d; border-radius:6px; color:#c9d1d9; font-size:14px; min-width:150px; }
-    .input:focus { outline:none; border-color:#1f6feb; }
+    .control-group { display:flex; gap:8px; padding:10px; background:rgba(25, 19, 15, 0.72); border-radius:16px; border:1px solid rgba(233, 186, 104, 0.12); flex-wrap: wrap; }
+    .control-group.primary { border-color:rgba(233, 186, 104, 0.28); }
+    .btn { padding:10px 14px; background:rgba(255,255,255,0.05); border:1px solid rgba(233, 186, 104, 0.1); border-radius:999px; color:var(--text); cursor:pointer; font-size:14px; white-space:nowrap; transition: all 0.2s; font-weight:700; }
+    .btn:hover { background:rgba(255,255,255,0.08); border-color:rgba(233, 186, 104, 0.3); }
+    .btn:active { background:rgba(255,255,255,0.1); }
+    .btn.primary { background:linear-gradient(135deg, var(--gold), var(--copper)); border-color:transparent; color:#22170f; }
+    .btn.primary:hover { filter:brightness(1.02); }
+    .btn.danger { background:linear-gradient(135deg, #d98d43, var(--danger)); border-color:transparent; color:#fff7ef; }
+    .btn.danger:hover { filter:brightness(1.02); }
+    .input { padding:12px 14px; background:#18130f; border:1px solid rgba(233, 186, 104, 0.16); border-radius:12px; color:var(--text); font-size:14px; min-width:150px; }
+    .input:focus { outline:none; border-color:var(--gold); box-shadow:0 0 0 3px rgba(233, 186, 104, 0.12); }
     .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:16px; }
-    .card { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:16px; }
-    .card h2 { margin:0 0 12px; font-size:18px; color:#fff; }
-    .graph-wrapper { position:relative; width:100%; overflow:visible; border:1px solid #21262d; border-radius:8px; background:#0d1117; padding:4px; }
+    .card { background:var(--panel-strong); border:1px solid var(--border); border-radius:18px; padding:18px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.03); }
+    .card h2 { margin:0 0 12px; font-size:20px; color:var(--text); }
+    .graph-wrapper { position:relative; width:100%; overflow:visible; border:1px solid rgba(233, 186, 104, 0.1); border-radius:16px; background:#18130f; padding:6px; }
     .graph-wrapper svg { display:block; touch-action:none; }
     #graph { width:100%; min-height:300px; }
-    .axis { stroke:#30363d; stroke-width:1; }
-    .gridline { stroke:#21262d; stroke-width:1; }
-    .sp-line { stroke:#58a6ff; stroke-width:2; fill:none; }
-    .fan-line { stroke:#a371f7; stroke-width:2; fill:none; stroke-dasharray:5,3; }
-    .sp-point { fill:#3fb950; stroke:#fff; stroke-width:1; cursor:grab; touch-action:none; }
-    .sp-point.selected { fill:#f0883e; }
+    .axis { stroke:#6e5845; stroke-width:1; }
+    .gridline { stroke:#382b21; stroke-width:1; }
+    .sp-line { stroke:var(--teal); stroke-width:2; fill:none; }
+    .fan-line { stroke:var(--violet); stroke-width:2; fill:none; stroke-dasharray:5,3; }
+    .sp-point { fill:var(--gold); stroke:#fff; stroke-width:1; cursor:grab; touch-action:none; }
+    .sp-point.selected { fill:#f3b96f; }
     .sp-point:active { cursor:grabbing; }
-    .fan-point { fill:#a371f7; stroke:#fff; stroke-width:1; cursor:grab; touch-action:none; opacity:0.6; }
+    .fan-point { fill:var(--violet); stroke:#fff; stroke-width:1; cursor:grab; touch-action:none; opacity:0.7; }
     .fan-point:hover { opacity:1; }
     .fan-point.selected { fill:#d29ff7; opacity:1; }
     .fan-point:active { cursor:grabbing; }
-    .legend { font-size:12px; color:#8b949e; margin-top:8px; display:flex; gap:20px; }
+    .legend { font-size:12px; color:var(--muted); margin-top:8px; display:flex; gap:20px; flex-wrap:wrap; }
     .list { display:flex; flex-direction:column; gap:8px; }
     .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-    label { font-size:13px; color:#8b949e; }
+    label { font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:0.06em; }
     input[type="checkbox"] { width:18px; height:18px; cursor:pointer; }
-    .spinner { display:inline-block; width:14px; height:14px; border:2px solid #30363d; border-top-color:#1f6feb; border-radius:50%; animation:spin 0.6s linear infinite; margin-left:8px; }
+    .spinner { display:inline-block; width:14px; height:14px; border:2px solid rgba(233, 186, 104, 0.18); border-top-color:var(--gold); border-radius:50%; animation:spin 0.6s linear infinite; margin-left:8px; }
     @keyframes spin { to { transform:rotate(360deg); } }
-    #debugInfo { position:fixed; top:10px; right:10px; background:rgba(0,0,0,0.95); border:1px solid #f85149; border-radius:6px; padding:12px; font-family:monospace; font-size:11px; max-width:450px; z-index:1000; display:none; max-height:600px; overflow-y:auto; pointer-events:none; }
+    #debugInfo { position:fixed; top:10px; right:10px; background:rgba(20, 15, 12, 0.98); border:1px solid var(--danger); border-radius:12px; padding:12px; font-family:monospace; font-size:11px; max-width:450px; z-index:1000; display:none; max-height:600px; overflow-y:auto; pointer-events:none; }
     #debugInfo.visible { display:block; }
-    #debugInfo pre { margin:0; color:#58a6ff; line-height:1.5; white-space:pre-wrap; word-wrap:break-word; }
-    #debugInfo strong { color:#f85149; display:block; margin-bottom:8px; font-size:13px; }
-    .debug-section { margin:10px 0; padding:8px; background:#161b22; border-radius:4px; border:1px solid #30363d; }
-    .debug-section h3 { margin:0 0 6px 0; color:#3fb950; font-size:11px; }
+    #debugInfo pre { margin:0; color:var(--teal); line-height:1.5; white-space:pre-wrap; word-wrap:break-word; }
+    #debugInfo strong { color:var(--danger); display:block; margin-bottom:8px; font-size:13px; }
+    .debug-section { margin:10px 0; padding:8px; background:var(--panel); border-radius:8px; border:1px solid rgba(233, 186, 104, 0.08); }
+    .debug-section h3 { margin:0 0 6px 0; color:var(--gold); font-size:11px; }
+    .modal-shell { background:var(--panel-strong); border:1px solid var(--border); border-radius:18px; padding:20px; min-width:400px; max-width:500px; box-shadow: var(--shadow); }
+    @media (max-width: 720px) {
+      body { padding: 14px; }
+      .header { padding: 18px; }
+      h1 { font-size: 28px; }
+      .modal-shell { min-width: auto; width: calc(100vw - 32px); }
+    }
   </style>
 </head>
 <body>
@@ -74,7 +108,9 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
   </nav>
   <div class="container">
     <div class="header">
+      <div class="eyebrow">Profile Design</div>
       <h1>Roast Profile Editor</h1>
+      <p class="subtitle">Shape the roast curve directly on the controller. Edit temperature and fan setpoints, preview the path, and save or activate profiles without leaving the browser.</p>
       <div class="control-group primary">
         <select id="profilesList" class="input" style="flex:1; min-width:200px;" onchange="autoLoadProfile()"></select>
         <button class="btn" onclick="createNew()">New</button>
@@ -124,10 +160,10 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
     </div>
   </div>
 
-  <div id="toast" style="position:fixed; bottom:20px; right:20px; background:#161b22; border:1px solid #30363d; color:#c9d1d9; padding:10px 14px; border-radius:6px; box-shadow:0 8px 24px rgba(0,0,0,0.3); display:none; z-index:2000;"></div>
+  <div id="toast" style="position:fixed; bottom:20px; right:20px; background:rgba(25, 19, 15, 0.98); border:1px solid rgba(233, 186, 104, 0.14); color:#f6eee3; padding:12px 16px; border-radius:12px; box-shadow:0 16px 40px rgba(0,0,0,0.32); display:none; z-index:2000;"></div>
 
   <div id="inputModal" style="position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); display:none; align-items:center; justify-content:center; z-index:3000;">
-    <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:20px; min-width:400px; max-width:500px;">
+    <div class="modal-shell">
       <h3 id="modalTitle" style="margin:0 0 16px; color:#fff; font-size:18px;"></h3>
       <input id="modalInput" type="text" class="input" style="width:100%; margin-bottom:16px;" />
       <div style="display:flex; gap:8px; justify-content:flex-end;">
