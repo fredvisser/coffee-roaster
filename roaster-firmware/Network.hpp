@@ -15,8 +15,8 @@
 #include "PIDRuntimeController.hpp"
 #include "PIDValidation.hpp"
 #include "ProfileManager.hpp"    // Profile backend logic
-#include "ProfileWebUI.hpp"     // Profile UI HTML/CSS/JS
-#include "SystemLinkWebUI.hpp"
+#include "ProfileWebUICompressed.hpp"
+#include "SystemLinkWebUICompressed.hpp"
 #include <vector>
 
 // Removed global JsonDocument to prevent heap fragmentation
@@ -28,6 +28,7 @@ AsyncWebServer server(80);
 AsyncWebSocket ws("/WebSocket");
 bool networkServicesInitialized = false;
 bool wifiConnectionPending = false;
+bool mdnsStarted = false;
 
 // External variables from main firmware
 extern double currentTemp;
@@ -285,12 +286,35 @@ void initWebSocket() {
   server.addHandler(&ws);
 }
 
+void sendCompressedHtml(AsyncWebServerRequest *request, const uint8_t *content, size_t length) {
+  AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", content, length);
+  response->addHeader("Content-Encoding", "gzip");
+  response->addHeader("Cache-Control", "no-cache");
+  request->send(response);
+}
+
+void initializeMdns() {
+  if (mdnsStarted || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  if (!MDNS.begin("roaster")) {
+    Serial.println("Error setting up MDNS responder!");
+    return;
+  }
+
+  MDNS.addService("http", "tcp", 80);
+  mdnsStarted = true;
+  Serial.println("mDNS responder started - device accessible at roaster.local");
+}
+
 void requestWifiConnection(const WifiCredentials& wifiCredentials) {
   if (wifiCredentials.ssid.length() == 0) {
     return;
   }
 
   wifiConnectionPending = true;
+  WiFi.setTxPower(WIFI_POWER_21dBm);
   WiFi.disconnect();
   WiFi.begin(wifiCredentials.ssid, wifiCredentials.password);
 }
@@ -324,12 +348,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   }
   networkServicesInitialized = true;
 
-  // Initialize mDNS regardless of current connection state (it might connect later)
-  if (!MDNS.begin("roaster")) {
-    Serial.println("Error setting up MDNS responder!");
-  } else {
-    Serial.println("mDNS responder started - device accessible at roaster.local");
-  }
+  initializeMdns();
 
   initWebSocket();
 
@@ -2249,12 +2268,12 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   // Profile Editor UI
   server.on("/profile", HTTP_GET, [](AsyncWebServerRequest *request) {
     LOG_INFO("Profile Editor UI accessed");
-    request->send_P(200, "text/html", PROFILE_EDITOR_HTML);
+    sendCompressedHtml(request, PROFILE_EDITOR_HTML_GZIP, PROFILE_EDITOR_HTML_GZIP_len);
   });
 
   server.on("/systemlink", HTTP_GET, [](AsyncWebServerRequest *request) {
     LOG_INFO("SystemLink config UI accessed");
-    request->send_P(200, "text/html", SYSTEMLINK_CONFIG_HTML);
+    sendCompressedHtml(request, SYSTEMLINK_CONFIG_HTML_GZIP, SYSTEMLINK_CONFIG_HTML_GZIP_len);
   });
 
   // Start ElegantOTA for over-the-air updates
@@ -2322,6 +2341,7 @@ void checkWiFiConnection(const WifiCredentials& wifiCredentials) {
     requestWifiConnection(wifiCredentials);
     
   } else {
+    initializeMdns();
     if (reconnectAttempts > 0 || wifiConnectionPending) {
       DEBUG_PRINTF("WiFi reconnected! IP: %s\n", WiFi.localIP().toString().c_str());
       myNex.writeStr("ConfigWifi.ip.txt", WiFi.localIP().toString());

@@ -181,6 +181,7 @@ static bool systemLinkPublishInProgress = false;
 static uint32_t systemLinkLastPublishAttemptMs = 0;
 static bool systemLinkTagsProvisioned = false;
 static uint32_t systemLinkLastIdleChamberPublishMs = 0;
+static uint32_t systemLinkTagRetryAfterMs = 0;
 static bool systemLinkLastTelemetrySentValid = false;
 static SystemLinkTelemetrySnapshot systemLinkLastTelemetrySent = {false, 0.0f, 0.0f, 0, IDLE, "", "", "", 0};
 
@@ -190,6 +191,7 @@ static void systemLinkCopyString(char *dest, size_t destSize, const String &src)
 static void systemLinkInvalidateTagPublishState() {
   systemLinkTagsProvisioned = false;
   systemLinkLastIdleChamberPublishMs = 0;
+  systemLinkTagRetryAfterMs = 0;
   systemLinkLastTelemetrySentValid = false;
   memset(&systemLinkLastTelemetrySent, 0, sizeof(systemLinkLastTelemetrySent));
 }
@@ -509,8 +511,8 @@ static bool systemLinkHttpRequest(const String &method,
   client.setInsecure();
 
   HTTPClient http;
-  http.setConnectTimeout(4000);
-  http.setTimeout(5000);
+  http.setConnectTimeout(1500);
+  http.setTimeout(2000);
 
   if (!http.begin(client, url)) {
     LOG_ERRORF("SystemLink: Failed to open %s", url.c_str());
@@ -1180,6 +1182,7 @@ static bool systemLinkPutTagValue(const String &path, const char *type, const St
   bool ok = systemLinkPutJson(url, body, responseBody, statusCode);
   if (!ok) {
     LOG_WARNF("SystemLink: Failed to update tag %s (%d)", path.c_str(), statusCode);
+    systemLinkTagRetryAfterMs = millis() + 30000UL;
   }
   return ok;
 }
@@ -1207,7 +1210,12 @@ static void systemLinkPublishRealtimeTags() {
     return;
   }
 
+  if (systemLinkTagRetryAfterMs != 0 && static_cast<int32_t>(millis() - systemLinkTagRetryAfterMs) < 0) {
+    return;
+  }
+
   if (!systemLinkEnsureRealtimeTags()) {
+    systemLinkTagRetryAfterMs = millis() + 30000UL;
     return;
   }
 

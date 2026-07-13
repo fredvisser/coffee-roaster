@@ -41,8 +41,15 @@
 MAX6675 thermocouple(SCK, TC1_CS, MISO);
 MAX6675 thermocoupleFan(SCK, TC2_CS, MISO);
 PWMrelay heaterRelay(HEATER, HIGH);
-PWMrelay fanRelay(FAN, HIGH);
 Servo bdcFan;
+
+constexpr uint32_t FAN_PWM_FREQUENCY_HZ = 25000;
+constexpr uint8_t FAN_PWM_RESOLUTION_BITS = 8;
+
+void setFanPwm(byte duty)
+{
+  ledcWrite(FAN, duty);
+}
 
 // Test state
 bool testsPassed = true;
@@ -99,7 +106,12 @@ void setup()
   delay(1000);
   bdcFan.writeMicroseconds(800);
 
-  fanRelay.setPeriod(10);
+  if (!ledcAttach(FAN, FAN_PWM_FREQUENCY_HZ, FAN_PWM_RESOLUTION_BITS))
+  {
+    Serial.println("ERROR: PWM fan attach FAILED!");
+    return;
+  }
+  setFanPwm(0);
 
   Serial.println("Hardware initialized. Starting tests...");
   Serial.println();
@@ -368,31 +380,28 @@ void testPWMFanControl()
   startTest("PWM Fan control");
 
   // Test low speed
-  fanRelay.setPWM(64); // 25%
+  setFanPwm(64); // 25%
   for (int i = 0; i < 20; i++)
   {
-    fanRelay.tick();
     delay(100);
   }
 
   // Test medium speed
-  fanRelay.setPWM(128); // 50%
+  setFanPwm(128); // 50%
   for (int i = 0; i < 20; i++)
   {
-    fanRelay.tick();
     delay(100);
   }
 
   // Test high speed
-  fanRelay.setPWM(255); // 100%
+  setFanPwm(255); // 100%
   for (int i = 0; i < 20; i++)
   {
-    fanRelay.tick();
     delay(100);
   }
 
   // Turn off
-  fanRelay.setPWM(0);
+  setFanPwm(0);
   digitalWrite(FAN, LOW);
 
   Serial.print(" [tested 25%, 50%, 100%]");
@@ -444,13 +453,12 @@ void testFanCooling()
   double heatedTemp = thermocouple.readFarenheit();
 
   // Turn on fans
-  fanRelay.setPWM(255);
+  setFanPwm(255);
   bdcFan.writeMicroseconds(2000);
 
   // Cool for 30 seconds
   for (int i = 0; i < 30; i++)
   {
-    fanRelay.tick();
     delay(1000);
   }
 
@@ -458,7 +466,7 @@ void testFanCooling()
   double tempDrop = heatedTemp - cooledTemp;
 
   // Turn off fans
-  fanRelay.setPWM(0);
+  setFanPwm(0);
   bdcFan.writeMicroseconds(800);
 
   // Should see cooling (at least 10°F drop)
@@ -487,12 +495,12 @@ void testEmergencyShutdown()
 
   // Start with heater on
   heaterRelay.setPWM(100);
-  fanRelay.setPWM(128);
+  setFanPwm(128);
 
   // Simulate emergency
   heaterRelay.setPWM(0);
   digitalWrite(HEATER, LOW);
-  fanRelay.setPWM(255);
+  setFanPwm(255);
   bdcFan.writeMicroseconds(2000);
 
   // Verify state
@@ -501,7 +509,7 @@ void testEmergencyShutdown()
   // Check that heater is truly off
   // (In a real test, would measure current draw)
 
-  fanRelay.setPWM(0);
+  setFanPwm(0);
   bdcFan.writeMicroseconds(800);
 
   testPass();
@@ -518,7 +526,7 @@ void testOverTempProtection()
   {
     // Would trigger protection
     heaterRelay.setPWM(0);
-    fanRelay.setPWM(255);
+    setFanPwm(255);
     Serial.print(" [triggered at ");
     Serial.print(currentTemp);
     Serial.print("°F]");
@@ -550,14 +558,13 @@ void testShortRoastCycle()
 
   // Start heating
   heaterRelay.setPWM(MAX_TEST_HEATER_OUTPUT);
-  fanRelay.setPWM(128);
+  setFanPwm(128);
   bdcFan.writeMicroseconds(1400);
 
   // Heat until target or timeout
   while (millis() - startTime < TEST_TIMEOUT)
   {
     heaterRelay.tick();
-    fanRelay.tick();
 
     double currentTemp = thermocouple.readFarenheit();
 
@@ -572,7 +579,7 @@ void testShortRoastCycle()
     {
       heaterRelay.setPWM(0);
       digitalWrite(HEATER, LOW);
-      fanRelay.setPWM(255);
+      setFanPwm(255);
       testFail("Safety limit exceeded");
       return;
     }
@@ -599,12 +606,11 @@ void testShortRoastCycle()
 
   // Cool down
   Serial.println("  Cooling down...");
-  fanRelay.setPWM(255);
+  setFanPwm(255);
   bdcFan.writeMicroseconds(2000);
 
   while (thermocouple.readFarenheit() > 180.0)
   {
-    fanRelay.tick();
     delay(5000);
 
     Serial.print("  Cooling: ");
@@ -612,7 +618,7 @@ void testShortRoastCycle()
     Serial.println("°F");
   }
 
-  fanRelay.setPWM(0);
+  setFanPwm(0);
   bdcFan.writeMicroseconds(800);
 
   Serial.print("  ");

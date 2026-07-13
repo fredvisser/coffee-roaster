@@ -67,9 +67,24 @@ SimpleTimer wsBroadcastTimer(1000);  // WebSocket broadcast every 1 second
 SimpleTimer roastTraceTimer(1000);   // Roast trace capture every 1 second
 SimpleTimer wifiFieldLimitTimer(500);
 
-// PWM is used to control fan and heater outputs
+// Low-frequency PWM is used for the heater relay output.
 PWMrelay heaterRelay(HEATER, HIGH);
-PWMrelay fanRelay(FAN, HIGH);
+
+constexpr uint32_t FAN_PWM_FREQUENCY_HZ = 25000;
+constexpr uint8_t FAN_PWM_RESOLUTION_BITS = 8;
+bool fanPwmAvailable = false;
+
+void setFanPwm(byte duty)
+{
+  if (fanPwmAvailable)
+  {
+    ledcWrite(FAN, duty);
+  }
+  else
+  {
+    digitalWrite(FAN, duty == 255 ? HIGH : LOW);
+  }
+}
 
 Servo bdcFan;
 
@@ -131,6 +146,19 @@ bool pidScheduleConfigured = false;
 bool pidScheduleActive = false;
 int activePidBandIndex = -1;
 
+void logWifiEvent(arduino_event_id_t event, arduino_event_info_t info)
+{
+  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
+  {
+    wifi_err_reason_t reason = static_cast<wifi_err_reason_t>(info.wifi_sta_disconnected.reason);
+    Serial.printf("WiFi disconnected: reason=%d (%s)\n", reason, WiFi.disconnectReasonName(reason));
+  }
+  else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP)
+  {
+    Serial.printf("WiFi connected: IP=%s\n", WiFi.localIP().toString().c_str());
+  }
+}
+
 void handleSerialWifiProvisioning()
 {
   static String command;
@@ -164,6 +192,14 @@ void handleSerialWifiProvisioning()
       wifiCredentials = {};
       WiFi.disconnect();
       Serial.println("WiFi credentials cleared");
+    }
+    else if (command == "WIFI STATUS")
+    {
+      Serial.printf("WiFi status=%d, RSSI=%d dBm, channel=%d, IP=%s\n",
+                    WiFi.status(),
+                    WiFi.RSSI(),
+                    WiFi.channel(),
+                    WiFi.localIP().toString().c_str());
     }
     else if (command.startsWith("WIFI "))
     {
@@ -276,7 +312,7 @@ void updateRoastControl(unsigned long now)
 
   heaterFeedforwardVal = decision.feedforward;
   heaterOutputVal = constrain(heaterPidTrimVal + heaterFeedforwardVal, 0.0, 255.0);
-  fanRelay.setPWM(setpointFanSpeed);
+  setFanPwm(setpointFanSpeed);
 
   int bdcValue = constrain(5 * setpointFanSpeed + 700, 800, 2000);
   bdcFan.writeMicroseconds(bdcValue);
@@ -303,7 +339,7 @@ void updateStepResponseCalibration(unsigned long now)
   heaterFeedforwardVal = 0.0;
 
   int requestedFanPwm = stepTuner.isRecoveryCooling() ? 255 : setpointFanSpeed;
-  fanRelay.setPWM(requestedFanPwm);
+  setFanPwm(requestedFanPwm);
   int calibrationBdcValue = stepTuner.isRecoveryCooling() ? 2000 : constrain(5 * requestedFanPwm + 700, 800, 2000);
   bdcFan.writeMicroseconds(calibrationBdcValue);
   bdcFanMs = calibrationBdcValue;
@@ -440,7 +476,7 @@ void enterCoolingState()
   resetRoastControllerState();
 
   setpointFanSpeed = 255;
-  fanRelay.setPWM(setpointFanSpeed);
+  setFanPwm(setpointFanSpeed);
   bdcFan.writeMicroseconds(2000);
   bdcFanMs = 2000;
 
@@ -451,6 +487,7 @@ void enterCoolingState()
 void setup()
 {
   DEBUG_SERIALBEGIN(115200);
+  WiFi.onEvent(logWifiEvent);
   delay(1000); // Give Serial Monitor time to connect
   Serial.println("\n\n--- ROASTER BOOTING ---");
   myNex.begin(115200);
@@ -483,7 +520,12 @@ void setup()
   digitalWrite(HEATER, LOW);
   heaterPID.setTimeStep(250);
   digitalWrite(FAN, LOW);
-  fanRelay.setPeriod(10);
+  fanPwmAvailable = ledcAttach(FAN, FAN_PWM_FREQUENCY_HZ, FAN_PWM_RESOLUTION_BITS);
+  if (!fanPwmAvailable)
+  {
+    DEBUG_PRINTLN("ERROR: PWM fan attach FAILED!");
+  }
+  setFanPwm(0);
 
   bdcFan.writeMicroseconds(800);
   
@@ -608,7 +650,6 @@ void loop()
   {
     myNex.NextionListen();
     heaterRelay.tick();
-    fanRelay.tick();
     wsCleanup();
     ElegantOTA.loop(); // Handle OTA updates
     tickTimer.reset();
@@ -657,7 +698,7 @@ void loop()
           digitalWrite(HEATER, LOW);
           resetRoastControllerState();
           heaterRelay.setPWM(0);
-          fanRelay.setPWM(255); // Full fan for safety
+          setFanPwm(255); // Full fan for safety
           bdcFan.writeMicroseconds(2000);
           bdcFanMs = 2000;
           systemLinkUpdateLastFault("sensor_failed");
@@ -682,7 +723,7 @@ void loop()
           digitalWrite(HEATER, LOW);
           resetRoastControllerState();
           heaterRelay.setPWM(0);
-          fanRelay.setPWM(255); // Full fan to cool down
+          setFanPwm(255); // Full fan to cool down
           bdcFan.writeMicroseconds(2000);
           bdcFanMs = 2000;
           systemLinkUpdateLastFault("over_temperature");
@@ -708,7 +749,7 @@ void loop()
           digitalWrite(HEATER, LOW);
           resetRoastControllerState();
           heaterRelay.setPWM(0);
-          fanRelay.setPWM(255); // Full fan to cool down
+          setFanPwm(255); // Full fan to cool down
           bdcFan.writeMicroseconds(2000);
           bdcFanMs = 2000;
           systemLinkUpdateLastFault("fan_over_temperature");
@@ -758,7 +799,7 @@ void loop()
     {
     case IDLE:
       digitalWrite(HEATER, LOW);
-      digitalWrite(FAN, LOW);
+      setFanPwm(0);
       bdcFan.writeMicroseconds(800); // Ensure BDC stays at low speed
       bdcFanMs = 800;
       resetRoastControllerState();
@@ -812,7 +853,7 @@ void loop()
       }
 
       // Set initial PWM fan speed
-      fanRelay.setPWM(profile.getTargetFanSpeed(millis()));
+      setFanPwm(profile.getTargetFanSpeed(millis()));
       break;
     }
 
@@ -856,9 +897,8 @@ void loop()
         finalizeValidationIfRunning(false, "cooling_timeout");
         LOG_WARNF("Cooling timeout after %lu minutes - forcing IDLE", coolingDuration / 60000);
         systemLinkFinishRoast(SYSTEMLINK_OUTCOME_TERMINATED, "cooling_timeout");
-        fanRelay.setPWM(0);
+        setFanPwm(0);
         bdcFan.writeMicroseconds(800);
-        digitalWrite(FAN, LOW);
         roasterState = IDLE;
         sendWsMessage("{ \"pushMessage\": \"endRoasting\" }");
         myNex.writeStr("page Start");
@@ -869,9 +909,8 @@ void loop()
       {
         restoreValidationProfileIfNeeded();
         systemLinkFinishRoast(SYSTEMLINK_OUTCOME_NONE, "cooling_complete");
-        fanRelay.setPWM(0);
+        setFanPwm(0);
         bdcFan.writeMicroseconds(800);
-        digitalWrite(FAN, LOW);
         roasterState = IDLE;
 
         LOG_INFOF("Cooling complete at %.1fF - returning to IDLE", currentTemp);
@@ -901,7 +940,7 @@ void loop()
       resetRoastControllerState();
 
       // Run cooling fan at safe speed (not maximum to avoid mechanical stress)
-      fanRelay.setPWM(200);           // ~78% speed for sustained cooling
+      setFanPwm(200);                 // ~78% speed for sustained cooling
       bdcFan.writeMicroseconds(1500); // Mid-range for BDC fan
       bdcFanMs = 1500;
 
@@ -936,7 +975,7 @@ void loop()
           bdcFan.writeMicroseconds(fanRampStep);
           // Ramp PWM fan proportionally
           int pwmFan = map(fanRampStep, 800, 2000, 50, 255);
-          fanRelay.setPWM(pwmFan);
+          setFanPwm(pwmFan);
           LOG_INFOF("Calib Ramp: BDC=%d", fanRampStep);
         }
         
@@ -947,7 +986,7 @@ void loop()
 
       LOG_INFO("State: CALIBRATING loop");
 
-      fanRelay.setPWM(setpointFanSpeed);
+      setFanPwm(setpointFanSpeed);
       int calibrationBdcValue = constrain(5 * setpointFanSpeed + 700, 800, 2000);
       bdcFan.writeMicroseconds(calibrationBdcValue);
       bdcFanMs = calibrationBdcValue;
