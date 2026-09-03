@@ -20,10 +20,12 @@ Commands:
 
 Boards:
     jc4827w543c   ESP32-S3 JC4827W543C display board target
+    jc4827w543r   ESP32-S3 JC4827W543R resistive-touch board target
 
 Examples:
   ./tools/firmware.sh build
   ./tools/firmware.sh build --board jc4827w543c
+    ./tools/firmware.sh build --board jc4827w543r
     OTA_HOST=roaster-dev.local ./tools/firmware.sh ota --board jc4827w543c
 EOF
 }

@@ -9,7 +9,11 @@
 #include <lvgl.h>
 #include <vector>
 #include <PINS_JC4827W543.h>
+#if ROASTER_TARGET_BOARD == ROASTER_BOARD_JC4827W543C
 #include <TAMC_GT911.h>
+#elif ROASTER_TARGET_BOARD == ROASTER_BOARD_JC4827W543R
+#include "Xpt2046Touch.hpp"
+#endif
 #include <esp_heap_caps.h>
 #include "../platform/BoardConfig.hpp"
 #include "../support/DebugLog.hpp"
@@ -17,6 +21,7 @@
 
 namespace LvglDisplay
 {
+#if ROASTER_TARGET_BOARD == ROASTER_BOARD_JC4827W543C
 inline TAMC_GT911 touchController(
     BoardConfig::TouchSdaPin,
     BoardConfig::TouchSclPin,
@@ -24,6 +29,14 @@ inline TAMC_GT911 touchController(
     BoardConfig::TouchResetPin,
     BoardConfig::DisplayWidth,
     BoardConfig::DisplayHeight);
+#elif ROASTER_TARGET_BOARD == ROASTER_BOARD_JC4827W543R
+inline Xpt2046TouchController touchController(
+  BoardConfig::TouchSpiChipSelectPin,
+  BoardConfig::TouchIntPin,
+  BoardConfig::TouchSpiSckPin,
+  BoardConfig::TouchSpiMisoPin,
+  BoardConfig::TouchSpiMosiPin);
+#endif
 
 inline lv_display_t *displayInstance = nullptr;
 inline lv_indev_t *inputDevice = nullptr;
@@ -278,6 +291,7 @@ inline void touchRead(lv_indev_t *indev, lv_indev_data_t *data)
 {
   LV_UNUSED(indev);
 
+#if ROASTER_TARGET_BOARD == ROASTER_BOARD_JC4827W543C
   touchController.read();
   if (touchController.isTouched && touchController.touches > 0)
   {
@@ -299,6 +313,17 @@ inline void touchRead(lv_indev_t *indev, lv_indev_data_t *data)
     data->state = LV_INDEV_STATE_PRESSED;
     return;
   }
+#elif ROASTER_TARGET_BOARD == ROASTER_BOARD_JC4827W543R
+  uint16_t touchX = 0;
+  uint16_t touchY = 0;
+  if (touchController.read(touchX, touchY))
+  {
+    data->point.x = touchX;
+    data->point.y = touchY;
+    data->state = LV_INDEV_STATE_PRESSED;
+    return;
+  }
+#endif
 
   data->state = LV_INDEV_STATE_RELEASED;
 }
@@ -1608,11 +1633,19 @@ inline bool begin()
     return false;
   }
 
+  gfx->invertDisplay(BoardConfig::DisplayInvert);
   pinMode(GFX_BL, OUTPUT);
   digitalWrite(GFX_BL, HIGH);
   gfx->fillScreen(RGB565_BLACK);
 
+#if ROASTER_TARGET_BOARD == ROASTER_BOARD_JC4827W543C
   touchController.begin();
+#elif ROASTER_TARGET_BOARD == ROASTER_BOARD_JC4827W543R
+  if (!touchController.begin())
+  {
+    return false;
+  }
+#endif
   lv_init();
   lv_tick_set_cb(millisCallback);
 

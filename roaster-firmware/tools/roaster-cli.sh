@@ -28,6 +28,9 @@ case "$TARGET_BOARD" in
     jc4827w543c)
         BUILD_EXTRA_FLAGS="-DROASTER_TARGET_BOARD=ROASTER_BOARD_JC4827W543C -DROASTER_DISPLAY_BACKEND=ROASTER_DISPLAY_BACKEND_LVGL"
         ;;
+    jc4827w543r)
+        BUILD_EXTRA_FLAGS="-DROASTER_TARGET_BOARD=ROASTER_BOARD_JC4827W543R -DROASTER_DISPLAY_BACKEND=ROASTER_DISPLAY_BACKEND_LVGL"
+        ;;
     *)
         echo "Unknown ROASTER_TARGET_BOARD: $TARGET_BOARD" >&2
         exit 1
@@ -261,7 +264,7 @@ upload_sketch() {
 
     print_info "Target board: $TARGET_BOARD ($BOARD_FQBN)"
 
-    if [[ "$TARGET_BOARD" == "jc4827w543c" ]] && [[ "$sketch_name" == "roaster-firmware" ]]; then
+    if [[ "$TARGET_BOARD" == "jc4827w543c" || "$TARGET_BOARD" == "jc4827w543r" ]] && [[ "$sketch_name" == "roaster-firmware" ]]; then
         flash_jc_main_firmware "$sketch_name"
         return $?
     fi
