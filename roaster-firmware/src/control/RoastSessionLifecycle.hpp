@@ -11,12 +11,15 @@
 #include "PIDValidation.hpp"
 
 extern double currentTemp;
+extern double calibrationSetpointRawTemp;
 extern double setpointTemp;
 extern byte setpointFanSpeed;
 extern int bdcFanMs;
 extern int finalTempOverride;
 extern unsigned long coolingStartTime;
 extern unsigned long roastStartedAtMs;
+extern unsigned long calibrationStableSinceMs;
+extern bool calibrationStable;
 
 extern bool validationProfileLoaded;
 
@@ -38,6 +41,24 @@ static void systemLinkMarkRoastStarted();
 inline bool currentRoastUsesValidationProfile()
 {
   return validationProfileLoaded;
+}
+
+inline bool startCalibrationHold(double rawSetpoint)
+{
+  if (roasterState != IDLE && roasterState != CALIBRATION_HOLD)
+  {
+    return false;
+  }
+
+  calibrationSetpointRawTemp = constrain(rawSetpoint, CALIBRATION_MIN_SETPOINT_TEMP, CALIBRATION_MAX_SETPOINT_TEMP);
+  calibrationStableSinceMs = 0;
+  calibrationStable = false;
+  roastStartedAtMs = millis();
+  resetRoastControllerState();
+  roasterState = CALIBRATION_HOLD;
+  displaySetTargetTemp((int)lround(calibrationSetpointRawTemp));
+  displayShowScreen(DisplayScreen::Roasting);
+  return true;
 }
 
 inline void restoreValidationProfileIfNeeded()
@@ -131,6 +152,7 @@ inline DisplayScreen displayScreenForCurrentState()
   {
   case START_ROAST:
   case ROASTING:
+  case CALIBRATION_HOLD:
     return DisplayScreen::Roasting;
   case COOLING:
     return DisplayScreen::Cooling;

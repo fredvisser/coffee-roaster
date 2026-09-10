@@ -214,6 +214,7 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
     <a href="/">Console</a>
     <a href="/profile">Profiles</a>
     <a href="/pid">PID</a>
+    <a href="/calibration">Calibration</a>
     <a href="/update">Update</a>
     <a class="active" href="/systemlink">SystemLink</a>
   </nav>

@@ -12,6 +12,7 @@
  */
 
 #include <AUnitVerbose.h> // Verbose runner prints PASS results
+#include "../../src/platform/SensorCalibration.hpp"
 using namespace aunit;
 
 // Track if tests have finished
@@ -118,4 +119,47 @@ test(Framework_SerialOutput)
 {
   Serial.println("  → Framework test executed successfully");
   assertTrue(true);
+}
+
+test(SensorCalibration_FitsKnownCorrection)
+{
+  SensorCalibration::Point points[] = {
+      {100.0, 118.0},
+      {200.0, 218.0},
+      {300.0, 318.0},
+      {400.0, 418.0}};
+  SensorCalibration::Fit fit = {};
+  String error;
+
+  assertTrue(SensorCalibration::Controller::fit(points, 4, fit, error));
+  assertNear(fit.slope, 1.0, 0.0001);
+  assertNear(fit.offset, 18.0, 0.0001);
+  assertNear(fit.rmse, 0.0, 0.0001);
+  assertEqual((uint8_t)4, fit.pointCount);
+}
+
+test(SensorCalibration_RejectsNarrowTemperatureSpan)
+{
+  SensorCalibration::Point points[] = {
+      {200.0, 220.0},
+      {220.0, 240.0},
+      {240.0, 260.0}};
+  SensorCalibration::Fit fit = {};
+  String error;
+
+  assertFalse(SensorCalibration::Controller::fit(points, 3, fit, error));
+  assertEqual(String("Use setpoints spanning at least 50F."), error);
+}
+
+test(SensorCalibration_RejectsLargeCorrection)
+{
+  SensorCalibration::Point points[] = {
+      {100.0, 180.0},
+      {200.0, 280.0},
+      {300.0, 380.0}};
+  SensorCalibration::Fit fit = {};
+  String error;
+
+  assertFalse(SensorCalibration::Controller::fit(points, 3, fit, error));
+  assertEqual(String("The fitted correction is outside the allowed range."), error);
 }

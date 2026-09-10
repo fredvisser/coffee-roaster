@@ -21,8 +21,8 @@ public:
   {
     pinMode(chipSelectPin_, OUTPUT);
     digitalWrite(chipSelectPin_, HIGH);
-    pinMode(interruptPin_, INPUT);
-    return spi_.begin(clockPin_, misoPin_, mosiPin_, -1);
+    pinMode(interruptPin_, INPUT_PULLUP);
+    return spi_.begin(clockPin_, misoPin_, mosiPin_, chipSelectPin_);
   }
 
   bool read(uint16_t &x, uint16_t &y)
@@ -35,8 +35,8 @@ public:
     spi_.beginTransaction(SPISettings(2000000, MSBFIRST, SPI_MODE0));
     digitalWrite(chipSelectPin_, LOW);
 
-    uint16_t z1 = readRegister(0xB1);
-    uint16_t z2 = readRegister(0xC1);
+    uint16_t z1 = readRegister(0xB0);
+    uint16_t z2 = readRegister(0xC0);
     int pressure = static_cast<int>(z1) + 4095 - static_cast<int>(z2);
 
     uint32_t rawX = 0;
@@ -45,11 +45,10 @@ public:
 
     if (pressure >= 300)
     {
-      readRegister(0xD1);
       for (uint8_t sample = 0; sample < 3; ++sample)
       {
-        uint16_t sampleX = readRegister(0xD1);
-        uint16_t sampleY = readRegister(0x91);
+        uint16_t sampleX = readRegister(0xD0);
+        uint16_t sampleY = readRegister(0x90);
         if (sampleX >= 50 && sampleX <= 4045 && sampleY >= 50 && sampleY <= 4045)
         {
           rawX += sampleX;
