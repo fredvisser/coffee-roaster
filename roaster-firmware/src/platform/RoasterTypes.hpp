@@ -15,7 +15,8 @@ enum RoasterState
   ROASTING = 2,
   COOLING = 3,
   ERROR = 4,
-  CALIBRATING = 5
+  CALIBRATING = 5,
+  CALIBRATION_HOLD = 6
 };
 
 // ============================================================================
@@ -36,6 +37,13 @@ enum RoasterState
 
 // Timing limits
 #define MAX_COOLING_TIME 300000  // 5 minutes in milliseconds
+
+// Sensor calibration hold settings (all temperatures in Fahrenheit)
+#define CALIBRATION_MIN_SETPOINT_TEMP 50.0
+#define CALIBRATION_MAX_SETPOINT_TEMP 450.0
+#define CALIBRATION_STABILITY_TOLERANCE 2.0
+#define CALIBRATION_STABILITY_DURATION_MS 15000UL
+#define CALIBRATION_FAN_PWM 128
 
 // ============================================================================
 // HARDWARE CONFIGURATION

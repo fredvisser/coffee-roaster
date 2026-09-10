@@ -318,6 +318,16 @@ inline void touchRead(lv_indev_t *indev, lv_indev_data_t *data)
   uint16_t touchY = 0;
   if (touchController.read(touchX, touchY))
   {
+    if (BoardConfig::TouchInvertX)
+    {
+      touchX = (BoardConfig::DisplayWidth - 1) - touchX;
+    }
+
+    if (BoardConfig::TouchInvertY)
+    {
+      touchY = (BoardConfig::DisplayHeight - 1) - touchY;
+    }
+
     data->point.x = touchX;
     data->point.y = touchY;
     data->state = LV_INDEV_STATE_PRESSED;

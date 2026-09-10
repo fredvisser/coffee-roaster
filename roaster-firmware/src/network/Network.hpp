@@ -11,6 +11,7 @@
 #include <ESPmDNS.h>
 #include <ElegantOTA.h>  // v3.1.7+ with async mode enabled for ESPAsyncWebServer compatibility
 #include "../support/DebugLog.hpp"
+#include "../platform/SensorCalibration.hpp"
 #include "../display/DisplayAdapter.hpp"
 #include "../control/PIDController.hpp"
 #include "../control/StepResponseTuner.hpp"
@@ -18,6 +19,7 @@
 #include "../control/PIDValidation.hpp"
 #include "../profiles/ProfileManager.hpp"    // Profile backend logic
 #include "ProfileWebUI.hpp"     // Profile UI HTML/CSS/JS
+#include "SensorCalibrationWebUI.hpp"
 #include "../integrations/SystemLinkWebUI.hpp"
 #include <vector>
 
@@ -235,9 +237,12 @@ void ensureWifiEventLogging() {
 
 // External variables from main firmware
 extern double currentTemp;
+extern double rawCurrentTemp;
+extern double calibrationSetpointRawTemp;
 extern double setpointTemp;
 extern byte setpointFanSpeed;
 extern double fanTemp;
+extern double rawFanTemp;
 extern double heaterOutputVal;
 extern double heaterPidTrimVal;
 extern double heaterFeedforwardVal;
@@ -258,8 +263,11 @@ extern StepResponseTuner stepTuner;
 extern PIDRuntimeController pidRuntimeController;
 extern PIDValidationSession pidValidation;
 extern PIDController heaterPID;
+extern unsigned long calibrationStableSinceMs;
+extern bool calibrationStable;
 extern bool restartRequested;
 extern unsigned long restartAt;
+extern SensorCalibration::Controller sensorCalibration;
 
 // Helper to refresh the active profile view after profile changes
 void plotProfileOnWaveform();
@@ -485,6 +493,8 @@ const char* getStateName(byte state) {
     case 2: return "ROASTING";
     case 3: return "COOLING";
     case 4: return "ERROR";
+    case 5: return "PID_CALIBRATING";
+    case 6: return "CALIBRATION_HOLD";
     default: return "UNKNOWN";
   }
 }
@@ -532,6 +542,74 @@ String getSystemStateJSON() {
   String output;
   serializeJson(doc, output);
   return output;
+}
+
+String getSensorCalibrationJSON() {
+  DynamicJsonDocument doc(1536);
+  doc["state"] = getStateName(roasterState);
+
+  JsonObject bean = doc.createNestedObject("bean");
+  bean["raw"] = round(rawCurrentTemp * 10.0) / 10.0;
+  bean["corrected"] = round(currentTemp * 10.0) / 10.0;
+  JsonObject beanFit = bean.createNestedObject("fit");
+  const SensorCalibration::Fit &savedBeanFit = sensorCalibration.getFit(SensorCalibration::Bean);
+  beanFit["enabled"] = savedBeanFit.enabled;
+  beanFit["slope"] = savedBeanFit.slope;
+  beanFit["offset"] = savedBeanFit.offset;
+  beanFit["rmse"] = savedBeanFit.rmse;
+  beanFit["pointCount"] = savedBeanFit.pointCount;
+
+  JsonObject hold = doc.createNestedObject("calibration");
+  bool holdActive = roasterState == CALIBRATION_HOLD;
+  hold["active"] = holdActive;
+  hold["targetRaw"] = holdActive ? calibrationSetpointRawTemp : 0;
+  hold["actualRaw"] = round(rawCurrentTemp * 10.0) / 10.0;
+  hold["settled"] = holdActive && calibrationStable;
+  hold["stableForSeconds"] = calibrationStableSinceMs > 0 ? (millis() - calibrationStableSinceMs) / 1000UL : 0;
+  hold["toleranceF"] = CALIBRATION_STABILITY_TOLERANCE;
+
+  String output;
+  serializeJson(doc, output);
+  return output;
+}
+
+bool applySensorCalibrationJson(const String &body, String &errorMessage) {
+  DynamicJsonDocument doc(4096);
+  DeserializationError error = deserializeJson(doc, body);
+  if (error) {
+    errorMessage = "invalid_json";
+    return false;
+  }
+
+  bool updated = false;
+  if (doc.containsKey("beanPoints")) {
+    if (!doc["beanPoints"].is<JsonArray>()) {
+      errorMessage = "beanPoints_must_be_an_array";
+      return false;
+    }
+    JsonArray values = doc["beanPoints"].as<JsonArray>();
+    if (values.size() > 8) {
+      errorMessage = "too_many_bean_points";
+      return false;
+    }
+    if (values.size() > 0) {
+      SensorCalibration::Point points[8];
+      for (uint8_t index = 0; index < values.size(); index++) {
+        points[index].rawTempF = values[index]["rawTempF"].as<double>();
+        points[index].referenceTempF = values[index]["referenceTempF"].as<double>();
+      }
+      if (!sensorCalibration.apply(SensorCalibration::Bean, points, static_cast<uint8_t>(values.size()), preferences, errorMessage)) {
+        return false;
+      }
+      updated = true;
+    }
+  }
+
+  if (!updated) {
+    errorMessage = "no_bean_calibration_points";
+    return false;
+  }
+  return true;
 }
 
 // Simple sanitization for legacy name-based storage
@@ -1007,6 +1085,99 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       request->send(200, "application/json", getSystemLinkConfigJSON());
     });
 
+  server.on("/api/calibration/setpoint", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (request->hasParam("action") && request->getParam("action")->value() == "cool") {
+      if (roasterState != CALIBRATION_HOLD) {
+        request->send(409, "application/json", "{\"error\":\"No calibration hold is active\"}");
+        return;
+      }
+      enterCoolingState();
+      request->send(200, "application/json", getSensorCalibrationJSON());
+      return;
+    }
+
+    if (!request->hasParam("targetRaw")) {
+      request->send(400, "application/json", "{\"error\":\"missing_target_raw\"}");
+      return;
+    }
+    if (roasterState != IDLE && roasterState != CALIBRATION_HOLD) {
+      request->send(409, "application/json", "{\"error\":\"Calibration hold can only start while the roaster is IDLE\"}");
+      return;
+    }
+
+    double targetRaw = request->getParam("targetRaw")->value().toDouble();
+    if (targetRaw < CALIBRATION_MIN_SETPOINT_TEMP || targetRaw > CALIBRATION_MAX_SETPOINT_TEMP) {
+      request->send(400, "application/json", "{\"error\":\"target_out_of_range\"}");
+      return;
+    }
+    if (!startCalibrationHold(targetRaw)) {
+      request->send(409, "application/json", "{\"error\":\"failed_to_start_calibration_hold\"}");
+      return;
+    }
+    request->send(200, "application/json", getSensorCalibrationJSON());
+  });
+
+  server.on("/api/calibration/reset", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (roasterState != IDLE && roasterState != CALIBRATION_HOLD) {
+      request->send(409, "application/json", "{\"error\":\"Calibration can only be changed while the roaster is IDLE or holding a setpoint\"}");
+      return;
+    }
+    sensorCalibration.reset(SensorCalibration::Bean, preferences);
+    request->send(200, "application/json", getSensorCalibrationJSON());
+  });
+
+  server.on("/api/calibration", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(200, "application/json", getSensorCalibrationJSON());
+  });
+
+  server.on("/api/calibration", HTTP_POST,
+    [](AsyncWebServerRequest *request) {},
+    nullptr,
+    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (roasterState != IDLE && roasterState != CALIBRATION_HOLD) {
+        if (index == 0) {
+          request->send(409, "application/json", "{\"error\":\"Calibration can only be changed while the roaster is IDLE or holding a setpoint\"}");
+        }
+        return;
+      }
+      if (index == 0) {
+        String *body = new String();
+        body->reserve(total + 1);
+        request->_tempObject = (void *)body;
+      }
+
+      String *body = (String *)request->_tempObject;
+      if (!body) {
+        request->send(500, "application/json", "{\"error\":\"internal_error\"}");
+        return;
+      }
+
+      for (size_t offset = 0; offset < len; offset++) {
+        *body += (char)data[offset];
+      }
+      if (index + len < total) {
+        yield();
+        return;
+      }
+
+      if (body->length() > 4096) {
+        delete body;
+        request->_tempObject = nullptr;
+        request->send(413, "application/json", "{\"error\":\"payload_too_large\"}");
+        return;
+      }
+
+      String errorMessage;
+      bool ok = applySensorCalibrationJson(*body, errorMessage);
+      delete body;
+      request->_tempObject = nullptr;
+      if (!ok) {
+        request->send(400, "application/json", String("{\"error\":\"") + errorMessage + "\"}");
+        return;
+      }
+      request->send(200, "application/json", getSensorCalibrationJSON());
+    });
+
   // Register more specific PID validation routes before /api/pid because
   // ESPAsyncWebServer matches the shorter prefix route first.
   server.on("/api/calibrate-pid/status", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -1127,7 +1298,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
         return;
     }
 
-    if (currentTemp > 140.0) {
+    if (max(rawCurrentTemp, currentTemp) > 140.0) {
       request->send(400, "application/json", "{\"error\":\"Roaster must be below 140F to start tuning\"}");
       return;
     }
@@ -1204,7 +1375,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       return;
     }
 
-    if (currentTemp > 180.0) {
+    if (max(rawCurrentTemp, currentTemp) > 180.0) {
       request->send(400, "application/json", "{\"error\":\"Roaster must be below 180F to start validation\"}");
       return;
     }
@@ -1631,6 +1802,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     <a class="active" href="/">Console</a>
     <a href="/profile">Profiles</a>
     <a href="/pid">PID</a>
+    <a href="/calibration">Calibration</a>
     <a href="/update">Update</a>
     <a href="/systemlink">SystemLink</a>
   </nav>
@@ -2210,6 +2382,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     <a href="/">Console</a>
     <a href="/profile">Profiles</a>
     <a class="active" href="/pid">PID</a>
+    <a href="/calibration">Calibration</a>
     <a href="/update">Update</a>
     <a href="/systemlink">SystemLink</a>
   </nav>
@@ -2579,6 +2752,11 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   server.on("/systemlink", HTTP_GET, [](AsyncWebServerRequest *request) {
     LOG_INFO("SystemLink config UI accessed");
     request->send_P(200, "text/html", SYSTEMLINK_CONFIG_HTML);
+  });
+
+  server.on("/calibration", HTTP_GET, [](AsyncWebServerRequest *request) {
+    LOG_INFO("Sensor calibration UI accessed");
+    request->send_P(200, "text/html", SENSOR_CALIBRATION_HTML);
   });
 
   server.addHandler(&otaStateGuardHandler);

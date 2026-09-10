@@ -23,14 +23,14 @@ inline constexpr int TouchResetPin = 38;
 inline constexpr bool TouchInvertX = true;
 inline constexpr bool TouchInvertY = true;
 #elif ROASTER_TARGET_BOARD == ROASTER_BOARD_JC4827W543R
-inline constexpr bool DisplayInvert = true;
+inline constexpr bool DisplayInvert = false;
 inline constexpr int TouchSpiSckPin = 12;
 inline constexpr int TouchSpiMisoPin = 13;
 inline constexpr int TouchSpiMosiPin = 11;
 inline constexpr int TouchSpiChipSelectPin = 38;
 inline constexpr int TouchIntPin = 3;
-inline constexpr bool TouchInvertX = false;
-inline constexpr bool TouchInvertY = false;
+inline constexpr bool TouchInvertX = true;
+inline constexpr bool TouchInvertY = true;
 #else
 #error "Unsupported ROASTER_TARGET_BOARD"
 #endif
