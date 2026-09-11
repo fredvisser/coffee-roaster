@@ -91,10 +91,12 @@ void setup()
   Serial.println("Allocating timer for BDC fan...");
   ESP32PWM::allocateTimer(2);
 
-  int channel = bdcFan.attach(BDCFAN);
+  int bdcFanGpio = digitalPinToGPIONumber(BDCFAN);
+  int channel = bdcFan.attach(bdcFanGpio);
   if (channel == -1)
   {
-    Serial.println("ERROR: BDC fan attach FAILED!");
+    Serial.print("ERROR: BDC fan attach FAILED on GPIO ");
+    Serial.println(bdcFanGpio);
     return; // Exit setup if BDC init fails
   }
   bdcFan.setPeriodHertz(50);

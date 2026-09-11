@@ -56,7 +56,7 @@ double kd = 0;
 // Preferences namespace
 #define PREFS_NAMESPACE "roaster"
 
-#define VERSION "2025-12-24"
+#define VERSION "v1.3"
 
 // Use timers for simple multitasking
 SimpleTimer checkTempTimer(125);
@@ -67,26 +67,17 @@ SimpleTimer wsBroadcastTimer(1000);  // WebSocket broadcast every 1 second
 SimpleTimer roastTraceTimer(1000);   // Roast trace capture every 1 second
 SimpleTimer wifiFieldLimitTimer(500);
 
-// Low-frequency PWM is used for the heater relay output.
+// Low-frequency PWM is used for the heater and motor-controller outputs.
 PWMrelay heaterRelay(HEATER, HIGH);
-
-constexpr uint32_t FAN_PWM_FREQUENCY_HZ = 25000;
-constexpr uint8_t FAN_PWM_RESOLUTION_BITS = 8;
-bool fanPwmAvailable = false;
+PWMrelay fanRelay(FAN, HIGH);
 
 void setFanPwm(byte duty)
 {
-  if (fanPwmAvailable)
-  {
-    ledcWrite(FAN, duty);
-  }
-  else
-  {
-    digitalWrite(FAN, duty == 255 ? HIGH : LOW);
-  }
+  fanRelay.setPWM(duty);
 }
 
 Servo bdcFan;
+bool bdcFanInitialized = false;
 
 // Create a roast profile object
 Profiles profile;
@@ -496,19 +487,30 @@ void setup()
   pinMode(HEATER, OUTPUT);
   pinMode(FAN, OUTPUT);
 
-  // Allocate timer 2 for servo to avoid conflict with PWMrelay
+  // Allocate timer 2 for servo to avoid conflict with PWMrelay.
   ESP32PWM::allocateTimer(2);
 
-  // Attach and initialize BDC fan controller
-  int channel = bdcFan.attach(BDCFAN);
-  if (channel == -1)
+  // Attach and initialize BDC fan controller.
+  bdcFan.setPeriodHertz(50);
+  int bdcFanGpio = digitalPinToGPIONumber(BDCFAN);
+  int channel = bdcFan.attach(bdcFanGpio, BDC_FAN_MIN, BDC_FAN_MAX);
+  bdcFanInitialized = channel > 0;
+  LOG_INFOF("BDC fan attach: pin=%d gpio=%d channel=%d initialized=%s", BDCFAN, bdcFanGpio, channel, bdcFanInitialized ? "yes" : "no");
+  if (!bdcFanInitialized)
   {
-    DEBUG_PRINTLN("ERROR: BDC fan attach FAILED!");
+    LOG_ERRORF("BDC fan attach FAILED on pin %d (channel %d)", BDCFAN, channel);
   }
   else
   {
-    bdcFan.setPeriodHertz(50);
+    // The motor controller requires a low-high-low arm sequence before speed commands are accepted.
     bdcFan.writeMicroseconds(800);
+    bdcFanMs = 800;
+    delay(2000);
+    bdcFan.writeMicroseconds(1800);
+    bdcFanMs = 1800;
+    delay(1000);
+    bdcFan.writeMicroseconds(800);
+    bdcFanMs = 800;
   }
 
   // Explicitly enable the pinMode for the SPI pins because the library doesn't appear to do this correctly when running on an ESP32
@@ -520,15 +522,9 @@ void setup()
   digitalWrite(HEATER, LOW);
   heaterPID.setTimeStep(250);
   digitalWrite(FAN, LOW);
-  fanPwmAvailable = ledcAttach(FAN, FAN_PWM_FREQUENCY_HZ, FAN_PWM_RESOLUTION_BITS);
-  if (!fanPwmAvailable)
-  {
-    DEBUG_PRINTLN("ERROR: PWM fan attach FAILED!");
-  }
+  fanRelay.setPeriod(10);
   setFanPwm(0);
 
-  bdcFan.writeMicroseconds(800);
-  
   LOG_INFO("System initialized - entering IDLE state");
 
   // Initialize hardware watchdog timer (10 seconds timeout)
@@ -650,6 +646,7 @@ void loop()
   {
     myNex.NextionListen();
     heaterRelay.tick();
+    fanRelay.tick();
     wsCleanup();
     ElegantOTA.loop(); // Handle OTA updates
     tickTimer.reset();
