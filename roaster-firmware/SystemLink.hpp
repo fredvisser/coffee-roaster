@@ -69,9 +69,7 @@ static const size_t SYSTEMLINK_PHASE_MAX = 32;
 static const size_t SYSTEMLINK_STATUS_MAX = 48;
 static const size_t SYSTEMLINK_RESET_REASON_MAX = 32;
 static const size_t SYSTEMLINK_MAX_TRACE_SAMPLES = 1800;
-static const size_t SYSTEMLINK_MAX_HIGH_RATE_SAMPLES = 3600;
 static const int SYSTEMLINK_STATUS_TAG_RETENTION_DAYS = 30;
-static const uint16_t SYSTEMLINK_HIGH_RATE_INTERVAL_MS = 250;
 
 static const char *SYSTEMLINK_PROP_RETENTION = "nitagRetention";
 static const char *SYSTEMLINK_PROP_HISTORY_TTL_DAYS = "nitagHistoryTTLDays";
@@ -101,23 +99,6 @@ struct RoastTraceSample {
   int16_t fanOutputTenths;
 };
 
-struct HighRateTraceSample {
-  uint16_t elapsedQuarterSeconds;
-  int16_t actualTenthsF;
-  int16_t targetTenthsF;
-  int16_t fanTempTenthsF;
-  uint16_t heaterOutputTenths;
-  uint16_t heaterPidTrimTenths;
-  uint16_t heaterFeedforwardTenths;
-  uint16_t fanOutputTenths;
-  int16_t appliedKpHundredths;
-  int16_t appliedKiThousandths;
-  int16_t appliedKdHundredths;
-  int8_t activeBandIndex;
-  int8_t stateCode;
-  uint8_t flags;
-};
-
 struct SystemLinkTelemetrySnapshot {
   bool active;
   float chamberTempF;
@@ -141,8 +122,6 @@ struct SystemLinkRoastSession {
   uint32_t endedAtMs;
   uint16_t sampleCount;
   uint16_t lastRecordedSecond;
-  uint16_t highRateSampleCount;
-  uint16_t lastHighRateQuarterSecond;
   uint16_t setpointCount;
   uint32_t finalTargetTempF;
   SystemLinkRoastOutcome outcome;
@@ -152,7 +131,6 @@ struct SystemLinkRoastSession {
   int16_t finalTempOverrideF;
   bool pidScheduleConfigured;
   bool recoveredAfterReset;
-  bool highRateTraceOverflow;
   char profileId[SYSTEMLINK_PROFILE_ID_MAX];
   char profileName[SYSTEMLINK_PROFILE_NAME_MAX];
   char outcomeReason[SYSTEMLINK_REASON_MAX];
@@ -160,7 +138,6 @@ struct SystemLinkRoastSession {
   char phase[SYSTEMLINK_PHASE_MAX];
   char resetReason[SYSTEMLINK_RESET_REASON_MAX];
   RoastTraceSample samples[SYSTEMLINK_MAX_TRACE_SAMPLES];
-  HighRateTraceSample *highRateSamples;
 };
 
 static portMUX_TYPE systemLinkLock = portMUX_INITIALIZER_UNLOCKED;
@@ -590,15 +567,6 @@ static bool systemLinkPostJson(const String &url,
                                statusCode);
 }
 
-static void systemLinkFreeHighRateBuffer(SystemLinkRoastSession &session) {
-  if (session.highRateSamples != nullptr) {
-    free(session.highRateSamples);
-    session.highRateSamples = nullptr;
-  }
-  session.highRateSampleCount = 0;
-  session.lastHighRateQuarterSecond = 0xFFFF;
-}
-
 static bool systemLinkPutJson(const String &url,
                               const String &jsonBody,
                               String &responseBody,
@@ -657,27 +625,6 @@ static size_t systemLinkCsvLength(const SystemLinkRoastSession &session) {
   return total;
 }
 
-static uint32_t systemLinkQuarterSecondsToMs(uint16_t quarterSeconds) {
-  return static_cast<uint32_t>(quarterSeconds) * SYSTEMLINK_HIGH_RATE_INTERVAL_MS;
-}
-
-static String systemLinkSerializeScaledFloat(int32_t scaledValue, int scale) {
-  bool negative = scaledValue < 0;
-  uint32_t magnitude = static_cast<uint32_t>(negative ? -scaledValue : scaledValue);
-  uint32_t whole = magnitude / static_cast<uint32_t>(scale);
-  uint32_t fraction = magnitude % static_cast<uint32_t>(scale);
-
-  char buffer[24];
-  if (scale == 10) {
-    snprintf(buffer, sizeof(buffer), "%s%lu.%01lu", negative ? "-" : "", static_cast<unsigned long>(whole), static_cast<unsigned long>(fraction));
-  } else if (scale == 100) {
-    snprintf(buffer, sizeof(buffer), "%s%lu.%02lu", negative ? "-" : "", static_cast<unsigned long>(whole), static_cast<unsigned long>(fraction));
-  } else {
-    snprintf(buffer, sizeof(buffer), "%s%lu.%03lu", negative ? "-" : "", static_cast<unsigned long>(whole), static_cast<unsigned long>(fraction));
-  }
-  return String(buffer);
-}
-
 static bool systemLinkResponseContainsError(const String &responseBody, String &errorMessage) {
   errorMessage = "";
   if (responseBody.length() == 0) {
@@ -701,187 +648,6 @@ static bool systemLinkResponseContainsError(const String &responseBody, String &
   } else {
     errorMessage = "unknown_error";
   }
-  return true;
-}
-
-static void systemLinkAppendJsonStringValue(String &body, const String &value) {
-  body += '"';
-  body += value;
-  body += '"';
-}
-
-static bool systemLinkCreateHighRateTraceTable(const String &resultId,
-                                               const SystemLinkRoastSession &session,
-                                               String &tableId) {
-  tableId = "";
-  DynamicJsonDocument doc(3072);
-  doc["name"] = String("Coffee Roaster High Rate Trace - ") +
-                (session.profileId[0] != '\0' ? session.profileId : "session");
-  doc["testResultId"] = resultId;
-  doc["workspace"] = systemLinkConfig.workspaceId;
-
-  JsonArray columns = doc.createNestedArray("columns");
-  JsonObject rowIndex = columns.createNestedObject();
-  rowIndex["name"] = "rowIndex";
-  rowIndex["dataType"] = "INT64";
-  rowIndex["columnType"] = "INDEX";
-
-  struct ColumnSpec {
-    const char *name;
-    const char *type;
-  } columnSpecs[] = {
-    {"elapsedMs", "INT64"},
-    {"stateCode", "INT64"},
-    {"actualTempF", "FLOAT64"},
-    {"targetTempF", "FLOAT64"},
-    {"fanTempF", "FLOAT64"},
-    {"heaterOutput", "FLOAT64"},
-    {"heaterPidTrim", "FLOAT64"},
-    {"heaterFeedforward", "FLOAT64"},
-    {"fanOutput", "FLOAT64"},
-    {"activeBand", "INT64"},
-    {"scheduleActive", "BOOL"},
-    {"appliedKp", "FLOAT64"},
-    {"appliedKi", "FLOAT64"},
-    {"appliedKd", "FLOAT64"}
-  };
-
-  for (size_t index = 0; index < sizeof(columnSpecs) / sizeof(columnSpecs[0]); index++) {
-    JsonObject column = columns.createNestedObject();
-    column["name"] = columnSpecs[index].name;
-    column["dataType"] = columnSpecs[index].type;
-  }
-
-  JsonObject properties = doc.createNestedObject("properties");
-  properties["generatedBy"] = "coffee-roaster-high-rate-trace";
-  properties["traceType"] = "high_rate";
-  properties["profileId"] = session.profileId;
-  properties["profileName"] = session.profileName;
-  properties["sampleIntervalMs"] = String(SYSTEMLINK_HIGH_RATE_INTERVAL_MS);
-  properties["sampleCount"] = String(session.highRateSampleCount);
-  properties["traceOverflow"] = session.highRateTraceOverflow ? "true" : "false";
-
-  String body;
-  serializeJson(doc, body);
-
-  String responseBody;
-  int statusCode = -1;
-  bool ok = systemLinkPostJson(systemLinkBaseUrl("/nidataframe/v1/tables"), body, responseBody, statusCode);
-  if (!ok && statusCode != 200 && statusCode != 201) {
-    LOG_ERRORF("SystemLink: High-rate table create failed (%d): %s", statusCode, responseBody.c_str());
-    return false;
-  }
-
-  String apiError;
-  if (systemLinkResponseContainsError(responseBody, apiError)) {
-    LOG_ERRORF("SystemLink: High-rate table create returned API error: %s", apiError.c_str());
-    return false;
-  }
-
-  if (!systemLinkParseCreatedEntityId(responseBody, tableId)) {
-    LOG_ERRORF("SystemLink: High-rate table created but ID was not returned: %s", responseBody.c_str());
-    return false;
-  }
-
-  return true;
-}
-
-static bool systemLinkAppendHighRateTraceRows(const String &tableId,
-                                              const SystemLinkRoastSession &session,
-                                              uint16_t startIndex,
-                                              uint16_t endIndex,
-                                              bool endOfData) {
-  String body;
-  size_t rowCount = static_cast<size_t>(endIndex - startIndex);
-  body.reserve(512 + rowCount * 180);
-  body += F("{\"frame\":{\"columns\":[\"rowIndex\",\"elapsedMs\",\"stateCode\",\"actualTempF\",\"targetTempF\",\"fanTempF\",\"heaterOutput\",\"heaterPidTrim\",\"heaterFeedforward\",\"fanOutput\",\"activeBand\",\"scheduleActive\",\"appliedKp\",\"appliedKi\",\"appliedKd\"],\"data\":[");
-
-  for (uint16_t index = startIndex; index < endIndex; index++) {
-    if (index > startIndex) {
-      body += ',';
-    }
-
-    const HighRateTraceSample &sample = session.highRateSamples[index];
-    body += '[';
-    systemLinkAppendJsonStringValue(body, String(index));
-    body += ',';
-    systemLinkAppendJsonStringValue(body, String(systemLinkQuarterSecondsToMs(sample.elapsedQuarterSeconds)));
-    body += ',';
-    systemLinkAppendJsonStringValue(body, String(sample.stateCode));
-    body += ',';
-    systemLinkAppendJsonStringValue(body, systemLinkSerializeScaledFloat(sample.actualTenthsF, 10));
-    body += ',';
-    systemLinkAppendJsonStringValue(body, systemLinkSerializeScaledFloat(sample.targetTenthsF, 10));
-    body += ',';
-    systemLinkAppendJsonStringValue(body, systemLinkSerializeScaledFloat(sample.fanTempTenthsF, 10));
-    body += ',';
-    systemLinkAppendJsonStringValue(body, systemLinkSerializeScaledFloat(sample.heaterOutputTenths, 10));
-    body += ',';
-    systemLinkAppendJsonStringValue(body, systemLinkSerializeScaledFloat(sample.heaterPidTrimTenths, 10));
-    body += ',';
-    systemLinkAppendJsonStringValue(body, systemLinkSerializeScaledFloat(sample.heaterFeedforwardTenths, 10));
-    body += ',';
-    systemLinkAppendJsonStringValue(body, systemLinkSerializeScaledFloat(sample.fanOutputTenths, 10));
-    body += ',';
-    systemLinkAppendJsonStringValue(body, String(sample.activeBandIndex));
-    body += ',';
-    systemLinkAppendJsonStringValue(body, (sample.flags & 0x01U) != 0 ? "true" : "false");
-    body += ',';
-    systemLinkAppendJsonStringValue(body, systemLinkSerializeScaledFloat(sample.appliedKpHundredths, 100));
-    body += ',';
-    systemLinkAppendJsonStringValue(body, systemLinkSerializeScaledFloat(sample.appliedKiThousandths, 1000));
-    body += ',';
-    systemLinkAppendJsonStringValue(body, systemLinkSerializeScaledFloat(sample.appliedKdHundredths, 100));
-    body += ']';
-  }
-
-  body += F("]},\"endOfData\":");
-  body += endOfData ? F("true}") : F("false}");
-
-  String responseBody;
-  int statusCode = -1;
-  String url = systemLinkBaseUrl("/nidataframe/v1/tables/") + tableId + "/data";
-  bool ok = systemLinkPostJson(url, body, responseBody, statusCode);
-  if (!ok && statusCode != 200 && statusCode != 201 && statusCode != 204) {
-    LOG_ERRORF("SystemLink: High-rate row upload failed (%d): %s", statusCode, responseBody.c_str());
-    return false;
-  }
-
-  String apiError;
-  if (systemLinkResponseContainsError(responseBody, apiError)) {
-    LOG_ERRORF("SystemLink: High-rate row upload returned API error: %s", apiError.c_str());
-    return false;
-  }
-  return true;
-}
-
-static bool systemLinkUploadHighRateTraceTable(const String &resultId,
-                                               const SystemLinkRoastSession &session,
-                                               String &tableId) {
-  tableId = "";
-  if (session.highRateSampleCount == 0) {
-    return true;
-  }
-
-  if (session.highRateSamples == nullptr) {
-    LOG_ERROR("SystemLink: High-rate sample count is non-zero but the buffer is missing");
-    return false;
-  }
-
-  if (!systemLinkCreateHighRateTraceTable(resultId, session, tableId)) {
-    return false;
-  }
-
-  static const uint16_t CHUNK_SIZE = 20;
-  for (uint16_t startIndex = 0; startIndex < session.highRateSampleCount; startIndex += CHUNK_SIZE) {
-    uint16_t endIndex = min<uint16_t>(startIndex + CHUNK_SIZE, session.highRateSampleCount);
-    bool endOfData = endIndex >= session.highRateSampleCount;
-    if (!systemLinkAppendHighRateTraceRows(tableId, session, startIndex, endIndex, endOfData)) {
-      return false;
-    }
-    esp_task_wdt_reset();
-  }
-
   return true;
 }
 
@@ -1323,19 +1089,14 @@ static void systemLinkMarkRoastStarted() {
   String activeId = profileManager.getActiveProfileId();
   String activeName;
   profileManager.loadProfileMeta(activeId, activeName);
-  HighRateTraceSample *highRateBuffer = static_cast<HighRateTraceSample *>(malloc(sizeof(HighRateTraceSample) * SYSTEMLINK_MAX_HIGH_RATE_SAMPLES));
-
-  systemLinkFreeHighRateBuffer(systemLinkSession);
 
   portENTER_CRITICAL(&systemLinkLock);
   memset(&systemLinkSession, 0, sizeof(systemLinkSession));
-  systemLinkSession.highRateSamples = highRateBuffer;
   systemLinkSession.active = true;
   systemLinkSession.startedAtMs = millis();
   systemLinkSession.roastingStartedAtMs = 0;
   systemLinkSession.coolingStartedAtMs = 0;
   systemLinkSession.lastRecordedSecond = 0xFFFF;
-  systemLinkSession.lastHighRateQuarterSecond = 0xFFFF;
   systemLinkSession.finalTargetTempF = profile.getFinalTargetTemp();
   systemLinkSession.setpointCount = profile.getSetpointCount();
   systemLinkSession.outcome = SYSTEMLINK_OUTCOME_NONE;
@@ -1345,7 +1106,6 @@ static void systemLinkMarkRoastStarted() {
   systemLinkSession.finalTempOverrideF = finalTempOverride;
   systemLinkSession.pidScheduleConfigured = pidScheduleConfigured;
   systemLinkSession.recoveredAfterReset = false;
-  systemLinkSession.highRateTraceOverflow = highRateBuffer == nullptr;
   systemLinkCopyString(systemLinkSession.profileId, sizeof(systemLinkSession.profileId), activeId);
   systemLinkCopyString(systemLinkSession.profileName, sizeof(systemLinkSession.profileName), activeName);
   systemLinkCopyString(systemLinkSession.outcomeReason, sizeof(systemLinkSession.outcomeReason), "in_progress");
@@ -1439,49 +1199,8 @@ static void systemLinkRecordRoastSample() {
   portEXIT_CRITICAL(&systemLinkLock);
 }
 
-static void systemLinkRecordHighRateSample() {
-  portENTER_CRITICAL(&systemLinkLock);
-  if (!systemLinkSession.active || !systemLinkIsTrackedRoastState(roasterState)) {
-    portEXIT_CRITICAL(&systemLinkLock);
-    return;
-  }
-
-  uint16_t elapsedQuarterSeconds = static_cast<uint16_t>((millis() - systemLinkSession.startedAtMs) / SYSTEMLINK_HIGH_RATE_INTERVAL_MS);
-  if (elapsedQuarterSeconds == systemLinkSession.lastHighRateQuarterSecond) {
-    portEXIT_CRITICAL(&systemLinkLock);
-    return;
-  }
-
-  systemLinkSession.lastHighRateQuarterSecond = elapsedQuarterSeconds;
-  if (systemLinkSession.highRateSamples == nullptr) {
-    systemLinkSession.highRateTraceOverflow = true;
-  } else if (systemLinkSession.highRateSampleCount < SYSTEMLINK_MAX_HIGH_RATE_SAMPLES) {
-    HighRateTraceSample &sample = systemLinkSession.highRateSamples[systemLinkSession.highRateSampleCount++];
-    sample.elapsedQuarterSeconds = elapsedQuarterSeconds;
-    sample.actualTenthsF = static_cast<int16_t>(lroundf(static_cast<float>(currentTemp) * 10.0f));
-    sample.targetTenthsF = static_cast<int16_t>(lroundf(static_cast<float>(setpointTemp) * 10.0f));
-    sample.fanTempTenthsF = static_cast<int16_t>(lroundf(static_cast<float>(fanTemp) * 10.0f));
-    sample.heaterOutputTenths = static_cast<uint16_t>(lroundf(static_cast<float>(heaterOutputVal) * 10.0f));
-    sample.heaterPidTrimTenths = static_cast<uint16_t>(lroundf(static_cast<float>(heaterPidTrimVal) * 10.0f));
-    sample.heaterFeedforwardTenths = static_cast<uint16_t>(lroundf(static_cast<float>(heaterFeedforwardVal) * 10.0f));
-    sample.fanOutputTenths = static_cast<uint16_t>(lroundf(static_cast<float>(setpointFanSpeed) * 10.0f));
-    sample.appliedKpHundredths = static_cast<int16_t>(lroundf(static_cast<float>(appliedKp) * 100.0f));
-    sample.appliedKiThousandths = static_cast<int16_t>(lroundf(static_cast<float>(appliedKi) * 1000.0f));
-    sample.appliedKdHundredths = static_cast<int16_t>(lroundf(static_cast<float>(appliedKd) * 100.0f));
-    sample.activeBandIndex = static_cast<int8_t>(activePidBandIndex);
-    sample.stateCode = static_cast<int8_t>(roasterState);
-    sample.flags = pidScheduleActive ? 0x01U : 0x00U;
-  } else {
-    systemLinkSession.highRateTraceOverflow = true;
-  }
-
-  portEXIT_CRITICAL(&systemLinkLock);
-}
-
 static void systemLinkFinishRoast(SystemLinkRoastOutcome outcome, const char *reason) {
   bool persistPending = false;
-  HighRateTraceSample *stalePublishBuffer = nullptr;
-  HighRateTraceSample *droppedRoastBuffer = nullptr;
   portENTER_CRITICAL(&systemLinkLock);
   if (!systemLinkSession.active) {
     portEXIT_CRITICAL(&systemLinkLock);
@@ -1493,28 +1212,15 @@ static void systemLinkFinishRoast(SystemLinkRoastOutcome outcome, const char *re
   systemLinkAssignOutcome(systemLinkSession, outcome, reason, systemLinkSession.phase);
   systemLinkCopyString(systemLinkSession.phase, sizeof(systemLinkSession.phase), "publish_pending");
   if (!systemLinkPublishPending && !systemLinkPublishInProgress) {
-    HighRateTraceSample *publishBuffer = systemLinkSession.highRateSamples;
-    stalePublishBuffer = systemLinkPublishSession.highRateSamples;
-    systemLinkSession.highRateSamples = nullptr;
     memcpy(&systemLinkPublishSession, &systemLinkSession, sizeof(SystemLinkRoastSession));
-    systemLinkPublishSession.highRateSamples = publishBuffer;
     systemLinkPublishPending = true;
     persistPending = true;
   } else {
-    droppedRoastBuffer = systemLinkSession.highRateSamples;
-    systemLinkSession.highRateSamples = nullptr;
     LOG_WARN("SystemLink: Previous publish still active, dropping completed roast publish");
   }
   systemLinkTelemetry.active = false;
   systemLinkTelemetry.state = roasterState;
   portEXIT_CRITICAL(&systemLinkLock);
-
-  if (stalePublishBuffer != nullptr) {
-    free(stalePublishBuffer);
-  }
-  if (droppedRoastBuffer != nullptr) {
-    free(droppedRoastBuffer);
-  }
 
   if (outcome == SYSTEMLINK_OUTCOME_ERRORED) {
     systemLinkUpdateLastFault(reason);
@@ -1694,10 +1400,6 @@ static bool systemLinkCreateResult(SystemLinkRoastSession &session, const String
   properties["sampleRateHz"] = "1";
   properties["sampleCount"] = String(session.sampleCount);
   properties["traceOverflow"] = session.traceOverflow ? "true" : "false";
-  properties["highRateSampleIntervalMs"] = String(SYSTEMLINK_HIGH_RATE_INTERVAL_MS);
-  properties["highRateSampleRateHz"] = "4";
-  properties["highRateSampleCount"] = String(session.highRateSampleCount);
-  properties["highRateTraceOverflow"] = session.highRateTraceOverflow ? "true" : "false";
   properties["pidScheduleConfigured"] = session.pidScheduleConfigured ? "true" : "false";
   properties["outcomeReason"] = session.outcomeReason;
   properties["phase"] = session.phase;
@@ -1781,41 +1483,16 @@ static void processPendingSystemLinkPublish() {
     systemLinkPersistBreadcrumb(systemLinkPublishSession, false, true, "creating_steps");
     stepsPublished = systemLinkCreatePhaseSteps(resultId, systemLinkPublishSession);
   }
-  bool highRatePublished = true;
-  String highRateTableId;
-  if (published && resultId.length() > 0) {
-    systemLinkUpdatePublishStatus("uploading_high_rate_table");
-    systemLinkPersistBreadcrumb(systemLinkPublishSession, false, true, "uploading_high_rate_table");
-    highRatePublished = systemLinkUploadHighRateTraceTable(resultId, systemLinkPublishSession, highRateTableId);
-    // Allow TCP stack to clean up connections from high-rate chunk uploads
-    delay(500);
-    esp_task_wdt_reset();
-  }
-
-  HighRateTraceSample *completedPublishBuffer = nullptr;
-
   portENTER_CRITICAL(&systemLinkLock);
   systemLinkPublishInProgress = false;
   if (published) {
     systemLinkPublishPending = false;
-    completedPublishBuffer = systemLinkPublishSession.highRateSamples;
-    systemLinkPublishSession.highRateSamples = nullptr;
     memset(&systemLinkPublishSession, 0, sizeof(SystemLinkRoastSession));
   }
   portEXIT_CRITICAL(&systemLinkLock);
 
-  if (completedPublishBuffer != nullptr) {
-    free(completedPublishBuffer);
-  }
-
   if (published) {
-    if (!highRatePublished && !stepsPublished) {
-      systemLinkUpdatePublishStatus("published_high_rate_and_steps_failed");
-    } else if (!highRatePublished) {
-      systemLinkUpdatePublishStatus("published_high_rate_failed");
-    } else {
-      systemLinkUpdatePublishStatus(stepsPublished ? "published" : "published_steps_failed");
-    }
+    systemLinkUpdatePublishStatus(stepsPublished ? "published" : "published_steps_failed");
     systemLinkClearBreadcrumb();
   } else {
     systemLinkUpdatePublishStatus("result_publish_failed");

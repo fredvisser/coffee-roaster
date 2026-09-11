@@ -56,7 +56,7 @@ double kd = 0;
 // Preferences namespace
 #define PREFS_NAMESPACE "roaster"
 
-#define VERSION "v1.3"
+#define VERSION "v1.4"
 
 // Use timers for simple multitasking
 SimpleTimer checkTempTimer(125);
@@ -768,7 +768,6 @@ void loop()
     unsigned long now = millis();
     updateRoastControl(now);
     updateCalibrationControl(now);
-    systemLinkRecordHighRateSample();
     controlLoopTimer.reset();
   }
 
