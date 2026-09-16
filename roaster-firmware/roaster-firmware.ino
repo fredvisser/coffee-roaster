@@ -760,7 +760,6 @@ void loop()
     unsigned long now = millis();
     updateRoastControl(now);
     updateCalibrationControl(now);
-    systemLinkRecordHighRateSample();
     controlLoopTimer.reset();
   }
 
