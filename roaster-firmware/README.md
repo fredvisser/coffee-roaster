@@ -79,7 +79,7 @@ brew install arduino-cli  # macOS
 arduino-cli config init
 arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
 arduino-cli core update-index
-arduino-cli core install esp32:esp32@3.3.3
+arduino-cli core install esp32:esp32@3.3.11
 ```
 
 #### 3. Install Required Libraries
@@ -132,6 +132,16 @@ Compiled firmware is automatically copied to `build/roaster-firmware.bin`:
 ```
 
 **Note:** `.bin` files are excluded from version control via `.gitignore`.
+
+Builds use all detected CPU cores by default. Set `ROASTER_BUILD_JOBS` to tune
+parallel compilation for a constrained machine, for example:
+
+```bash
+ROASTER_BUILD_JOBS=4 ./tools/firmware.sh build --board jc4827w543c
+```
+
+The firmware revision defaults to the current Git commit. Override it with
+`ROASTER_BUILD_VERSION` when a release label or date is required.
 
 ## Over-The-Air (OTA) Updates
 

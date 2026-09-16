@@ -8,7 +8,7 @@ echo "Coffee Roaster - Library Setup"
 echo "=========================================="
 echo ""
 
-RECOMMENDED_ESP32_CORE="${ESP32_CORE_VERSION:-3.3.5}"
+RECOMMENDED_ESP32_CORE="${ESP32_CORE_VERSION:-3.3.11}"
 ESP32_BOARD_URL="https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json"
 
 if ! command -v arduino-cli &> /dev/null; then

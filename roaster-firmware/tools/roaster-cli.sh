@@ -21,6 +21,22 @@ TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIRMWARE_DIR="$(cd "$TOOLS_DIR/.." && pwd)"
 TESTS_DIR="$FIRMWARE_DIR/tests"
 CLI_NAME="${ROASTER_CLI_NAME:-$0}"
+BUILD_JOBS="${ROASTER_BUILD_JOBS:-}"
+
+if [[ -z "$BUILD_JOBS" ]]; then
+    if command -v sysctl >/dev/null 2>&1; then
+        BUILD_JOBS="$(sysctl -n hw.ncpu 2>/dev/null || true)"
+    fi
+    if [[ -z "$BUILD_JOBS" ]] && command -v getconf >/dev/null 2>&1; then
+        BUILD_JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+    fi
+    BUILD_JOBS="${BUILD_JOBS:-1}"
+fi
+
+if ! [[ "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Invalid ROASTER_BUILD_JOBS value: $BUILD_JOBS" >&2
+    exit 1
+fi
 
 BUILD_EXTRA_FLAGS="-DROASTER_TARGET_BOARD=ROASTER_BOARD_JC4827W543C -DROASTER_DISPLAY_BACKEND=ROASTER_DISPLAY_BACKEND_LVGL"
 
@@ -105,12 +121,16 @@ compile_sketch() {
     print_info "Target board: $TARGET_BOARD ($BOARD_FQBN)"
 
     if [[ "$sketch_name" == "roaster-firmware" ]]; then
-        local build_version="${ROASTER_BUILD_VERSION:-$(date +%F)}"
+        local build_version="${ROASTER_BUILD_VERSION:-}"
+        if [[ -z "$build_version" ]]; then
+            build_version="$(git -C "$FIRMWARE_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+            build_version="${build_version:-dev}"
+        fi
         all_extra_flags="${all_extra_flags:+$all_extra_flags }-DVERSION=\"${build_version}\""
         print_info "Firmware version: $build_version"
     fi
 
-    local build_args=(--fqbn "$BOARD_FQBN")
+    local build_args=(--jobs "$BUILD_JOBS" --fqbn "$BOARD_FQBN")
     if [[ -n "$all_extra_flags" ]]; then
         build_args+=(--build-property "compiler.cpp.extra_flags=$all_extra_flags")
         build_args+=(--build-property "compiler.c.extra_flags=$all_extra_flags")
