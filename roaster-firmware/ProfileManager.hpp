@@ -12,6 +12,7 @@
 // Forward declarations
 extern Profiles profile;
 extern Preferences preferences;
+extern RoasterState roasterState;
 
 struct ProfileOperationResult {
     bool success;
@@ -148,6 +149,11 @@ public:
             }
 
             // 2. Validate
+            if ((doc["activate"] | false) && roasterState != IDLE) {
+                LOG_WARN("saveProfile: cannot activate a profile while the roaster is running");
+                result.error = "roaster_busy";
+                return result;
+            }
             if (!doc.containsKey("setpoints") || !doc["setpoints"].is<JsonArray>()) {
                 LOG_ERROR("Missing setpoints array");
                 result.error = "invalid_setpoints";
@@ -342,6 +348,10 @@ public:
 
     bool activateProfile(const String& id) {
         LOG_DEBUGF("activateProfile called for ID: %s", id.c_str());
+        if (roasterState != IDLE) {
+            LOG_WARN("activateProfile: roaster is running");
+            return false;
+        }
         if (!profileExists(id)) {
             LOG_WARN("activateProfile: Profile does not exist");
             return false;

@@ -9,6 +9,8 @@
 #include <WiFiClientSecure.h>
 #include <esp_task_wdt.h>
 #include <esp_system.h>
+#include <functional>
+#include <mutex>
 #include "DebugLog.hpp"
 #include "ProfileManager.hpp"
 #include "StepResponseTuner.hpp"
@@ -41,6 +43,7 @@ extern int finalTempOverride;
 static const char *SYSTEMLINK_API_URL_KEY = "sl_api_url";
 static const char *SYSTEMLINK_API_KEY_KEY = "sl_api_key";
 static const char *SYSTEMLINK_ENABLED_KEY = "sl_enabled";
+static const char *SYSTEMLINK_INSECURE_TLS_KEY = "sl_insecure";
 static const char *SYSTEMLINK_SYSTEM_ID_KEY = "sl_sys_id";
 static const char *SYSTEMLINK_WORKSPACE_KEY = "sl_ws_id";
 static const char *SYSTEMLINK_PHASE_KEY = "sl_phase";
@@ -55,6 +58,8 @@ static const char *SYSTEMLINK_BC_KI_KEY = "sl_ki";
 static const char *SYSTEMLINK_BC_KD_KEY = "sl_kd";
 static const char *SYSTEMLINK_BC_OVERRIDE_KEY = "sl_ovr";
 static const char *SYSTEMLINK_BC_REASON_KEY = "sl_reason";
+static const char *SYSTEMLINK_BC_OUTCOME_KEY = "sl_outcome";
+static const char *SYSTEMLINK_BC_FILE_ID_KEY = "sl_fileid";
 static const char *SYSTEMLINK_LAST_FAULT_KEY = "sl_fault";
 static const char *SYSTEMLINK_LAST_PUB_STATUS_KEY = "sl_pubst";
 
@@ -69,6 +74,11 @@ static const size_t SYSTEMLINK_PHASE_MAX = 32;
 static const size_t SYSTEMLINK_STATUS_MAX = 48;
 static const size_t SYSTEMLINK_RESET_REASON_MAX = 32;
 static const size_t SYSTEMLINK_MAX_TRACE_SAMPLES = 1800;
+static const size_t SYSTEMLINK_FILE_ID_MAX = 64;
+static const uint8_t SYSTEMLINK_MAX_PUBLISH_ATTEMPTS = 5;
+static const uint32_t SYSTEMLINK_HTTP_CONNECT_TIMEOUT_MS = 5000;
+static const uint32_t SYSTEMLINK_HTTP_TIMEOUT_MS = 10000;
+static const size_t SYSTEMLINK_RECENT_LOG_MAX_CHARS = 4000;
 static const int SYSTEMLINK_STATUS_TAG_RETENTION_DAYS = 30;
 
 static const char *SYSTEMLINK_PROP_RETENTION = "nitagRetention";
@@ -81,6 +91,8 @@ struct SystemLinkConfig {
   char workspaceId[SYSTEMLINK_WORKSPACE_MAX];
   char systemId[SYSTEMLINK_SYSTEM_ID_MAX];
   char apiKey[SYSTEMLINK_API_KEY_MAX];
+  // Skip certificate validation, for on-prem servers with a private CA.
+  bool insecureTls;
 };
 
 enum SystemLinkRoastOutcome {
@@ -131,6 +143,8 @@ struct SystemLinkRoastSession {
   int16_t finalTempOverrideF;
   bool pidScheduleConfigured;
   bool recoveredAfterReset;
+  uint8_t publishAttempts;
+  char fileId[SYSTEMLINK_FILE_ID_MAX];
   char profileId[SYSTEMLINK_PROFILE_ID_MAX];
   char profileName[SYSTEMLINK_PROFILE_NAME_MAX];
   char outcomeReason[SYSTEMLINK_REASON_MAX];
@@ -148,7 +162,8 @@ static SystemLinkConfig systemLinkConfig = {
   "https://dev-api.lifecyclesolutions.ni.com",
   "",
   "",
-  ""
+  "",
+  false
 };
 static SystemLinkTelemetrySnapshot systemLinkTelemetry = {false, 0.0f, 0.0f, 0, IDLE, "none", "idle", "unknown", 0};
 static SystemLinkRoastSession systemLinkSession = {};
@@ -161,8 +176,19 @@ static uint32_t systemLinkLastIdleChamberPublishMs = 0;
 static uint32_t systemLinkTagRetryAfterMs = 0;
 static bool systemLinkLastTelemetrySentValid = false;
 static SystemLinkTelemetrySnapshot systemLinkLastTelemetrySent = {false, 0.0f, 0.0f, 0, IDLE, "", "", "", 0};
+static uint32_t systemLinkLastErrorSequencePublished = 0;
+static volatile bool systemLinkCalibrationPublishPending = false;
+// Serializes TLS traffic: halves peak heap use and protects the global CA bundle state.
+static std::mutex systemLinkNetMutex;
+// Kept open between tag writes so each update doesn't pay for a TLS handshake.
+static WiFiClientSecure systemLinkTagClient;
+static volatile bool systemLinkTagClientNeedsReset = true;
+
+extern const uint8_t systemLinkCaBundleStart[] asm("_binary_x509_crt_bundle_start");
+extern const uint8_t systemLinkCaBundleEnd[] asm("_binary_x509_crt_bundle_end");
 
 static bool systemLinkIsTrackedRoastState(RoasterState state);
+static void systemLinkCopyString(char *dest, size_t destSize, const char *src);
 static void systemLinkCopyString(char *dest, size_t destSize, const String &src);
 
 static void systemLinkInvalidateTagPublishState() {
@@ -170,6 +196,8 @@ static void systemLinkInvalidateTagPublishState() {
   systemLinkLastIdleChamberPublishMs = 0;
   systemLinkTagRetryAfterMs = 0;
   systemLinkLastTelemetrySentValid = false;
+  systemLinkLastErrorSequencePublished = 0;
+  systemLinkTagClientNeedsReset = true;
   memset(&systemLinkLastTelemetrySent, 0, sizeof(systemLinkLastTelemetrySent));
 }
 
@@ -203,19 +231,19 @@ static void systemLinkAssignOutcome(SystemLinkRoastSession &session,
 
   session.outcome = outcome;
   if (reason != nullptr && reason[0] != '\0') {
-    systemLinkCopyString(session.outcomeReason, sizeof(session.outcomeReason), String(reason));
+    systemLinkCopyString(session.outcomeReason, sizeof(session.outcomeReason), reason);
   }
   if (outcomePhase != nullptr && outcomePhase[0] != '\0') {
-    systemLinkCopyString(session.outcomePhase, sizeof(session.outcomePhase), String(outcomePhase));
+    systemLinkCopyString(session.outcomePhase, sizeof(session.outcomePhase), outcomePhase);
   }
 }
 
-static int systemLinkTenths(float value) {
-  return static_cast<int>(lroundf(value * 10.0f));
+static bool systemLinkIsLiveState(RoasterState state) {
+  return systemLinkIsTrackedRoastState(state) || state == ERROR || state == CALIBRATING;
 }
 
 static bool systemLinkShouldPublishChamberTemp(const SystemLinkTelemetrySnapshot &snapshot) {
-  if (systemLinkIsTrackedRoastState(snapshot.state)) {
+  if (systemLinkIsLiveState(snapshot.state)) {
     return true;
   }
 
@@ -232,6 +260,9 @@ static const char *systemLinkOutcomePhaseForCoolingStart(const SystemLinkRoastSe
                                                          SystemLinkRoastOutcome outcome,
                                                          const char *reason) {
   if (outcome == SYSTEMLINK_OUTCOME_PASSED) {
+    return "roasting";
+  }
+  if (reason != nullptr && strcmp(reason, "roast_timeout") == 0) {
     return "roasting";
   }
   if (outcome == SYSTEMLINK_OUTCOME_TERMINATED && reason != nullptr && strcmp(reason, "user_stop") == 0) {
@@ -332,12 +363,16 @@ static const char *systemLinkResetReasonName(esp_reset_reason_t reason) {
   }
 }
 
-static void systemLinkCopyString(char *dest, size_t destSize, const String &src) {
+static void systemLinkCopyString(char *dest, size_t destSize, const char *src) {
   if (destSize == 0) {
     return;
   }
-  src.substring(0, destSize - 1).toCharArray(dest, destSize);
-  dest[destSize - 1] = '\0';
+  // No heap allocation: several callers hold the systemLinkLock spinlock.
+  strlcpy(dest, src != nullptr ? src : "", destSize);
+}
+
+static void systemLinkCopyString(char *dest, size_t destSize, const String &src) {
+  systemLinkCopyString(dest, destSize, src.c_str());
 }
 
 static String systemLinkMaskedKey() {
@@ -398,6 +433,8 @@ static void systemLinkPersistBreadcrumb(const SystemLinkRoastSession &session,
   preferences.putDouble(SYSTEMLINK_BC_KD_KEY, session.kd);
   preferences.putInt(SYSTEMLINK_BC_OVERRIDE_KEY, session.finalTempOverrideF);
   preferences.putString(SYSTEMLINK_BC_REASON_KEY, session.outcomeReason);
+  preferences.putUChar(SYSTEMLINK_BC_OUTCOME_KEY, static_cast<uint8_t>(session.outcome));
+  preferences.putString(SYSTEMLINK_BC_FILE_ID_KEY, session.fileId);
 }
 
 static void systemLinkClearBreadcrumb() {
@@ -413,6 +450,8 @@ static void systemLinkClearBreadcrumb() {
   preferences.remove(SYSTEMLINK_BC_KD_KEY);
   preferences.remove(SYSTEMLINK_BC_OVERRIDE_KEY);
   preferences.remove(SYSTEMLINK_BC_REASON_KEY);
+  preferences.remove(SYSTEMLINK_BC_OUTCOME_KEY);
+  preferences.remove(SYSTEMLINK_BC_FILE_ID_KEY);
 }
 
 static void systemLinkPrepareRecoveryPublish() {
@@ -439,7 +478,25 @@ static void systemLinkPrepareRecoveryPublish() {
                        preferences.getString(SYSTEMLINK_BC_PROFILE_NAME_KEY, ""));
   String phase = preferences.getString(SYSTEMLINK_PHASE_KEY, hadPending ? "publish_pending" : "roasting");
   String resetReason = systemLinkResetReasonName(esp_reset_reason());
-  String reason = String("reset_during_") + phase + ":" + resetReason;
+  String reason;
+  if (hadActive) {
+    // Reset mid-roast: the interruption itself is the outcome.
+    reason = String("reset_during_") + phase + ":" + resetReason;
+    systemLinkUpdateLastFault(reason);
+  } else {
+    // Roast had finished and was only waiting to publish; keep its real outcome.
+    uint8_t storedOutcome = preferences.getUChar(SYSTEMLINK_BC_OUTCOME_KEY, SYSTEMLINK_OUTCOME_ERRORED);
+    if (storedOutcome <= SYSTEMLINK_OUTCOME_ERRORED) {
+      systemLinkPublishSession.outcome = static_cast<SystemLinkRoastOutcome>(storedOutcome);
+    }
+    reason = preferences.getString(SYSTEMLINK_BC_REASON_KEY, "");
+    if (reason.length() == 0) {
+      reason = String("reset_during_") + phase + ":" + resetReason;
+    }
+    systemLinkCopyString(systemLinkPublishSession.fileId,
+                         sizeof(systemLinkPublishSession.fileId),
+                         preferences.getString(SYSTEMLINK_BC_FILE_ID_KEY, ""));
+  }
   systemLinkCopyString(systemLinkPublishSession.outcomeReason,
                        sizeof(systemLinkPublishSession.outcomeReason),
                        reason);
@@ -452,9 +509,11 @@ static void systemLinkPrepareRecoveryPublish() {
   systemLinkCopyString(systemLinkPublishSession.resetReason,
                        sizeof(systemLinkPublishSession.resetReason),
                        resetReason);
+  portENTER_CRITICAL(&systemLinkLock);
   systemLinkPublishPending = true;
+  portEXIT_CRITICAL(&systemLinkLock);
   systemLinkUpdatePublishStatus("recovery_pending");
-  LOG_WARNF("SystemLink: Prepared recovery publish for interrupted roast (%s)", reason.c_str());
+  LOG_WARNF("SystemLink: Recovery publish queued after %s reset (%s)", resetReason.c_str(), reason.c_str());
 }
 
 static bool systemLinkHasRequiredConfig() {
@@ -474,22 +533,63 @@ static String systemLinkBaseUrl(const char *servicePath) {
   return base + servicePath;
 }
 
+static void systemLinkConfigureTls(WiFiClientSecure &client) {
+  if (systemLinkConfig.insecureTls) {
+    client.setInsecure();
+  } else {
+    client.setCACertBundle(systemLinkCaBundleStart, systemLinkCaBundleEnd - systemLinkCaBundleStart);
+  }
+  client.setTimeout(SYSTEMLINK_HTTP_TIMEOUT_MS);  // Stream timeout is in milliseconds.
+}
+
+static bool systemLinkResponseContainsError(const String &responseBody, String &errorMessage);
+
+// Short human-readable reason for a failed request, suitable for logs and tags.
+static String systemLinkDescribeFailure(int statusCode, const String &responseBody, WiFiClientSecure *client) {
+  if (statusCode < 0) {
+    String detail = HTTPClient::errorToString(statusCode);
+    char tlsError[96] = {0};
+    if (client != nullptr && client->lastError(tlsError, sizeof(tlsError)) != 0 && tlsError[0] != '\0') {
+      detail += String(" / TLS: ") + tlsError;
+    }
+    return detail;
+  }
+  String apiError;
+  if (systemLinkResponseContainsError(responseBody, apiError)) {
+    return apiError;
+  }
+  return responseBody.substring(0, 100);
+}
+
+static String systemLinkUrlPath(const String &url) {
+  int schemeEnd = url.indexOf("://");
+  int pathStart = url.indexOf('/', schemeEnd >= 0 ? schemeEnd + 3 : 0);
+  return pathStart >= 0 ? url.substring(pathStart) : url;
+}
+
 static bool systemLinkHttpRequest(const String &method,
                                   const String &url,
                                   const String &contentType,
                                   const uint8_t *payload,
                                   size_t payloadLength,
                                   String &responseBody,
-                                  int &statusCode) {
+                                  int &statusCode,
+                                  WiFiClientSecure *reuseClient = nullptr) {
   responseBody = "";
   statusCode = -1;
 
-  WiFiClientSecure client;
-  client.setInsecure();
+  std::lock_guard<std::mutex> guard(systemLinkNetMutex);
+
+  WiFiClientSecure localClient;
+  WiFiClientSecure &client = reuseClient != nullptr ? *reuseClient : localClient;
+  if (reuseClient == nullptr) {
+    systemLinkConfigureTls(localClient);
+  }
 
   HTTPClient http;
-  http.setConnectTimeout(1500);
-  http.setTimeout(2000);
+  http.setReuse(reuseClient != nullptr);
+  http.setConnectTimeout(SYSTEMLINK_HTTP_CONNECT_TIMEOUT_MS);
+  http.setTimeout(SYSTEMLINK_HTTP_TIMEOUT_MS);
 
   if (!http.begin(client, url)) {
     LOG_ERRORF("SystemLink: Failed to open %s", url.c_str());
@@ -502,7 +602,6 @@ static bool systemLinkHttpRequest(const String &method,
     http.addHeader("Content-Type", contentType);
   }
 
-  esp_task_wdt_reset();
   if (method == "POST") {
     statusCode = http.POST(const_cast<uint8_t *>(payload), payloadLength);
   } else if (method == "PUT") {
@@ -510,11 +609,24 @@ static bool systemLinkHttpRequest(const String &method,
   } else {
     statusCode = http.sendRequest(method.c_str(), const_cast<uint8_t *>(payload), payloadLength);
   }
-  responseBody = http.getString();
+  if (statusCode > 0) {
+    responseBody = http.getString();
+  }
   http.end();
-  esp_task_wdt_reset();
 
-  return statusCode >= 200 && statusCode < 300;
+  bool ok = statusCode >= 200 && statusCode < 300;
+  if (!ok) {
+    // WARN, not ERROR: callers log the ERROR with context, which feeds the lastError tag.
+    LOG_WARNF("SystemLink: %s %s -> %d %s",
+              method.c_str(),
+              systemLinkUrlPath(url).substring(0, 48).c_str(),
+              statusCode,
+              systemLinkDescribeFailure(statusCode, responseBody, &client).c_str());
+    if (reuseClient != nullptr) {
+      reuseClient->stop();
+    }
+  }
+  return ok;
 }
 
 static bool systemLinkParseApiEndpoint(String &host, uint16_t &port) {
@@ -557,27 +669,31 @@ static bool systemLinkParseApiEndpoint(String &host, uint16_t &port) {
 static bool systemLinkPostJson(const String &url,
                                const String &jsonBody,
                                String &responseBody,
-                               int &statusCode) {
+                               int &statusCode,
+                               WiFiClientSecure *reuseClient = nullptr) {
   return systemLinkHttpRequest("POST",
                                url,
                                "application/json",
                                reinterpret_cast<const uint8_t *>(jsonBody.c_str()),
                                jsonBody.length(),
                                responseBody,
-                               statusCode);
+                               statusCode,
+                               reuseClient);
 }
 
 static bool systemLinkPutJson(const String &url,
                               const String &jsonBody,
                               String &responseBody,
-                              int &statusCode) {
+                              int &statusCode,
+                              WiFiClientSecure *reuseClient = nullptr) {
   return systemLinkHttpRequest("PUT",
                                url,
                                "application/json",
                                reinterpret_cast<const uint8_t *>(jsonBody.c_str()),
                                jsonBody.length(),
                                responseBody,
-                               statusCode);
+                               statusCode,
+                               reuseClient);
 }
 
 static bool systemLinkParseCreatedEntityId(const String &responseBody, String &entityId) {
@@ -602,21 +718,26 @@ static bool systemLinkParseCreatedEntityId(const String &responseBody, String &e
   return false;
 }
 
+static const char *SYSTEMLINK_TRACE_CSV_HEADER = "elapsedSeconds,actualTempF,targetTempF,heaterOutput,fanTempF,fanOutput\n";
+
+static int systemLinkFormatCsvRow(const RoastTraceSample &sample, char *row, size_t rowSize) {
+  return snprintf(row,
+                  rowSize,
+                  "%u,%.1f,%.1f,%.1f,%.1f,%.1f\n",
+                  static_cast<unsigned>(sample.elapsedSeconds),
+                  sample.actualTenthsF / 10.0f,
+                  sample.targetTenthsF / 10.0f,
+                  sample.heaterOutputTenths / 10.0f,
+                  sample.fanTempTenthsF / 10.0f,
+                  sample.fanOutputTenths / 10.0f);
+}
+
 static size_t systemLinkCsvLength(const SystemLinkRoastSession &session) {
-  size_t total = strlen("elapsedSeconds,actualTempF,targetTempF,heaterOutput,fanTempF,fanOutput\n");
+  size_t total = strlen(SYSTEMLINK_TRACE_CSV_HEADER);
   char row[96];
 
   for (uint16_t index = 0; index < session.sampleCount; index++) {
-    const RoastTraceSample &sample = session.samples[index];
-    int rowLen = snprintf(row,
-                          sizeof(row),
-                          "%u,%.1f,%.1f,%.1f,%.1f,%.1f\n",
-                          static_cast<unsigned>(sample.elapsedSeconds),
-                          sample.actualTenthsF / 10.0f,
-                          sample.targetTenthsF / 10.0f,
-                          sample.heaterOutputTenths / 10.0f,
-                          sample.fanTempTenthsF / 10.0f,
-                          sample.fanOutputTenths / 10.0f);
+    int rowLen = systemLinkFormatCsvRow(session.samples[index], row, sizeof(row));
     if (rowLen > 0) {
       total += static_cast<size_t>(rowLen);
     }
@@ -651,10 +772,71 @@ static bool systemLinkResponseContainsError(const String &responseBody, String &
   return true;
 }
 
-static bool systemLinkUploadTraceFile(const String &filename,
-                                     const String &contentType,
-                                     const SystemLinkRoastSession &session,
-                                     String &uploadedUri) {
+// Reads status, headers and body from a raw HTTP/1.1 response, including chunked bodies.
+static bool systemLinkReadHttpResponse(WiFiClientSecure &client, int &statusCode, String &body) {
+  statusCode = -1;
+  body = "";
+
+  unsigned long waitStart = millis();
+  while (!client.available() && client.connected() && millis() - waitStart < SYSTEMLINK_HTTP_TIMEOUT_MS) {
+    delay(10);
+  }
+  if (!client.available()) {
+    return false;
+  }
+
+  String statusLine = client.readStringUntil('\n');
+  statusLine.trim();
+  int firstSpace = statusLine.indexOf(' ');
+  if (firstSpace >= 0 && statusLine.length() >= static_cast<unsigned>(firstSpace + 4)) {
+    statusCode = statusLine.substring(firstSpace + 1, firstSpace + 4).toInt();
+  }
+
+  bool chunked = false;
+  while (client.available() || client.connected()) {
+    String headerLine = client.readStringUntil('\n');
+    headerLine.trim();
+    if (headerLine.length() == 0) {
+      break;
+    }
+    headerLine.toLowerCase();
+    if (headerLine.startsWith("transfer-encoding:") && headerLine.indexOf("chunked") >= 0) {
+      chunked = true;
+    }
+  }
+
+  if (!chunked) {
+    body = client.readString();
+    return true;
+  }
+
+  char buffer[128];
+  while (client.available() || client.connected()) {
+    String sizeLine = client.readStringUntil('\n');
+    sizeLine.trim();
+    long remaining = strtol(sizeLine.c_str(), nullptr, 16);
+    if (remaining <= 0) {
+      break;
+    }
+    while (remaining > 0) {
+      size_t readLen = client.readBytes(buffer, min(static_cast<long>(sizeof(buffer)), remaining));
+      if (readLen == 0) {
+        return false;
+      }
+      body.concat(buffer, readLen);
+      remaining -= static_cast<long>(readLen);
+    }
+    client.readStringUntil('\n');
+  }
+  return true;
+}
+
+// Streams a multipart file upload to the File service. writeBody must write exactly bodyLength bytes.
+static bool systemLinkUploadMultipart(const String &filename,
+                                      const String &contentType,
+                                      size_t bodyLength,
+                                      const std::function<bool(WiFiClientSecure &)> &writeBody,
+                                      String &uploadedUri) {
   uploadedUri = "";
 
   String host;
@@ -665,7 +847,6 @@ static bool systemLinkUploadTraceFile(const String &filename,
   }
 
   const String boundary = "----CoffeeRoasterSystemLinkBoundary";
-  const char *csvHeader = "elapsedSeconds,actualTempF,targetTempF,heaterOutput,fanTempF,fanOutput\n";
   String prefix;
   prefix.reserve(filename.length() + contentType.length() + boundary.length() + 128);
   prefix += "--" + boundary + "\r\n";
@@ -673,13 +854,16 @@ static bool systemLinkUploadTraceFile(const String &filename,
   prefix += "Content-Type: " + contentType + "\r\n\r\n";
 
   String suffix = "\r\n--" + boundary + "--\r\n";
-  size_t contentLength = prefix.length() + systemLinkCsvLength(session) + suffix.length();
+  size_t contentLength = prefix.length() + bodyLength + suffix.length();
+
+  std::lock_guard<std::mutex> guard(systemLinkNetMutex);
 
   WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(5);
-  if (!client.connect(host.c_str(), port)) {
-    LOG_ERRORF("SystemLink: Failed to connect to %s:%u", host.c_str(), static_cast<unsigned>(port));
+  systemLinkConfigureTls(client);
+  if (!client.connect(host.c_str(), port, static_cast<int32_t>(SYSTEMLINK_HTTP_CONNECT_TIMEOUT_MS))) {
+    char tlsError[96] = {0};
+    client.lastError(tlsError, sizeof(tlsError));
+    LOG_ERRORF("SystemLink: Upload connect to %s:%u failed: %s", host.c_str(), static_cast<unsigned>(port), tlsError);
     return false;
   }
 
@@ -692,69 +876,32 @@ static bool systemLinkUploadTraceFile(const String &filename,
   client.printf("Content-Type: multipart/form-data; boundary=%s\r\n", boundary.c_str());
   client.printf("Content-Length: %u\r\n\r\n", static_cast<unsigned>(contentLength));
   client.print(prefix);
-  client.print(csvHeader);
-
-  char row[96];
-  for (uint16_t index = 0; index < session.sampleCount; index++) {
-    const RoastTraceSample &sample = session.samples[index];
-    int rowLen = snprintf(row,
-                          sizeof(row),
-                          "%u,%.1f,%.1f,%.1f,%.1f,%.1f\n",
-                          static_cast<unsigned>(sample.elapsedSeconds),
-                          sample.actualTenthsF / 10.0f,
-                          sample.targetTenthsF / 10.0f,
-                          sample.heaterOutputTenths / 10.0f,
-                          sample.fanTempTenthsF / 10.0f,
-                          sample.fanOutputTenths / 10.0f);
-    if (rowLen <= 0 || rowLen >= static_cast<int>(sizeof(row))) {
-      client.stop();
-      LOG_ERROR("SystemLink: Failed to format CSV row");
-      return false;
-    }
-    client.write(reinterpret_cast<const uint8_t *>(row), static_cast<size_t>(rowLen));
-    esp_task_wdt_reset();
+  if (!writeBody(client)) {
+    client.stop();
+    return false;
   }
-
   client.print(suffix);
   client.flush();
 
-  unsigned long waitStart = millis();
-  while (!client.available() && client.connected() && millis() - waitStart < 7000UL) {
-    delay(10);
-    esp_task_wdt_reset();
-  }
-
-  if (!client.available()) {
-    client.stop();
-    LOG_ERROR("SystemLink: Timed out waiting for upload response");
-    return false;
-  }
-
-  String statusLine = client.readStringUntil('\n');
-  statusLine.trim();
   int statusCode = -1;
-  int firstSpace = statusLine.indexOf(' ');
-  if (firstSpace >= 0 && statusLine.length() >= firstSpace + 4) {
-    statusCode = statusLine.substring(firstSpace + 1, firstSpace + 4).toInt();
-  }
-
-  while (client.available() || client.connected()) {
-    String headerLine = client.readStringUntil('\n');
-    if (headerLine == "\r" || headerLine.length() == 0) {
-      break;
-    }
-  }
-
-  String responseBody = client.readString();
+  String responseBody;
+  bool gotResponse = systemLinkReadHttpResponse(client, statusCode, responseBody);
   client.stop();
+  if (!gotResponse) {
+    LOG_ERRORF("SystemLink: Upload of %s timed out waiting for response", filename.c_str());
+    return false;
+  }
   if (statusCode < 200 || statusCode >= 300) {
-    LOG_ERRORF("SystemLink: File upload failed (%d): %s", statusCode, responseBody.c_str());
+    LOG_ERRORF("SystemLink: Upload of %s failed (%d): %s",
+               filename.c_str(),
+               statusCode,
+               systemLinkDescribeFailure(statusCode, responseBody, nullptr).c_str());
     return false;
   }
 
-  DynamicJsonDocument doc(1024);
+  JsonDocument doc;
   if (deserializeJson(doc, responseBody)) {
-    LOG_ERRORF("SystemLink: Failed to parse upload response: %s", responseBody.c_str());
+    LOG_ERRORF("SystemLink: Upload response not JSON: %s", responseBody.substring(0, 100).c_str());
     return false;
   }
 
@@ -768,8 +915,24 @@ static bool systemLinkUploadTraceFile(const String &filename,
     return true;
   }
 
-  LOG_ERRORF("SystemLink: Upload response missing uri: %s", responseBody.c_str());
+  LOG_ERRORF("SystemLink: Upload response missing uri: %s", responseBody.substring(0, 100).c_str());
   return false;
+}
+
+static bool systemLinkUploadTraceFile(const String &filename, const SystemLinkRoastSession &session, String &uploadedUri) {
+  return systemLinkUploadMultipart(filename, "text/csv", systemLinkCsvLength(session), [&session](WiFiClientSecure &client) {
+    client.print(SYSTEMLINK_TRACE_CSV_HEADER);
+    char row[96];
+    for (uint16_t index = 0; index < session.sampleCount; index++) {
+      int rowLen = systemLinkFormatCsvRow(session.samples[index], row, sizeof(row));
+      if (rowLen <= 0 || rowLen >= static_cast<int>(sizeof(row))) {
+        LOG_ERROR("SystemLink: Failed to format CSV row");
+        return false;
+      }
+      client.write(reinterpret_cast<const uint8_t *>(row), static_cast<size_t>(rowLen));
+    }
+    return true;
+  }, uploadedUri);
 }
 
 static String systemLinkExtractIdFromUri(const String &uri) {
@@ -807,32 +970,31 @@ static String systemLinkStatusDisplayName(SystemLinkRoastOutcome outcome) {
 }
 
 static void loadSystemLinkConfig() {
+  // Read NVS before taking the spinlock: flash access with interrupts disabled can hang the other core.
+  bool enabled = preferences.getBool(SYSTEMLINK_ENABLED_KEY, false);
+  bool insecureTls = preferences.getBool(SYSTEMLINK_INSECURE_TLS_KEY, false);
+  String apiUrl = preferences.getString(SYSTEMLINK_API_URL_KEY, "https://dev-api.lifecyclesolutions.ni.com");
+  String workspaceId = preferences.getString(SYSTEMLINK_WORKSPACE_KEY, "");
+  String systemId = preferences.getString(SYSTEMLINK_SYSTEM_ID_KEY, "");
+  String apiKey = preferences.getString(SYSTEMLINK_API_KEY_KEY, "");
+  String lastFault = preferences.getString(SYSTEMLINK_LAST_FAULT_KEY, "none");
+  String publishStatus = preferences.getString(SYSTEMLINK_LAST_PUB_STATUS_KEY, "idle");
+
   portENTER_CRITICAL(&systemLinkLock);
-  systemLinkConfig.enabled = preferences.getBool(SYSTEMLINK_ENABLED_KEY, false);
-  systemLinkCopyString(systemLinkConfig.apiUrl,
-                       sizeof(systemLinkConfig.apiUrl),
-                       preferences.getString(SYSTEMLINK_API_URL_KEY,
-                                             "https://dev-api.lifecyclesolutions.ni.com"));
-  systemLinkCopyString(systemLinkConfig.workspaceId,
-                       sizeof(systemLinkConfig.workspaceId),
-                       preferences.getString(SYSTEMLINK_WORKSPACE_KEY, ""));
-  systemLinkCopyString(systemLinkConfig.systemId,
-                       sizeof(systemLinkConfig.systemId),
-                       preferences.getString(SYSTEMLINK_SYSTEM_ID_KEY, ""));
-  systemLinkCopyString(systemLinkConfig.apiKey,
-                       sizeof(systemLinkConfig.apiKey),
-                       preferences.getString(SYSTEMLINK_API_KEY_KEY, ""));
-  systemLinkCopyString(systemLinkTelemetry.lastFault,
-                       sizeof(systemLinkTelemetry.lastFault),
-                       preferences.getString(SYSTEMLINK_LAST_FAULT_KEY, "none"));
-  systemLinkCopyString(systemLinkTelemetry.publishStatus,
-                       sizeof(systemLinkTelemetry.publishStatus),
-                       preferences.getString(SYSTEMLINK_LAST_PUB_STATUS_KEY, "idle"));
+  systemLinkConfig.enabled = enabled;
+  systemLinkConfig.insecureTls = insecureTls;
+  systemLinkCopyString(systemLinkConfig.apiUrl, sizeof(systemLinkConfig.apiUrl), apiUrl);
+  systemLinkCopyString(systemLinkConfig.workspaceId, sizeof(systemLinkConfig.workspaceId), workspaceId);
+  systemLinkCopyString(systemLinkConfig.systemId, sizeof(systemLinkConfig.systemId), systemId);
+  systemLinkCopyString(systemLinkConfig.apiKey, sizeof(systemLinkConfig.apiKey), apiKey);
+  systemLinkCopyString(systemLinkTelemetry.lastFault, sizeof(systemLinkTelemetry.lastFault), lastFault);
+  systemLinkCopyString(systemLinkTelemetry.publishStatus, sizeof(systemLinkTelemetry.publishStatus), publishStatus);
   portEXIT_CRITICAL(&systemLinkLock);
 }
 
 static void saveSystemLinkConfig() {
   preferences.putBool(SYSTEMLINK_ENABLED_KEY, systemLinkConfig.enabled);
+  preferences.putBool(SYSTEMLINK_INSECURE_TLS_KEY, systemLinkConfig.insecureTls);
   preferences.putString(SYSTEMLINK_API_URL_KEY, systemLinkConfig.apiUrl);
   preferences.putString(SYSTEMLINK_WORKSPACE_KEY, systemLinkConfig.workspaceId);
   preferences.putString(SYSTEMLINK_SYSTEM_ID_KEY, systemLinkConfig.systemId);
@@ -844,50 +1006,71 @@ static void saveSystemLinkConfig() {
 }
 
 static String getSystemLinkConfigJSON() {
-  DynamicJsonDocument doc(768);
+  SystemLinkConfig config;
   portENTER_CRITICAL(&systemLinkLock);
-  doc["enabled"] = systemLinkConfig.enabled;
-  doc["apiUrl"] = systemLinkConfig.apiUrl;
-  doc["workspaceId"] = systemLinkConfig.workspaceId;
-  doc["systemId"] = systemLinkConfig.systemId;
-  doc["hasApiKey"] = systemLinkConfig.apiKey[0] != '\0';
-  doc["apiKeyMasked"] = systemLinkMaskedKey();
+  config = systemLinkConfig;
   portEXIT_CRITICAL(&systemLinkLock);
+
+  JsonDocument doc;
+  doc["enabled"] = config.enabled;
+  doc["apiUrl"] = config.apiUrl;
+  doc["workspaceId"] = config.workspaceId;
+  doc["systemId"] = config.systemId;
+  doc["insecureTls"] = config.insecureTls;
+  doc["hasApiKey"] = config.apiKey[0] != '\0';
+  doc["apiKeyMasked"] = systemLinkMaskedKey();
   String json;
   serializeJson(doc, json);
   return json;
 }
 
 static bool updateSystemLinkConfigFromJSON(const String &body, String &errorMessage) {
-  DynamicJsonDocument doc(1024);
+  JsonDocument doc;
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
     errorMessage = "invalid_json";
     return false;
   }
 
+  // Build the new config outside the spinlock (String/JSON access allocates).
+  SystemLinkConfig updated;
   portENTER_CRITICAL(&systemLinkLock);
+  updated = systemLinkConfig;
+  portEXIT_CRITICAL(&systemLinkLock);
+
   if (doc["enabled"].is<bool>()) {
-    systemLinkConfig.enabled = doc["enabled"].as<bool>();
+    updated.enabled = doc["enabled"].as<bool>();
   }
+  if (doc["insecureTls"].is<bool>()) {
+    updated.insecureTls = doc["insecureTls"].as<bool>();
+  }
+  bool urlChanged = false;
   if (doc["apiUrl"].is<const char *>()) {
-    systemLinkCopyString(systemLinkConfig.apiUrl, sizeof(systemLinkConfig.apiUrl), doc["apiUrl"].as<String>());
+    String apiUrl = doc["apiUrl"].as<String>();
+    apiUrl.trim();
+    urlChanged = apiUrl != updated.apiUrl;
+    systemLinkCopyString(updated.apiUrl, sizeof(updated.apiUrl), apiUrl);
   }
   if (doc["workspaceId"].is<const char *>()) {
-    systemLinkCopyString(systemLinkConfig.workspaceId, sizeof(systemLinkConfig.workspaceId), doc["workspaceId"].as<String>());
+    systemLinkCopyString(updated.workspaceId, sizeof(updated.workspaceId), doc["workspaceId"].as<String>());
   }
   if (doc["systemId"].is<const char *>()) {
-    systemLinkCopyString(systemLinkConfig.systemId, sizeof(systemLinkConfig.systemId), doc["systemId"].as<String>());
+    systemLinkCopyString(updated.systemId, sizeof(updated.systemId), doc["systemId"].as<String>());
   }
+  String newApiKey = doc["apiKey"].is<const char *>() ? doc["apiKey"].as<String>() : String();
+  newApiKey.trim();
   if (doc["clearApiKey"].as<bool>()) {
-    systemLinkConfig.apiKey[0] = '\0';
-  } else if (doc["apiKey"].is<const char *>()) {
-    String apiKey = doc["apiKey"].as<String>();
-    apiKey.trim();
-    if (apiKey.length() > 0) {
-      systemLinkCopyString(systemLinkConfig.apiKey, sizeof(systemLinkConfig.apiKey), apiKey);
-    }
+    updated.apiKey[0] = '\0';
+  } else if (newApiKey.length() > 0) {
+    systemLinkCopyString(updated.apiKey, sizeof(updated.apiKey), newApiKey);
+  } else if (urlChanged) {
+    // Never send the stored key to a new host it wasn't entered for.
+    updated.apiKey[0] = '\0';
+    LOG_WARN("SystemLink: API URL changed without a new API key - stored key cleared");
   }
+
+  portENTER_CRITICAL(&systemLinkLock);
+  systemLinkConfig = updated;
   portEXIT_CRITICAL(&systemLinkLock);
 
   saveSystemLinkConfig();
@@ -925,9 +1108,8 @@ static bool systemLinkCreateOrUpdateTag(const String &path,
 
   String responseBody;
   int statusCode = -1;
-  bool ok = systemLinkPostJson(systemLinkBaseUrl("/nitag/v2/tags"), body, responseBody, statusCode);
-  if (!ok && statusCode != 201 && statusCode != 204) {
-    LOG_ERRORF("SystemLink: Failed to create tag %s (%d): %s", path.c_str(), statusCode, responseBody.c_str());
+  if (!systemLinkPostJson(systemLinkBaseUrl("/nitag/v2/tags"), body, responseBody, statusCode, &systemLinkTagClient)) {
+    LOG_ERRORF("SystemLink: Failed to create tag %s (%d)", path.c_str(), statusCode);
     return false;
   }
   return true;
@@ -945,10 +1127,13 @@ static bool systemLinkPutTagValue(const String &path, const char *type, const St
   String responseBody;
   int statusCode = -1;
   String url = systemLinkBaseUrl("/nitag/v2/tags/") + systemLinkConfig.workspaceId + "/" + path + "/values/current";
-  bool ok = systemLinkPutJson(url, body, responseBody, statusCode);
+  bool ok = systemLinkPutJson(url, body, responseBody, statusCode, &systemLinkTagClient);
   if (!ok) {
-    LOG_WARNF("SystemLink: Failed to update tag %s (%d)", path.c_str(), statusCode);
     systemLinkTagRetryAfterMs = millis() + 30000UL;
+    if (statusCode == 404) {
+      // Tag was deleted server-side; recreate it on the next attempt.
+      systemLinkTagsProvisioned = false;
+    }
   }
   return ok;
 }
@@ -967,6 +1152,7 @@ static bool systemLinkEnsureRealtimeTags() {
   ok &= systemLinkCreateOrUpdateTag(systemLinkTagPath("publishStatus"), "STRING", true, SYSTEMLINK_STATUS_TAG_RETENTION_DAYS);
   ok &= systemLinkCreateOrUpdateTag(systemLinkTagPath("resetReason"), "STRING", true, SYSTEMLINK_STATUS_TAG_RETENTION_DAYS);
   ok &= systemLinkCreateOrUpdateTag(systemLinkTagPath("bootCount"), "INT", true, SYSTEMLINK_STATUS_TAG_RETENTION_DAYS);
+  ok &= systemLinkCreateOrUpdateTag(systemLinkTagPath("lastError"), "STRING", true, SYSTEMLINK_STATUS_TAG_RETENTION_DAYS);
   systemLinkTagsProvisioned = ok;
   return ok;
 }
@@ -996,42 +1182,63 @@ static void systemLinkPublishRealtimeTags() {
   snapshot.targetTempF = static_cast<float>(setpointTemp);
   snapshot.roastProgress = setpointProgress;
 
+  // Stop at the first failure and leave systemLinkLastTelemetrySent untouched so unsent values are retried.
+  bool ok = true;
+  auto put = [&ok](const char *suffix, const char *type, const String &value) {
+    if (ok) {
+      ok = systemLinkPutTagValue(systemLinkTagPath(suffix), type, value);
+    }
+  };
+
   if (systemLinkShouldPublishChamberTemp(snapshot)) {
-    systemLinkPutTagValue(systemLinkTagPath("chamberTemp"), "DOUBLE", String(snapshot.chamberTempF, 1));
+    put("chamberTemp", "DOUBLE", String(snapshot.chamberTempF, 1));
   }
-
-  if ((systemLinkIsTrackedRoastState(snapshot.state) || !systemLinkLastTelemetrySentValid ||
-       systemLinkTenths(snapshot.targetTempF) != systemLinkTenths(systemLinkLastTelemetrySent.targetTempF)) &&
-      systemLinkIsTrackedRoastState(snapshot.state)) {
-    systemLinkPutTagValue(systemLinkTagPath("targetTemp"), "DOUBLE", String(snapshot.targetTempF, 1));
+  if (systemLinkIsLiveState(snapshot.state)) {
+    put("targetTemp", "DOUBLE", String(snapshot.targetTempF, 1));
   }
-
   if (!systemLinkLastTelemetrySentValid || snapshot.state != systemLinkLastTelemetrySent.state) {
-    systemLinkPutTagValue(systemLinkTagPath("roastState"), "STRING", String(systemLinkStateName(snapshot.state)));
+    put("roastState", "STRING", String(systemLinkStateName(snapshot.state)));
   }
   if (!systemLinkLastTelemetrySentValid || snapshot.roastProgress != systemLinkLastTelemetrySent.roastProgress) {
-    systemLinkPutTagValue(systemLinkTagPath("roastProgress"), "INT", String(snapshot.roastProgress));
+    put("roastProgress", "INT", String(snapshot.roastProgress));
   }
   if (!systemLinkLastTelemetrySentValid || strcmp(snapshot.lastFault, systemLinkLastTelemetrySent.lastFault) != 0) {
-    systemLinkPutTagValue(systemLinkTagPath("lastFault"), "STRING", String(snapshot.lastFault));
+    put("lastFault", "STRING", String(snapshot.lastFault));
   }
   if (!systemLinkLastTelemetrySentValid || strcmp(snapshot.publishStatus, systemLinkLastTelemetrySent.publishStatus) != 0) {
-    systemLinkPutTagValue(systemLinkTagPath("publishStatus"), "STRING", String(snapshot.publishStatus));
+    put("publishStatus", "STRING", String(snapshot.publishStatus));
   }
   if (!systemLinkLastTelemetrySentValid || strcmp(snapshot.resetReason, systemLinkLastTelemetrySent.resetReason) != 0) {
-    systemLinkPutTagValue(systemLinkTagPath("resetReason"), "STRING", String(snapshot.resetReason));
+    put("resetReason", "STRING", String(snapshot.resetReason));
   }
   if (!systemLinkLastTelemetrySentValid || snapshot.bootCount != systemLinkLastTelemetrySent.bootCount) {
-    systemLinkPutTagValue(systemLinkTagPath("bootCount"), "INT", String(snapshot.bootCount));
+    put("bootCount", "INT", String(snapshot.bootCount));
   }
 
-  systemLinkLastTelemetrySent = snapshot;
-  systemLinkLastTelemetrySentValid = true;
+  LogEntry lastError;
+  uint32_t errorSequence = debugLogger.getLastError(lastError);
+  if (errorSequence != 0 && errorSequence != systemLinkLastErrorSequencePublished) {
+    put("lastError", "STRING", String("t=") + lastError.timestamp + "ms " + lastError.message);
+    if (ok) {
+      systemLinkLastErrorSequencePublished = errorSequence;
+    }
+  }
+
+  if (ok) {
+    systemLinkLastTelemetrySent = snapshot;
+    systemLinkLastTelemetrySentValid = true;
+  }
 }
 
 static void systemLinkTagTask(void *parameter) {
   (void)parameter;
   while (true) {
+    if (systemLinkTagClientNeedsReset) {
+      systemLinkTagClientNeedsReset = false;
+      std::lock_guard<std::mutex> guard(systemLinkNetMutex);
+      systemLinkTagClient.stop();
+      systemLinkConfigureTls(systemLinkTagClient);
+    }
     if (systemLinkHasRequiredConfig()) {
       systemLinkPublishRealtimeTags();
     }
@@ -1046,7 +1253,7 @@ static void initSystemLinkTagTask() {
 
   xTaskCreatePinnedToCore(systemLinkTagTask,
                           "systemlink-tags",
-                          8192,
+                          12288,
                           nullptr,
                           1,
                           &systemLinkTagTaskHandle,
@@ -1070,7 +1277,7 @@ static void initSystemLinkPublishTask() {
 
   xTaskCreatePinnedToCore(systemLinkPublishTask,
                           "systemlink-publish",
-                          12288,
+                          16384,
                           nullptr,
                           1,
                           &systemLinkPublishTaskHandle,
@@ -1080,12 +1287,20 @@ static void initSystemLinkPublishTask() {
 static void systemLinkSetSessionPhase(const char *phase) {
   portENTER_CRITICAL(&systemLinkLock);
   if (systemLinkSession.active) {
-    systemLinkCopyString(systemLinkSession.phase, sizeof(systemLinkSession.phase), String(phase));
+    systemLinkCopyString(systemLinkSession.phase, sizeof(systemLinkSession.phase), phase);
   }
   portEXIT_CRITICAL(&systemLinkLock);
 }
 
 static void systemLinkMarkRoastStarted() {
+  if (!systemLinkHasRequiredConfig()) {
+    // Otherwise breadcrumbs pile up and a stale roast is published once SystemLink is configured.
+    portENTER_CRITICAL(&systemLinkLock);
+    systemLinkSession.active = false;
+    portEXIT_CRITICAL(&systemLinkLock);
+    return;
+  }
+
   String activeId = profileManager.getActiveProfileId();
   String activeName;
   profileManager.loadProfileMeta(activeId, activeName);
@@ -1201,6 +1416,8 @@ static void systemLinkRecordRoastSample() {
 
 static void systemLinkFinishRoast(SystemLinkRoastOutcome outcome, const char *reason) {
   bool persistPending = false;
+  bool droppedCurrent = false;
+  bool replacedPending = false;
   portENTER_CRITICAL(&systemLinkLock);
   if (!systemLinkSession.active) {
     portEXIT_CRITICAL(&systemLinkLock);
@@ -1211,17 +1428,25 @@ static void systemLinkFinishRoast(SystemLinkRoastOutcome outcome, const char *re
   systemLinkSession.endedAtMs = millis();
   systemLinkAssignOutcome(systemLinkSession, outcome, reason, systemLinkSession.phase);
   systemLinkCopyString(systemLinkSession.phase, sizeof(systemLinkSession.phase), "publish_pending");
-  if (!systemLinkPublishPending && !systemLinkPublishInProgress) {
+  if (systemLinkPublishInProgress) {
+    // The publish task is reading systemLinkPublishSession; it can't be overwritten.
+    droppedCurrent = true;
+  } else {
+    // A still-pending older roast has already failed to publish; the newest roast is more useful.
+    replacedPending = systemLinkPublishPending;
     memcpy(&systemLinkPublishSession, &systemLinkSession, sizeof(SystemLinkRoastSession));
     systemLinkPublishPending = true;
     persistPending = true;
-  } else {
-    LOG_WARN("SystemLink: Previous publish still active, dropping completed roast publish");
   }
   systemLinkTelemetry.active = false;
   systemLinkTelemetry.state = roasterState;
   portEXIT_CRITICAL(&systemLinkLock);
 
+  if (droppedCurrent) {
+    LOG_ERRORF("SystemLink: Publish in progress, roast result dropped (outcome reason %s)", reason);
+  } else if (replacedPending) {
+    LOG_ERROR("SystemLink: Unpublished previous roast replaced by newer roast");
+  }
   if (outcome == SYSTEMLINK_OUTCOME_ERRORED) {
     systemLinkUpdateLastFault(reason);
   }
@@ -1328,11 +1553,11 @@ static bool systemLinkCreatePhaseSteps(const String &resultId, const SystemLinkR
   int statusCode = -1;
   static const uint8_t MAX_ATTEMPTS = 3;
   for (uint8_t attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    responseBody = "";
-    statusCode = -1;
-
     bool ok = systemLinkPostJson(systemLinkBaseUrl("/nitestmonitor/v2/steps"), body, responseBody, statusCode);
-    if (ok) {
+    String apiError;
+    // Batch endpoints can return 2xx with an error object for items that failed.
+    bool partialFailure = ok && systemLinkResponseContainsError(responseBody, apiError);
+    if (ok && !partialFailure) {
       LOG_INFOF("SystemLink: Published %u roast phase steps (status=%d, attempt=%u)",
                 static_cast<unsigned>(steps.size()),
                 statusCode,
@@ -1340,33 +1565,24 @@ static bool systemLinkCreatePhaseSteps(const String &resultId, const SystemLinkR
       return true;
     }
 
-    String apiError;
-    bool hasApiError = systemLinkResponseContainsError(responseBody, apiError);
-    LOG_ERRORF("SystemLink: Step publish failed (status=%d, attempt=%u, heap=%u)",
-               statusCode,
+    LOG_ERRORF("SystemLink: Step publish failed (attempt %u, status %d): %s",
                static_cast<unsigned>(attempt),
-               static_cast<unsigned>(ESP.getFreeHeap()));
-    if (hasApiError && apiError.length() > 0) {
-      LOG_ERRORF("SystemLink: Step publish API error: %s", apiError.c_str());
-    }
-    if (responseBody.length() > 0) {
-      String snippet = responseBody.substring(0, 120);
-      LOG_ERRORF("SystemLink: Step publish response: %s", snippet.c_str());
-    }
+               statusCode,
+               partialFailure ? apiError.c_str() : systemLinkDescribeFailure(statusCode, responseBody, nullptr).c_str());
 
-    if (statusCode >= 400 && statusCode < 500 && statusCode != 429) {
+    // Client errors won't succeed on retry, and retrying a partial success would duplicate steps.
+    if (partialFailure || (statusCode >= 400 && statusCode < 500 && statusCode != 429)) {
       break;
     }
 
     delay(300);
-    esp_task_wdt_reset();
   }
 
   return false;
 }
 
-static bool systemLinkCreateResult(SystemLinkRoastSession &session, const String &fileId, String &resultId) {
-  DynamicJsonDocument doc(4096);
+static bool systemLinkCreateResult(SystemLinkRoastSession &session, const String &fileId, String &resultId, int &statusCode) {
+  JsonDocument doc;
   JsonObject result = doc.createNestedArray("results").createNestedObject();
 
   result["programName"] = session.profileName[0] != '\0' ? String("Coffee Roaster - ") + session.profileName : "Coffee Roaster Roast";
@@ -1408,34 +1624,63 @@ static bool systemLinkCreateResult(SystemLinkRoastSession &session, const String
   properties["coolingPhaseSeconds"] = String(systemLinkCoolingPhaseSeconds(session), 3);
   properties["resetReason"] = session.resetReason;
   properties["recoveredAfterReset"] = session.recoveredAfterReset ? "true" : "false";
+  properties["publishAttempt"] = String(session.publishAttempts + 1);
+  properties["freeHeapBytes"] = String(ESP.getFreeHeap());
+  // Device-side WARN/ERROR history (includes earlier failed publish attempts).
+  properties["recentWarnings"] = debugLogger.getRecentText(100, LOG_LEVEL_WARN, SYSTEMLINK_RECENT_LOG_MAX_CHARS);
 
   if (fileId.length() > 0) {
     JsonArray fileIds = result.createNestedArray("fileIds");
     fileIds.add(fileId);
   } else {
-    properties["traceUploadError"] = "csv_upload_failed";
+    properties["traceUploadError"] = session.sampleCount == 0 ? "no_samples" : "csv_upload_failed";
+  }
+
+  if (doc.overflowed()) {
+    LOG_ERROR("SystemLink: Result JSON ran out of memory");
+    return false;
   }
 
   String body;
   serializeJson(doc, body);
 
   String responseBody;
-  int statusCode = -1;
   bool ok = systemLinkPostJson(systemLinkBaseUrl("/nitestmonitor/v2/results"), body, responseBody, statusCode);
-  if (!ok && statusCode != 201) {
-    LOG_ERRORF("SystemLink: Result publish failed (%d): %s", statusCode, responseBody.c_str());
+  String apiError;
+  if (ok && systemLinkResponseContainsError(responseBody, apiError)) {
+    LOG_ERRORF("SystemLink: Result rejected (%d): %s", statusCode, apiError.c_str());
+    return false;
+  }
+  if (!ok) {
+    LOG_ERRORF("SystemLink: Result publish failed (%d): %s",
+               statusCode,
+               systemLinkDescribeFailure(statusCode, responseBody, nullptr).c_str());
     return false;
   }
 
   if (!systemLinkParseCreatedResultId(responseBody, resultId)) {
-    LOG_WARNF("SystemLink: Result published but result ID was not found in response: %s", responseBody.c_str());
+    LOG_WARNF("SystemLink: Result published but ID missing from response: %s", responseBody.substring(0, 100).c_str());
   }
 
   LOG_INFOF("SystemLink: Published roast result (%s)", systemLinkStatusTypeName(session.outcome).c_str());
   return true;
 }
 
+static void systemLinkEndPublish(const char *status) {
+  // Clear breadcrumbs before releasing the slot so a roast finishing right now keeps its own.
+  systemLinkUpdatePublishStatus(status);
+  systemLinkClearBreadcrumb();
+  portENTER_CRITICAL(&systemLinkLock);
+  systemLinkPublishInProgress = false;
+  systemLinkPublishPending = false;
+  portEXIT_CRITICAL(&systemLinkLock);
+}
+
+static void processPendingCalibrationPublish();
+
 static void processPendingSystemLinkPublish() {
+  processPendingCalibrationPublish();
+
   if (millis() - systemLinkLastPublishAttemptMs < 15000UL) {
     return;
   }
@@ -1454,49 +1699,68 @@ static void processPendingSystemLinkPublish() {
 
   systemLinkLastPublishAttemptMs = millis();
 
+  if (!systemLinkConfig.enabled) {
+    LOG_WARN("SystemLink: Disabled - discarding unpublished roast");
+    systemLinkEndPublish("disabled");
+    return;
+  }
+
   if (!systemLinkHasRequiredConfig() || WiFi.status() != WL_CONNECTED) {
     portENTER_CRITICAL(&systemLinkLock);
     systemLinkPublishInProgress = false;
     portEXIT_CRITICAL(&systemLinkLock);
-    systemLinkUpdatePublishStatus("waiting_for_network");
+    systemLinkUpdatePublishStatus(systemLinkHasRequiredConfig() ? "waiting_for_network" : "waiting_for_config", false);
     return;
   }
 
-  String uploadUri;
-  String fileId;
-  String filename = String("roast-") + (systemLinkPublishSession.profileId[0] != '\0' ? systemLinkPublishSession.profileId : "session") + ".csv";
-  systemLinkUpdatePublishStatus("uploading_csv");
-  systemLinkPersistBreadcrumb(systemLinkPublishSession, false, true, "uploading_csv");
-  if (systemLinkUploadTraceFile(filename, "text/csv", systemLinkPublishSession, uploadUri)) {
-    fileId = systemLinkExtractIdFromUri(uploadUri);
-  } else {
-    systemLinkUpdatePublishStatus("csv_upload_failed");
+  SystemLinkRoastSession &session = systemLinkPublishSession;
+  LOG_INFOF("SystemLink: Publishing roast (attempt %u/%u, %u samples, reason %s)",
+            static_cast<unsigned>(session.publishAttempts + 1),
+            static_cast<unsigned>(SYSTEMLINK_MAX_PUBLISH_ATTEMPTS),
+            static_cast<unsigned>(session.sampleCount),
+            session.outcomeReason);
+
+  // Upload the trace only once so retries don't create duplicate files.
+  if (session.fileId[0] == '\0' && session.sampleCount > 0) {
+    String uploadUri;
+    String filename = String("roast-") + (session.profileId[0] != '\0' ? session.profileId : "session") + ".csv";
+    systemLinkUpdatePublishStatus("uploading_csv");
+    systemLinkPersistBreadcrumb(session, false, true, "uploading_csv");
+    if (systemLinkUploadTraceFile(filename, session, uploadUri)) {
+      systemLinkCopyString(session.fileId, sizeof(session.fileId), systemLinkExtractIdFromUri(uploadUri));
+    }
   }
 
   systemLinkUpdatePublishStatus("creating_result");
-  systemLinkPersistBreadcrumb(systemLinkPublishSession, false, true, "creating_result");
+  systemLinkPersistBreadcrumb(session, false, true, "creating_result");
   String resultId;
-  bool published = systemLinkCreateResult(systemLinkPublishSession, fileId, resultId);
-  bool stepsPublished = true;
-  if (published && resultId.length() > 0) {
-    systemLinkUpdatePublishStatus("creating_steps");
-    systemLinkPersistBreadcrumb(systemLinkPublishSession, false, true, "creating_steps");
-    stepsPublished = systemLinkCreatePhaseSteps(resultId, systemLinkPublishSession);
-  }
-  portENTER_CRITICAL(&systemLinkLock);
-  systemLinkPublishInProgress = false;
-  if (published) {
-    systemLinkPublishPending = false;
-    memset(&systemLinkPublishSession, 0, sizeof(SystemLinkRoastSession));
-  }
-  portEXIT_CRITICAL(&systemLinkLock);
+  int statusCode = -1;
+  bool published = systemLinkCreateResult(session, String(session.fileId), resultId, statusCode);
 
-  if (published) {
-    systemLinkUpdatePublishStatus(stepsPublished ? "published" : "published_steps_failed");
-    systemLinkClearBreadcrumb();
-  } else {
-    systemLinkUpdatePublishStatus("result_publish_failed");
+  if (!published) {
+    session.publishAttempts++;
+    bool clientError = statusCode >= 400 && statusCode < 500 && statusCode != 408 && statusCode != 429;
+    if (clientError || session.publishAttempts >= SYSTEMLINK_MAX_PUBLISH_ATTEMPTS) {
+      LOG_ERRORF("SystemLink: Giving up on roast publish after %u attempts (last status %d)",
+                 static_cast<unsigned>(session.publishAttempts), statusCode);
+      systemLinkEndPublish(clientError ? "publish_rejected" : "publish_abandoned");
+      return;
+    }
+    portENTER_CRITICAL(&systemLinkLock);
+    systemLinkPublishInProgress = false;
+    portEXIT_CRITICAL(&systemLinkLock);
+    systemLinkUpdatePublishStatus(String("result_publish_failed_") + statusCode);
+    return;
   }
+
+  bool stepsPublished = true;
+  if (resultId.length() > 0) {
+    systemLinkUpdatePublishStatus("creating_steps");
+    systemLinkPersistBreadcrumb(session, false, true, "creating_steps");
+    stepsPublished = systemLinkCreatePhaseSteps(resultId, session);
+  }
+
+  systemLinkEndPublish(stepsPublished ? "published" : "published_steps_failed");
 }
 
 // ============================================================================
@@ -1565,105 +1829,17 @@ static String systemLinkBuildCalibrationCsv(const StepResponseTuner &tuner) {
 static bool systemLinkUploadCalibrationCsv(const String &filename,
                                             const String &csvContent,
                                             String &uploadedUri) {
-  uploadedUri = "";
-  String host;
-  uint16_t port;
-  if (!systemLinkParseApiEndpoint(host, port)) {
-    LOG_ERROR("SystemLink: Invalid API URL for calibration upload");
-    return false;
-  }
-
-  const String boundary = "----CoffeeRoasterCalibrationBoundary";
-  String prefix;
-  prefix.reserve(filename.length() + boundary.length() + 128);
-  prefix += "--" + boundary + "\r\n";
-  prefix += "Content-Disposition: form-data; name=\"file\"; filename=\"" + filename + "\"\r\n";
-  prefix += "Content-Type: text/csv\r\n\r\n";
-
-  String suffix = "\r\n--" + boundary + "--\r\n";
-  size_t contentLength = prefix.length() + csvContent.length() + suffix.length();
-
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(5);
-  if (!client.connect(host.c_str(), port)) {
-    LOG_ERRORF("SystemLink: Calibration upload connect failed to %s:%u", host.c_str(), static_cast<unsigned>(port));
-    return false;
-  }
-
-  String requestPath = String("/nifile/v1/service-groups/Default/upload-files?workspace=") + systemLinkConfig.workspaceId;
-  client.printf("POST %s HTTP/1.1\r\n", requestPath.c_str());
-  client.printf("Host: %s\r\n", host.c_str());
-  client.print("Connection: close\r\n");
-  client.print("Accept: application/json\r\n");
-  client.printf("x-ni-api-key: %s\r\n", systemLinkConfig.apiKey);
-  client.printf("Content-Type: multipart/form-data; boundary=%s\r\n", boundary.c_str());
-  client.printf("Content-Length: %u\r\n\r\n", static_cast<unsigned>(contentLength));
-
-  client.print(prefix);
-  // Write CSV in chunks to avoid large single write
-  const char *data = csvContent.c_str();
-  size_t remaining = csvContent.length();
-  while (remaining > 0) {
-    size_t chunk = min(remaining, static_cast<size_t>(1024));
-    client.write(reinterpret_cast<const uint8_t *>(data), chunk);
-    data += chunk;
-    remaining -= chunk;
-    esp_task_wdt_reset();
-  }
-  client.print(suffix);
-  client.flush();
-
-  unsigned long waitStart = millis();
-  while (!client.available() && client.connected() && millis() - waitStart < 7000UL) {
-    delay(10);
-    esp_task_wdt_reset();
-  }
-
-  if (!client.available()) {
-    client.stop();
-    LOG_ERROR("SystemLink: Calibration upload timed out");
-    return false;
-  }
-
-  String statusLine = client.readStringUntil('\n');
-  statusLine.trim();
-  int statusCode = -1;
-  int firstSpace = statusLine.indexOf(' ');
-  if (firstSpace >= 0 && statusLine.length() >= static_cast<unsigned>(firstSpace + 4)) {
-    statusCode = statusLine.substring(firstSpace + 1, firstSpace + 4).toInt();
-  }
-
-  while (client.available() || client.connected()) {
-    String headerLine = client.readStringUntil('\n');
-    if (headerLine == "\r" || headerLine.length() == 0) break;
-  }
-
-  String responseBody = client.readString();
-  client.stop();
-
-  if (statusCode < 200 || statusCode >= 300) {
-    LOG_ERRORF("SystemLink: Calibration upload failed (%d): %s", statusCode, responseBody.c_str());
-    return false;
-  }
-
-  DynamicJsonDocument doc(1024);
-  if (deserializeJson(doc, responseBody)) {
-    LOG_ERRORF("SystemLink: Failed to parse calibration upload response: %s", responseBody.c_str());
-    return false;
-  }
-
-  if (doc.is<JsonObject>() && doc["uri"].is<const char *>()) {
-    uploadedUri = doc["uri"].as<String>();
+  return systemLinkUploadMultipart(filename, "text/csv", csvContent.length(), [&csvContent](WiFiClientSecure &client) {
+    const char *data = csvContent.c_str();
+    size_t remaining = csvContent.length();
+    while (remaining > 0) {
+      size_t chunk = min(remaining, static_cast<size_t>(1024));
+      client.write(reinterpret_cast<const uint8_t *>(data), chunk);
+      data += chunk;
+      remaining -= chunk;
+    }
     return true;
-  }
-  if (doc.is<JsonArray>() && doc[0]["uri"].is<const char *>()) {
-    uploadedUri = doc[0]["uri"].as<String>();
-    return true;
-  }
-
-  LOG_ERROR("SystemLink: No URI in calibration upload response");
-  return false;
+  }, uploadedUri);
 }
 
 // Create a test result for a calibration run.
@@ -1671,14 +1847,15 @@ static bool systemLinkCreateCalibrationResult(const StepResponseTuner &tuner,
                                                const String &fileId,
                                                String &resultId) {
   StepResponseTuner::Summary summary = tuner.getSummary();
+  bool passed = tuner.isComplete() && summary.passed;
 
-  DynamicJsonDocument doc(4096);
+  JsonDocument doc;
   JsonObject result = doc.createNestedArray("results").createNestedObject();
 
   result["programName"] = "Coffee Roaster - PID Calibration (Step-Response)";
   JsonObject status = result.createNestedObject("status");
-  status["statusType"] = summary.passed ? "PASSED" : "FAILED";
-  status["statusName"] = summary.passed ? "Calibration Passed" : "Calibration Failed";
+  status["statusType"] = passed ? "PASSED" : "FAILED";
+  status["statusName"] = passed ? "Calibration Passed" : "Calibration Failed";
   result["systemId"] = systemLinkConfig.systemId;
   result["hostName"] = WiFi.getHostname();
   result["partNumber"] = "coffee-roaster";
@@ -1702,6 +1879,10 @@ static bool systemLinkCreateCalibrationResult(const StepResponseTuner &tuner,
   properties["worstFitRmseF"] = String(summary.worstFitRmse, 3);
   properties["maxTempF"] = String(summary.maxTemp, 1);
   properties["totalSamples"] = String(summary.totalSamples);
+  properties["completed"] = tuner.isComplete() ? "true" : "false";
+  properties["lastError"] = tuner.getLastError();
+  properties["freeHeapBytes"] = String(ESP.getFreeHeap());
+  properties["recentWarnings"] = debugLogger.getRecentText(100, LOG_LEVEL_WARN, SYSTEMLINK_RECENT_LOG_MAX_CHARS);
 
   // Recommended PID gains
   properties["recommendedKp"] = String(summary.recommendedKp, 4);
@@ -1738,8 +1919,15 @@ static bool systemLinkCreateCalibrationResult(const StepResponseTuner &tuner,
   String responseBody;
   int statusCode = -1;
   bool ok = systemLinkPostJson(systemLinkBaseUrl("/nitestmonitor/v2/results"), body, responseBody, statusCode);
-  if (!ok && statusCode != 201) {
-    LOG_ERRORF("SystemLink: Calibration result publish failed (%d): %s", statusCode, responseBody.c_str());
+  String apiError;
+  if (ok && systemLinkResponseContainsError(responseBody, apiError)) {
+    LOG_ERRORF("SystemLink: Calibration result rejected (%d): %s", statusCode, apiError.c_str());
+    return false;
+  }
+  if (!ok) {
+    LOG_ERRORF("SystemLink: Calibration result publish failed (%d): %s",
+               statusCode,
+               systemLinkDescribeFailure(statusCode, responseBody, nullptr).c_str());
     return false;
   }
 
@@ -1751,35 +1939,21 @@ static bool systemLinkCreateCalibrationResult(const StepResponseTuner &tuner,
   return true;
 }
 
-// Top-level function: build CSV, upload file, create test result.
-// Called from the main .ino when step-response tuning completes.
+// Build CSV, upload file, create test result. Runs on the publish task.
 static void systemLinkPublishCalibration(const StepResponseTuner &tuner) {
-  if (!systemLinkHasRequiredConfig() || WiFi.status() != WL_CONNECTED) {
-    LOG_INFO("SystemLink: Skipping calibration publish (not configured or offline)");
-    return;
-  }
-
   LOG_INFO("SystemLink: Publishing step-response calibration data");
-
-  String csvContent = systemLinkBuildCalibrationCsv(tuner);
-  if (csvContent.length() == 0) {
-    LOG_WARN("SystemLink: Empty calibration CSV, skipping publish");
-    return;
-  }
 
   String uploadUri;
   String fileId;
-  String filename = "calibration-step-response.csv";
-
-  if (systemLinkUploadCalibrationCsv(filename, csvContent, uploadUri)) {
-    fileId = systemLinkExtractIdFromUri(uploadUri);
-    LOG_INFOF("SystemLink: Calibration CSV uploaded (fileId=%s)", fileId.c_str());
-  } else {
-    LOG_WARN("SystemLink: Calibration CSV upload failed, publishing result without file");
+  {
+    String csvContent = systemLinkBuildCalibrationCsv(tuner);
+    if (systemLinkUploadCalibrationCsv("calibration-step-response.csv", csvContent, uploadUri)) {
+      fileId = systemLinkExtractIdFromUri(uploadUri);
+      LOG_INFOF("SystemLink: Calibration CSV uploaded (fileId=%s)", fileId.c_str());
+    } else {
+      LOG_WARN("SystemLink: Calibration CSV upload failed, publishing result without file");
+    }
   }
-
-  // Free CSV memory before creating result (can be large)
-  csvContent = "";
 
   String resultId;
   if (systemLinkCreateCalibrationResult(tuner, fileId, resultId)) {
@@ -1787,6 +1961,34 @@ static void systemLinkPublishCalibration(const StepResponseTuner &tuner) {
   } else {
     LOG_ERROR("SystemLink: Failed to create calibration test result");
   }
+}
+
+// Called from loop() when tuning ends; the upload happens on the publish task so the control loop never blocks.
+static void systemLinkQueueCalibrationPublish() {
+  if (!systemLinkConfig.enabled) {
+    return;
+  }
+  systemLinkCalibrationPublishPending = true;
+}
+
+// New calibrations must wait while a publish can run: the publish task reads the tuner's trace in place.
+static bool systemLinkCalibrationPublishBusy() {
+  return systemLinkCalibrationPublishPending && systemLinkHasRequiredConfig() && WiFi.status() == WL_CONNECTED;
+}
+
+static void processPendingCalibrationPublish() {
+  if (!systemLinkCalibrationPublishPending) {
+    return;
+  }
+  if (!systemLinkConfig.enabled) {
+    systemLinkCalibrationPublishPending = false;
+    return;
+  }
+  if (!systemLinkHasRequiredConfig() || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+  systemLinkPublishCalibration(stepTuner);
+  systemLinkCalibrationPublishPending = false;
 }
 
 #endif // SYSTEMLINK_HPP

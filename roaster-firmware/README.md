@@ -129,6 +129,16 @@ For example, on macOS:
 screen /dev/cu.usbmodem* 115200
 ```
 
+### Protect the Web UI and API
+
+Web UI, API, and OTA requests are denied until a password is configured. Set one over serial (minimum 8 characters):
+
+```text
+WEBPASS my-long-password
+```
+
+The browser then prompts for user `admin`. OTA uploads with `run_tests.sh` need `OTA_USER=admin OTA_PASS=...`. The Artisan WebSocket (`/WebSocket`) stays open. Send `WEBPASS CLEAR` to remove the password.
+
 ### Build Artifacts
 
 Compiled firmware is automatically copied to `build/roaster-firmware.bin`:
