@@ -30,6 +30,28 @@ bool networkServicesInitialized = false;
 bool wifiConnectionPending = false;
 bool mdnsStarted = false;
 
+// Set via serial "WEBPASS <password>"; empty leaves the web UI/API open.
+static const char *WEB_AUTH_USER = "admin";
+String webPassword;
+
+// Requests from async web handlers that must run on the loop() task.
+volatile bool nextionProfileRefreshRequested = false;
+volatile bool validationStartRequested = false;
+volatile int validationStartFanPercent = 70;
+
+void applyWebPassword(const String &password) {
+  webPassword = password;
+  if (password.length() > 0) {
+    ElegantOTA.setAuth(WEB_AUTH_USER, webPassword.c_str());
+  } else {
+    ElegantOTA.clearAuth();
+  }
+}
+
+bool webRequestAuthorized(AsyncWebServerRequest *request) {
+  return webPassword.length() > 0 && request->authenticate(WEB_AUTH_USER, webPassword.c_str());
+}
+
 // External variables from main firmware
 extern double currentTemp;
 extern double setpointTemp;
@@ -200,6 +222,7 @@ const char* getStateName(byte state) {
     case 2: return "ROASTING";
     case 3: return "COOLING";
     case 4: return "ERROR";
+    case 5: return "CALIBRATING";
     default: return "UNKNOWN";
   }
 }
@@ -349,6 +372,24 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   networkServicesInitialized = true;
 
   initializeMdns();
+
+  // Body callbacks run before middleware, so body handlers also call webRequestAuthorized().
+  server.addMiddleware([](AsyncWebServerRequest *request, ArMiddlewareNext next) {
+    // Artisan polls over the WebSocket without credentials.
+    if (request->url() == "/WebSocket") {
+      next();
+      return;
+    }
+    if (!webRequestAuthorized(request)) {
+      request->requestAuthentication(AsyncAuthType::AUTH_BASIC, "roaster");
+      return;
+    }
+    if (request->url().startsWith("/ota/") && roasterState != IDLE) {
+      request->send(409, "application/json", "{\"error\":\"Roaster must be IDLE to update firmware\"}");
+      return;
+    }
+    next();
+  });
 
   initWebSocket();
 
@@ -546,6 +587,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     [](AsyncWebServerRequest *request) {},
     nullptr,
     [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (!webRequestAuthorized(request)) return;
       if (index == 0) {
         String* body = new String();
         body->reserve(total + 1);
@@ -631,10 +673,14 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       return;
     }
     LOG_DEBUGF("POST /api/profile/%s/activate", id.c_str());
+    if (roasterState != IDLE) {
+        request->send(409, "application/json", "{\"ok\":false,\"error\":\"roaster_busy\"}");
+        return;
+    }
     
     bool success = profileManager.activateProfile(id);
     if (success) {
-        updateNextionActiveProfile();
+        nextionProfileRefreshRequested = true;
         request->send(200, "application/json", "{\"ok\":true}");
     } else {
         request->send(404, "application/json", "{\"ok\":false,\"error\":\"not_found\"}");
@@ -646,6 +692,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     [](AsyncWebServerRequest *request) {},
     nullptr,
     [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (!webRequestAuthorized(request)) return;
       String path = request->url();
       if (path.endsWith("/activate")) return;  // handled in POST
 
@@ -758,6 +805,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     [](AsyncWebServerRequest *request) {},
     nullptr,
     [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (!webRequestAuthorized(request)) return;
       if (index == 0) {
         String* body = new String();
         body->reserve(total + 1);
@@ -910,6 +958,15 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       request->send(400, "application/json", "{\"error\":\"Roaster must be below 140F to start tuning\"}");
       return;
     }
+
+    if (systemLinkCalibrationPublishBusy()) {
+      request->send(409, "application/json", "{\"error\":\"Previous calibration is still being published to SystemLink\"}");
+      return;
+    }
+    if (systemLinkCalibrationPublishPending) {
+      LOG_WARN("SystemLink: Unpublished calibration discarded (offline) - new calibration starting");
+      systemLinkCalibrationPublishPending = false;
+    }
     
     int fanSpeed = 255;
     if (request->hasParam("fan")) {
@@ -995,10 +1052,13 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       fanPercent = request->getParam("fanPercent")->value().toInt();
     }
 
-    if (!startValidationRoast(target, constrain(fanPercent, 20, 100))) {
-      request->send(500, "application/json", "{\"error\":\"failed_to_start_validation\"}");
+    if (validationStartRequested) {
+      request->send(409, "application/json", "{\"error\":\"Validation start already requested\"}");
       return;
     }
+
+    validationStartFanPercent = constrain(fanPercent, 20, 100);
+    validationStartRequested = true;
 
     StaticJsonDocument<256> doc;
     doc["ok"] = true;
@@ -1029,6 +1089,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     [](AsyncWebServerRequest *request) {},
     nullptr,
     [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (!webRequestAuthorized(request)) return;
       if (index == 0) {
         String* body = new String();
         body->reserve(total + 1);
@@ -1057,6 +1118,22 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       double newKp = doc.containsKey("kp") ? doc["kp"].as<double>() : kp;
       double newKi = doc.containsKey("ki") ? doc["ki"].as<double>() : ki;
       double newKd = doc.containsKey("kd") ? doc["kd"].as<double>() : kd;
+
+      if (roasterState != IDLE) {
+        request->send(409, "application/json", "{\"error\":\"Roaster must be IDLE to change PID gains\"}");
+        return;
+      }
+
+      // Negative gains turn the loop into positive feedback (heater runs away).
+      bool gainsValid = isfinite(newKp) && isfinite(newKi) && isfinite(newKd) &&
+                        newKp > 0.0 && newKp <= 100.0 &&
+                        newKi >= 0.0 && newKi <= 10.0 &&
+                        newKd >= 0.0 && newKd <= 100.0;
+      if (!gainsValid) {
+        LOG_WARNF("Rejected PID gains Kp=%.4f Ki=%.4f Kd=%.4f", newKp, newKi, newKd);
+        request->send(400, "application/json", "{\"error\":\"gains_out_of_range\"}");
+        return;
+      }
 
       setManualPIDGains(newKp, newKi, newKd);
 
@@ -2277,7 +2354,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   });
 
   // Start ElegantOTA for over-the-air updates
-  ElegantOTA.begin(&server);  // Start ElegantOTA in async mode
+  ElegantOTA.begin(&server, webPassword.length() > 0 ? WEB_AUTH_USER : "", webPassword.c_str());
   ElegantOTA.setAutoReboot(false);
   // ElegantOTA callbacks
   ElegantOTA.onStart(onOTAStart);

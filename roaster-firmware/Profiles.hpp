@@ -2,6 +2,7 @@
 #define PROFILES_HPP
 
 #include <stdio.h>
+#include "Types.hpp"
 
 // NOTE: All temperature values in this file are in Fahrenheit (°F)
 class Profiles
@@ -234,9 +235,7 @@ void Profiles::addSetpoint(uint32_t time, uint32_t temp, uint32_t fanSpeed)
 
 bool Profiles::validateSetpoint(uint32_t temp, uint32_t fanSpeed) const
 {
-    // Validate temperature (0-500°F) and fan speed (0-100%)
-    // Note: uint32_t is always >= 0, so only check upper bounds
-    return (temp <= 500 && fanSpeed <= 100);
+    return (temp <= MAX_ROAST_TEMP && fanSpeed <= 100);
 }
 
 Profiles::Setpoint Profiles::getSetpoint(int index) const

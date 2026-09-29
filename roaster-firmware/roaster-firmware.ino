@@ -95,6 +95,7 @@ int setpointProgress = 0;   // Roast time in seconds
 int bdcFanMs = 800;         // BDC fan servo pulse width (800-2000 µs)
 double fanTemp = 0;         // Inlet/fan temperature sensor (°F)
 int badReadingCount = 0;    // Track consecutive bad thermocouple readings
+int badFanReadingCount = 0; // Track consecutive bad fan thermocouple readings
 
 // Restart handling
 bool restartRequested = false;
@@ -176,7 +177,27 @@ void handleSerialWifiProvisioning()
       continue;
     }
 
-    if (command == "WIFI CLEAR")
+    if (command == "WEBPASS CLEAR")
+    {
+      preferences.remove("web_pass");
+      applyWebPassword("");
+      Serial.println("Web password cleared - web UI and API are unauthenticated");
+    }
+    else if (command.startsWith("WEBPASS "))
+    {
+      String password = command.substring(8);
+      if (password.length() < 8)
+      {
+        Serial.println("Web password must be at least 8 characters");
+      }
+      else
+      {
+        preferences.putString("web_pass", password);
+        applyWebPassword(password);
+        Serial.printf("Web password set (user '%s')\n", WEB_AUTH_USER);
+      }
+    }
+    else if (command == "WIFI CLEAR")
     {
       preferences.remove("ssid");
       preferences.remove("password");
@@ -237,9 +258,9 @@ uint32_t getEffectiveFinalTargetTemp()
   // Use Nextion override if set; otherwise fall back to profile final target
   if (finalTempOverride > 0)
   {
-    return constrain(finalTempOverride, 0, 500);
+    return constrain(finalTempOverride, 0, (int)MAX_ROAST_TEMP);
   }
-  return profile.getFinalTargetTemp();
+  return min(profile.getFinalTargetTemp(), (uint32_t)MAX_ROAST_TEMP);
 }
 
 void applyHeaterPIDGains(double newKp, double newKi, double newKd)
@@ -290,7 +311,7 @@ void updateRoastControl(unsigned long now)
     return;
   }
 
-  setpointTemp = profile.getTargetTemp(now);
+  setpointTemp = min((double)profile.getTargetTemp(now), MAX_ROAST_TEMP);
   setpointFanSpeed = profile.getTargetFanSpeed(now);
   setpointProgress = profile.getProfileProgress(now);
 
@@ -302,7 +323,9 @@ void updateRoastControl(unsigned long now)
   heaterPID.run();
 
   heaterFeedforwardVal = decision.feedforward;
-  heaterOutputVal = constrain(heaterPidTrimVal + heaterFeedforwardVal, 0.0, 255.0);
+  double requestedOutput = heaterPidTrimVal + heaterFeedforwardVal;
+  // NaN would pass through constrain() and convert to an undefined PWM duty.
+  heaterOutputVal = isfinite(requestedOutput) ? constrain(requestedOutput, 0.0, 255.0) : 0.0;
   setFanPwm(setpointFanSpeed);
 
   int bdcValue = constrain(5 * setpointFanSpeed + 700, 800, 2000);
@@ -324,7 +347,8 @@ void updateCalibrationControl(unsigned long now)
 
 void updateStepResponseCalibration(unsigned long now)
 {
-  heaterOutputVal = stepTuner.getOutput(currentTemp, fanTemp, setpointFanSpeed);
+  double tunerOutput = stepTuner.getOutput(currentTemp, fanTemp, setpointFanSpeed);
+  heaterOutputVal = isfinite(tunerOutput) ? constrain(tunerOutput, 0.0, 255.0) : 0.0;
   setpointTemp = stepTuner.getSetpoint();
   heaterPidTrimVal = heaterOutputVal;
   heaterFeedforwardVal = 0.0;
@@ -357,8 +381,7 @@ void updateStepResponseCalibration(unsigned long now)
 
     LOG_INFOF("Step-response tuning saved: Kp=%.4f, Ki=%.6f, Kd=%.4f", kp, ki, kd);
 
-    // Publish calibration data to SystemLink
-    systemLinkPublishCalibration(stepTuner);
+    systemLinkQueueCalibrationPublish();
 
     resetRoastControllerState();
     heaterRelay.setPWM(0);
@@ -380,6 +403,8 @@ void updateStepResponseCalibration(unsigned long now)
     }
     else
     {
+      systemLinkUpdateLastFault(String("calibration_") + stepTuner.getLastError());
+      systemLinkQueueCalibrationPublish();
       sendWsMessage("{ \"pushMessage\": \"pidTuningFailed\" }");
     }
   }
@@ -454,7 +479,7 @@ bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent)
   savedValidationFinalTempOverride = finalTempOverride;
   pidValidation.start(profile, currentTemp, finalTargetTemp, fanPercent);
   validationProfileLoaded = true;
-  finalTempOverride = constrain((int)lround(finalTargetTemp), 0, 500);
+  finalTempOverride = constrain((int)lround(finalTargetTemp), 0, (int)MAX_ROAST_TEMP);
   startRoastSession();
   return true;
 }
@@ -465,6 +490,7 @@ void enterCoolingState()
   roasterState = COOLING;
   coolingStartTime = millis();
   resetRoastControllerState();
+  heaterRelay.setPWM(0);
 
   setpointFanSpeed = 255;
   setFanPwm(setpointFanSpeed);
@@ -473,6 +499,33 @@ void enterCoolingState()
 
   myNex.writeNum("globals.nextSetTempNum.val", COOLING_TARGET_TEMP);
   myNex.writeStr("page Cooling");
+}
+
+// Latches ERROR until hardware reset; safe to call repeatedly.
+void enterErrorState(const char *fault, const char *displayMessage)
+{
+  heaterRelay.setPWM(0);
+  if (roasterState == ERROR)
+  {
+    return;
+  }
+
+  resetRoastControllerState();
+  setFanPwm(255);
+  bdcFan.writeMicroseconds(2000);
+  bdcFanMs = 2000;
+
+  if (roasterState == CALIBRATING)
+  {
+    stepTuner.cancel();
+  }
+  roasterState = ERROR;
+  autoValidateAfterCooling = false;
+  LOG_ERRORF("EMERGENCY: %s (bean=%.1fF, fan=%.1fF)", fault, currentTemp, fanTemp);
+  systemLinkUpdateLastFault(fault);
+  systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, fault);
+  myNex.writeStr("page Error");
+  myNex.writeStr("Error.message.txt", displayMessage);
 }
 
 void setup()
@@ -534,8 +587,20 @@ void setup()
       .idle_core_mask = 0,  // Don't watch idle tasks
       .trigger_panic = true // Reboot on timeout
   };
-  esp_task_wdt_init(&wdt_config);
-  esp_task_wdt_add(NULL);
+  // The core pre-initializes the task WDT (5 s), so init alone would fail and leave that timeout in place.
+  esp_err_t wdtErr = esp_task_wdt_reconfigure(&wdt_config);
+  if (wdtErr == ESP_ERR_INVALID_STATE)
+  {
+    wdtErr = esp_task_wdt_init(&wdt_config);
+  }
+  if (wdtErr == ESP_OK)
+  {
+    wdtErr = esp_task_wdt_add(NULL);
+  }
+  if (wdtErr != ESP_OK)
+  {
+    LOG_ERRORF("Watchdog setup failed: %s", esp_err_to_name(wdtErr));
+  }
   // Load WiFi credentials from preferences
   // Initialize preferences with error checking
   if (!preferences.begin(PREFS_NAMESPACE, false))
@@ -549,6 +614,15 @@ void setup()
   ki = preferences.getDouble("ki", 0.46);
   kd = preferences.getDouble("kd", 0.0);
   loadSystemLinkConfig();
+  if (!bdcFanInitialized)
+  {
+    systemLinkUpdateLastFault("bdc_fan_attach_failed");
+  }
+  applyWebPassword(preferences.getString("web_pass", ""));
+  if (webPassword.length() == 0)
+  {
+    LOG_WARN("Web UI/API has no password - set one over serial with: WEBPASS <password>");
+  }
   initSystemLinkTagTask();
   initSystemLinkPublishTask();
   pidRuntimeController.setFallbackGains(kp, ki, kd);
@@ -559,8 +633,12 @@ void setup()
   LOG_INFOF("PID runtime schedule %s (%u valid bands)", pidRuntimeController.isEnabled() ? "enabled" : "disabled", pidRuntimeController.getValidBandCount());
 
   // --- BOOT LOOP PROTECTION ---
-  // If we crash repeatedly during startup (e.g. due to corrupt NVS), purge profiles
-  int bootCount = preferences.getInt("boot_count", 0);
+  // If we crash repeatedly during startup (e.g. due to corrupt NVS), purge profiles.
+  // Only crash resets count, so power cycles and brownouts can't trigger a purge.
+  esp_reset_reason_t bootResetReason = esp_reset_reason();
+  bool crashReset = bootResetReason == ESP_RST_PANIC || bootResetReason == ESP_RST_INT_WDT ||
+                    bootResetReason == ESP_RST_TASK_WDT || bootResetReason == ESP_RST_WDT;
+  int bootCount = crashReset ? preferences.getInt("boot_count", 0) : 0;
   Serial.printf("Boot count: %d\n", bootCount); // Force print to Serial
   if (bootCount > 5) {
     LOG_ERRORF("CRITICAL: Boot loop detected (count=%d)! Purging all profiles to recover system.", bootCount);
@@ -631,6 +709,28 @@ void loop()
 
   handleSerialWifiProvisioning();
 
+  // Web handlers run on the async_tcp task; Nextion and roast state are only touched from loop().
+  if (nextionProfileRefreshRequested)
+  {
+    nextionProfileRefreshRequested = false;
+    if (roasterState == IDLE)
+    {
+      updateNextionActiveProfile();
+    }
+  }
+  if (validationStartRequested)
+  {
+    validationStartRequested = false;
+    if (startValidationRoast(PIDValidationSession::VALIDATION_RAMP_END_TEMP_F, validationStartFanPercent))
+    {
+      sendWsMessage("{ \"pushMessage\": \"pidValidationStarted\" }");
+    }
+    else
+    {
+      LOG_WARN("Validation roast request rejected (state or temperature changed)");
+    }
+  }
+
   // Reset boot count if system has been stable for 10 seconds
   static bool bootCountReset = false;
   if (!bootCountReset && millis() > 10000) {
@@ -674,13 +774,12 @@ void loop()
       // Read thermocouple with failure detection
       double reading = thermocouple.readFarenheit();
 
-      // 1. Range Check: MAX6675 returns ~2048°F when disconnected
-      // We also check for negative values which are invalid for this application
-      bool isRangeError = (reading < 0 || reading > SENSOR_FAULT_TEMP);
+      // The MAX6675 library returns NAN for an open thermocouple; NaN fails every comparison.
+      bool isRangeError = isnan(reading) || reading < 0 || reading > SENSOR_FAULT_TEMP;
       
-      // 2. Spike Check: Ignore physically impossible temperature jumps
+      // Spike Check: Ignore physically impossible temperature jumps
       bool isSpike = false;
-      if (!isRangeError && !firstReading && abs(reading - lastValidTemp) > MAX_TEMP_JUMP) {
+      if (!isRangeError && !firstReading && fabs(reading - lastValidTemp) > MAX_TEMP_JUMP) {
         isSpike = true;
         LOG_WARNF("Temp spike ignored: %.1f -> %.1f", lastValidTemp, reading);
       }
@@ -688,21 +787,13 @@ void loop()
       if (isRangeError || isSpike)
       {
         badReadingCount++;
+        if (isRangeError && badReadingCount == 1)
+        {
+          LOG_WARNF("Bean thermocouple bad reading: %.1f", reading);
+        }
         if (badReadingCount >= MAX_BAD_READINGS)
         {
-          // SENSOR FAILURE - EMERGENCY STOP
-          roasterState = ERROR;
-          digitalWrite(HEATER, LOW);
-          resetRoastControllerState();
-          heaterRelay.setPWM(0);
-          setFanPwm(255); // Full fan for safety
-          bdcFan.writeMicroseconds(2000);
-          bdcFanMs = 2000;
-          systemLinkUpdateLastFault("sensor_failed");
-          systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "sensor_failed");
-          DEBUG_PRINTLN("EMERGENCY: Thermocouple failure detected!");
-          myNex.writeStr("page Error");
-          myNex.writeStr("Error.message.txt", "Sensor Failed");
+          enterErrorState("sensor_failed", "Sensor Failed");
         }
       }
       else
@@ -712,22 +803,9 @@ void loop()
         firstReading = false;
         badReadingCount = 0; // Reset counter on good reading
 
-        // THERMAL RUNAWAY PROTECTION
         if (currentTemp > MAX_SAFE_TEMP)
         {
-          // EMERGENCY SHUTDOWN
-          roasterState = ERROR;
-          digitalWrite(HEATER, LOW);
-          resetRoastControllerState();
-          heaterRelay.setPWM(0);
-          setFanPwm(255); // Full fan to cool down
-          bdcFan.writeMicroseconds(2000);
-          bdcFanMs = 2000;
-          systemLinkUpdateLastFault("over_temperature");
-          systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "over_temperature");
-          DEBUG_PRINTLN("EMERGENCY: Thermal runaway detected!");
-          myNex.writeStr("page Error");
-          myNex.writeStr("Error.message.txt", "Over Temp");
+          enterErrorState("over_temperature", "Over Temp");
         }
       }
     }
@@ -735,25 +813,27 @@ void loop()
     else
     {
       double fReading = thermocoupleFan.readFarenheit();
-      // Simple range check for fan sensor
-      if (fReading > 0 && fReading < SENSOR_FAULT_TEMP) {
+      if (isnan(fReading) || fReading <= 0 || fReading >= SENSOR_FAULT_TEMP)
+      {
+        // A dead fan sensor silently disables the exhaust over-temperature trip.
+        badFanReadingCount++;
+        if (badFanReadingCount == 1)
+        {
+          LOG_WARNF("Fan thermocouple bad reading: %.1f", fReading);
+        }
+        if (badFanReadingCount >= MAX_BAD_READINGS)
+        {
+          enterErrorState("fan_sensor_failed", "Fan Sensor Failed");
+        }
+      }
+      else
+      {
+        badFanReadingCount = 0;
         fanTemp = fReading;
-        
-        // Safety check for fan sensor (cold inlet temp)
-        if (fanTemp > MAX_SAFE_FAN_TEMP) {
-          // EMERGENCY SHUTDOWN
-          roasterState = ERROR;
-          digitalWrite(HEATER, LOW);
-          resetRoastControllerState();
-          heaterRelay.setPWM(0);
-          setFanPwm(255); // Full fan to cool down
-          bdcFan.writeMicroseconds(2000);
-          bdcFanMs = 2000;
-          systemLinkUpdateLastFault("fan_over_temperature");
-          systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "fan_over_temperature");
-          DEBUG_PRINTLN("EMERGENCY: Fan/Exhaust Over Temp!");
-          myNex.writeStr("page Error");
-          myNex.writeStr("Error.message.txt", "Exhaust Over Temp");
+
+        if (fanTemp > MAX_SAFE_FAN_TEMP)
+        {
+          enterErrorState("fan_over_temperature", "Exhaust Over Temp");
         }
       }
     }
@@ -794,7 +874,8 @@ void loop()
     switch (roasterState)
     {
     case IDLE:
-      digitalWrite(HEATER, LOW);
+      // digitalWrite alone is undone by heaterRelay.tick() whenever the duty is 1-254.
+      heaterRelay.setPWM(0);
       setFanPwm(0);
       bdcFan.writeMicroseconds(800); // Ensure BDC stays at low speed
       bdcFanMs = 800;
@@ -803,6 +884,8 @@ void loop()
 
     case START_ROAST:
     {
+      heaterRelay.setPWM(0);
+
       // Non-blocking fan ramp-up
       if (fanRampStep == 0)
       {
@@ -855,23 +938,32 @@ void loop()
 
     case ROASTING:
     {
-      if (roastShouldCompleteNow())
+      bool targetReached = roastShouldCompleteNow();
+      uint32_t profileDurationMs = profile.getSetpoint(profile.getSetpointCount() - 1).time;
+      bool overran = millis() - roastStartedAtMs > profileDurationMs + MAX_ROAST_OVERRUN_MS;
+      if (targetReached || overran)
       {
         bool validationRun = currentRoastUsesValidationProfile();
         if (validationRun)
         {
-          finalizeValidationIfRunning(true, "profile_complete");
+          finalizeValidationIfRunning(targetReached, targetReached ? "profile_complete" : "roast_timeout");
         }
 
-        resetRoastControllerState();
-        heaterRelay.setPWM(heaterOutputVal);
-
-        systemLinkMarkCoolingPhaseStarted(SYSTEMLINK_OUTCOME_PASSED,
-                                          validationRun ? "validation_profile_complete" : "final_target_reached");
+        if (targetReached)
+        {
+          systemLinkMarkCoolingPhaseStarted(SYSTEMLINK_OUTCOME_PASSED,
+                                            validationRun ? "validation_profile_complete" : "final_target_reached");
+          LOG_INFOF("Roast complete at %.1fF - entering cooling phase", currentTemp);
+        }
+        else
+        {
+          LOG_ERRORF("Roast timeout: %.1fF never reached %uF within %lus of profile end",
+                     currentTemp, (unsigned)getEffectiveFinalTargetTemp(), (unsigned long)(MAX_ROAST_OVERRUN_MS / 1000));
+          systemLinkUpdateLastFault("roast_timeout");
+          systemLinkMarkCoolingPhaseStarted(SYSTEMLINK_OUTCOME_ERRORED, "roast_timeout");
+        }
         enterCoolingState();
-
         setpointProgress = 0;
-        LOG_INFOF("Roast complete at %.1fF - entering cooling phase", currentTemp);
       }
       myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
       myNex.writeNum("globals.nextSetTempNum.val", setpointTemp);
@@ -882,22 +974,17 @@ void loop()
 
     case COOLING:
     {
-      digitalWrite(HEATER, LOW);
+      heaterRelay.setPWM(0);
       myNex.writeNum("globals.currentTempNum.val", (int)currentTemp);
 
-      // Check for cooling timeout (30 minutes max)
+      // Still hot after MAX_COOLING_TIME means a fan or sensor fault; keep the fan running.
       unsigned long coolingDuration = millis() - coolingStartTime;
       if (coolingDuration > MAX_COOLING_TIME)
       {
-        autoValidateAfterCooling = false;
         finalizeValidationIfRunning(false, "cooling_timeout");
-        LOG_WARNF("Cooling timeout after %lu minutes - forcing IDLE", coolingDuration / 60000);
-        systemLinkFinishRoast(SYSTEMLINK_OUTCOME_TERMINATED, "cooling_timeout");
-        setFanPwm(0);
-        bdcFan.writeMicroseconds(800);
-        roasterState = IDLE;
+        LOG_ERRORF("Cooling timeout after %lus at %.1fF", coolingDuration / 1000, currentTemp);
+        enterErrorState("cooling_timeout", "Cooling Timeout");
         sendWsMessage("{ \"pushMessage\": \"endRoasting\" }");
-        myNex.writeStr("page Start");
         break;
       }
 
@@ -930,8 +1017,6 @@ void loop()
     case ERROR:
       finalizeValidationIfRunning(false, "error_state");
       // ERROR state: Keep system in safe mode until manual reset
-      // Heater must stay OFF, cooling fan at safe speed
-      digitalWrite(HEATER, LOW);
       heaterRelay.setPWM(0);
       resetRoastControllerState();
 
@@ -1002,10 +1087,10 @@ void loop()
     stateMachineTimer.reset();
   }
 
-  // Handle deferred restart (used after calibration)
-  if (restartRequested && millis() >= restartAt)
+  // Handle deferred restart (used after OTA)
+  if (restartRequested && millis() >= restartAt && roasterState == IDLE)
   {
-    LOG_INFO("Restarting controller after calibration...");
+    LOG_INFO("Restarting controller...");
     delay(100);
     ESP.restart();
   }
@@ -1034,6 +1119,11 @@ void loop()
 void trigger0()
 { // Start roast command received
   LOG_INFO("trigger0() called - Start button pressed");
+  if (roasterState != IDLE)
+  {
+    LOG_WARNF("Start ignored in state %d", roasterState);
+    return;
+  }
   
   // Use the currently active profile (managed by web UI)
   // Nextion display values are for display only, not for modifying the profile
@@ -1049,7 +1139,7 @@ void trigger0()
   
   int uiFinalTemp = readNextionWithRetry("globals.setTempNum.val");
   if (uiFinalTemp != NEXTION_READ_ERROR && uiFinalTemp > 0) {
-    finalTempOverride = constrain(uiFinalTemp, 0, 500);
+    finalTempOverride = constrain(uiFinalTemp, 0, (int)MAX_ROAST_TEMP);
     LOG_INFOF("Using Nextion final target override: %dF", finalTempOverride);
     // Also update the active profile's final setpoint so heater control uses the override
     profile.setFinalTargetTemp(finalTempOverride);
@@ -1064,20 +1154,37 @@ void trigger0()
 
 void trigger1()
 { // Stop roast command received
+  if (roasterState == CALIBRATING)
+  {
+    // The calibration control loop moves to COOLING once the tuner reports it stopped.
+    stepTuner.cancel();
+    return;
+  }
+  if (roasterState != START_ROAST && roasterState != ROASTING)
+  {
+    LOG_WARNF("Stop ignored in state %d", roasterState);
+    return;
+  }
+
   finalizeValidationIfRunning(false, "user_stop");
   systemLinkMarkCoolingPhaseStarted(SYSTEMLINK_OUTCOME_TERMINATED, "user_stop");
-
-  resetRoastControllerState();
-  heaterRelay.setPWM(heaterOutputVal);
-  digitalWrite(HEATER, LOW);
-
   enterCoolingState();
 }
 
 void trigger2()
 { // Stop cooling command received
+  if (roasterState != COOLING)
+  {
+    LOG_WARNF("Skip cooling ignored in state %d", roasterState);
+    return;
+  }
+
   finalizeValidationIfRunning(false, "cooling_skipped");
   restoreValidationProfileIfNeeded();
+  autoValidateAfterCooling = false;
+  systemLinkFinishRoast(SYSTEMLINK_OUTCOME_NONE, "cooling_skipped");
+  LOG_INFOF("Cooling skipped at %.1fF", currentTemp);
+  heaterRelay.setPWM(0);
   roasterState = IDLE;
   myNex.writeStr("page Start");
 }

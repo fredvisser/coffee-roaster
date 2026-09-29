@@ -2,6 +2,7 @@
 #define DEBUGLOG_HPP
 
 #include <Arduino.h>
+#include <mutex>
 
 // Debug logging system with ring buffer for web console
 
@@ -27,24 +28,59 @@ private:
   LogEntry logs[MAX_LOGS];
   int writeIndex;
   int count;
+  LogEntry lastError;
+  uint32_t errorSequence;
+  // Logged from the main loop, async web task and SystemLink tasks concurrently.
+  mutable std::mutex lock;
   
 public:
-  DebugLogger() : writeIndex(0), count(0) {}
+  DebugLogger() : writeIndex(0), count(0), lastError{}, errorSequence(0) {}
   
   // Add a log entry
   void log(LogLevel level, const char* message) {
-    logs[writeIndex].timestamp = millis();
-    logs[writeIndex].level = level;
-    strncpy(logs[writeIndex].message, message, 159);
-    logs[writeIndex].message[159] = '\0';  // Ensure null termination
+    LogEntry entry;
+    entry.timestamp = millis();
+    entry.level = level;
+    strncpy(entry.message, message, 159);
+    entry.message[159] = '\0';
+
+    {
+      std::lock_guard<std::mutex> guard(lock);
+      logs[writeIndex] = entry;
+      writeIndex = (writeIndex + 1) % MAX_LOGS;
+      if (count < MAX_LOGS) count++;
+      if (level == LOG_LEVEL_ERROR) {
+        lastError = entry;
+        errorSequence++;
+      }
+    }
     
-    writeIndex = (writeIndex + 1) % MAX_LOGS;
-    if (count < MAX_LOGS) count++;
-    
-    // Also print to Serial for debugging
     #ifdef DEBUG
-    printLogEntry(logs[(writeIndex - 1 + MAX_LOGS) % MAX_LOGS]);
+    printLogEntry(entry);
     #endif
+  }
+
+  // Returns a sequence number that changes whenever a new ERROR entry is logged.
+  uint32_t getLastError(LogEntry &out) const {
+    std::lock_guard<std::mutex> guard(lock);
+    out = lastError;
+    return errorSequence;
+  }
+
+  // Plain-text dump of recent entries at or above minLevel, newest last, capped at maxChars.
+  String getRecentText(int maxEntries, LogLevel minLevel, size_t maxChars) const {
+    std::lock_guard<std::mutex> guard(lock);
+    String text;
+    int entriesToScan = min(maxEntries, count);
+    int startIndex = (writeIndex - entriesToScan + MAX_LOGS) % MAX_LOGS;
+    for (int i = 0; i < entriesToScan; i++) {
+      const LogEntry &entry = logs[(startIndex + i) % MAX_LOGS];
+      if (entry.level < minLevel) continue;
+      String line = String(entry.timestamp) + " " + getLevelName(entry.level) + " " + entry.message + "\n";
+      if (text.length() + line.length() > maxChars) break;
+      text += line;
+    }
+    return text;
   }
   
   // Get log level name
@@ -68,6 +104,7 @@ public:
   
   // Get logs as JSON array
   String getLogsJSON(int maxEntries = 50, bool wrapInObject = false) const {
+    std::lock_guard<std::mutex> guard(lock);
     String json = wrapInObject ? "{\"logs\":[" : "[";
     
     int entriesToReturn = min(maxEntries, count);
@@ -99,6 +136,7 @@ public:
   
   // Clear all logs
   void clear() {
+    std::lock_guard<std::mutex> guard(lock);
     writeIndex = 0;
     count = 0;
   }
