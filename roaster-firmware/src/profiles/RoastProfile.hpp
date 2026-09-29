@@ -2,6 +2,7 @@
 #define ROAST_PROFILE_HPP
 
 #include <stdio.h>
+#include "../platform/RoasterTypes.hpp"
 
 // NOTE: All temperature values in this file are in Fahrenheit (°F)
 class RoastProfile
@@ -101,7 +102,7 @@ uint32_t RoastProfile::getTargetTemp(uint32_t tickTime) const
                 double timeRatio = (double)(currentTime - prevTime) / (double)(nextTime - prevTime);
                 double result = (double)prevTemp + ((double)nextTemp - (double)prevTemp) * timeRatio;
                 int32_t out = (int32_t)lround(result);
-                if (out < 0) out = 0; if (out > 500) out = 500;
+                if (out < 0) out = 0; if (out > MAX_ROAST_TEMP) out = MAX_ROAST_TEMP;
                 return (uint32_t)out;
             }
         }
@@ -134,7 +135,7 @@ uint32_t RoastProfile::getTargetTempAtTime(uint32_t timeMs) const
                 double timeRatio = (double)(currentTime - prevTime) / (double)(nextTime - prevTime);
                 double result = (double)prevTemp + ((double)nextTemp - (double)prevTemp) * timeRatio;
                 int32_t out = (int32_t)lround(result);
-                if (out < 0) out = 0; if (out > 500) out = 500;
+                if (out < 0) out = 0; if (out > MAX_ROAST_TEMP) out = MAX_ROAST_TEMP;
                 return (uint32_t)out;
             }
         }
@@ -150,7 +151,7 @@ uint32_t RoastProfile::getFinalTargetTemp() const
 void RoastProfile::setFinalTargetTemp(uint32_t temp)
 {
     if (_setpointCount == 0) return;
-    uint32_t clamped = (temp > 500U) ? 500U : temp;
+    uint32_t clamped = (temp > MAX_ROAST_TEMP) ? static_cast<uint32_t>(MAX_ROAST_TEMP) : temp;
     _setpoints[_setpointCount - 1].temp = clamped;
 }
 
@@ -222,7 +223,7 @@ void RoastProfile::addSetpoint(uint32_t time, uint32_t temp, uint32_t fanSpeed)
     if (_setpointCount < 10)
     {
         // Clamp values to safe ranges (uint32_t is always >= 0)
-        temp = min(temp, (uint32_t)500);      // 0-500°F
+        temp = min(temp, static_cast<uint32_t>(MAX_ROAST_TEMP));
         fanSpeed = min(fanSpeed, (uint32_t)100); // 0-100%
         
         _setpoints[_setpointCount].time = time;
@@ -236,7 +237,7 @@ bool RoastProfile::validateSetpoint(uint32_t temp, uint32_t fanSpeed) const
 {
     // Validate temperature (0-500°F) and fan speed (0-100%)
     // Note: uint32_t is always >= 0, so only check upper bounds
-    return (temp <= 500 && fanSpeed <= 100);
+    return (temp <= MAX_ROAST_TEMP && fanSpeed <= 100);
 }
 
 RoastProfile::Setpoint RoastProfile::getSetpoint(int index) const

@@ -547,7 +547,7 @@ inline void layoutNetworkWidgets()
 
 inline void setFinalTargetValue(int value)
 {
-  finalTargetTempValue = constrain(value, 0, 500);
+  finalTargetTempValue = constrain(value, 0, static_cast<int>(MAX_ROAST_TEMP));
   updateDerivedLabels();
   if (activeScreen == DisplayScreen::Start)
   {

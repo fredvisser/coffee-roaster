@@ -27,23 +27,27 @@ private:
   LogEntry logs[MAX_LOGS];
   int writeIndex;
   int count;
+  portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
   
 public:
   DebugLogger() : writeIndex(0), count(0) {}
   
   // Add a log entry
   void log(LogLevel level, const char* message) {
-    logs[writeIndex].timestamp = millis();
-    logs[writeIndex].level = level;
-    strncpy(logs[writeIndex].message, message, 159);
-    logs[writeIndex].message[159] = '\0';  // Ensure null termination
-    
+    LogEntry entry;
+    portENTER_CRITICAL(&lock);
+    entry.timestamp = millis();
+    entry.level = level;
+    strncpy(entry.message, message, sizeof(entry.message) - 1);
+    entry.message[sizeof(entry.message) - 1] = '\0';
+    logs[writeIndex] = entry;
     writeIndex = (writeIndex + 1) % MAX_LOGS;
     if (count < MAX_LOGS) count++;
+    portEXIT_CRITICAL(&lock);
     
     // Also print to Serial for debugging
     #ifdef DEBUG
-    printLogEntry(logs[(writeIndex - 1 + MAX_LOGS) % MAX_LOGS]);
+    printLogEntry(entry);
     #endif
   }
   
@@ -69,23 +73,30 @@ public:
   // Get logs as JSON array
   String getLogsJSON(int maxEntries = 50, bool wrapInObject = false) const {
     String json = wrapInObject ? "{\"logs\":[" : "[";
-    
-    int entriesToReturn = min(maxEntries, count);
-    int startIndex = (writeIndex - entriesToReturn + MAX_LOGS) % MAX_LOGS;
+    int entriesToReturn;
+    int startIndex;
+    portENTER_CRITICAL(const_cast<portMUX_TYPE *>(&lock));
+    entriesToReturn = min(maxEntries, count);
+    startIndex = (writeIndex - entriesToReturn + MAX_LOGS) % MAX_LOGS;
+    portEXIT_CRITICAL(const_cast<portMUX_TYPE *>(&lock));
     
     for (int i = 0; i < entriesToReturn; i++) {
       int index = (startIndex + i) % MAX_LOGS;
+      LogEntry entry;
+      portENTER_CRITICAL(const_cast<portMUX_TYPE *>(&lock));
+      entry = logs[index];
+      portEXIT_CRITICAL(const_cast<portMUX_TYPE *>(&lock));
       
       if (i > 0) json += ",";
       
       json += "{";
-      json += "\"timestamp\":" + String(logs[index].timestamp) + ",";
-      json += "\"level\":\"" + String(getLevelName(logs[index].level)) + "\",";
+      json += "\"timestamp\":" + String(entry.timestamp) + ",";
+      json += "\"level\":\"" + String(getLevelName(entry.level)) + "\",";
       json += "\"message\":\"";
       
       // Escape special characters in message
-      for (int j = 0; j < 160 && logs[index].message[j] != '\0'; j++) {
-        char c = logs[index].message[j];
+      for (int j = 0; j < sizeof(entry.message) && entry.message[j] != '\0'; j++) {
+        char c = entry.message[j];
         if (c == '"' || c == '\\') json += '\\';
         json += c;
       }
@@ -99,13 +110,18 @@ public:
   
   // Clear all logs
   void clear() {
+    portENTER_CRITICAL(&lock);
     writeIndex = 0;
     count = 0;
+    portEXIT_CRITICAL(&lock);
   }
   
   // Get log count
   int getCount() const {
-    return count;
+    portENTER_CRITICAL(const_cast<portMUX_TYPE *>(&lock));
+    int result = count;
+    portEXIT_CRITICAL(const_cast<portMUX_TYPE *>(&lock));
+    return result;
   }
 };
 
