@@ -50,24 +50,27 @@ int32_t wifiTargetChannel = 0;
 
 void initializeWebAuthentication()
 {
+  constexpr size_t WebLoginPasswordLength = 8;
+
   if (webAuthenticationInitialized)
   {
     return;
   }
 
   webAuthenticationPassword = preferences.getString("web_pw", "");
-  if (webAuthenticationPassword.length() == 0)
+  if (webAuthenticationPassword.length() != WebLoginPasswordLength)
   {
-    char generatedPassword[33] = {};
-    for (size_t index = 0; index < 16; index++)
+    char generatedPassword[WebLoginPasswordLength + 1] = {};
+    for (size_t index = 0; index < WebLoginPasswordLength / 2; index++)
     {
       snprintf(generatedPassword + index * 2, 3, "%02x", static_cast<unsigned>(esp_random() & 0xff));
     }
     webAuthenticationPassword = generatedPassword;
     preferences.putString("web_pw", webAuthenticationPassword);
-    Serial.printf("First-time web login: username=admin password=%s\n", generatedPassword);
+    Serial.printf("Web login password reset: username=admin password=%s\n", generatedPassword);
   }
 
+  displaySetWebLoginPassword(webAuthenticationPassword);
   webAuthentication.setUsername("admin");
   webAuthentication.setPassword(webAuthenticationPassword.c_str());
   webAuthentication.setAuthType(AsyncAuthType::AUTH_BASIC);

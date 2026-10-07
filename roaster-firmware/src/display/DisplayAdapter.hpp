@@ -146,6 +146,15 @@ inline void displaySetWifiIp(const String &ipAddress)
 #endif
 }
 
+inline void displaySetWebLoginPassword(const String &password)
+{
+#if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_LVGL
+  LvglDisplay::setWebLoginPassword(password);
+#else
+  (void)password;
+#endif
+}
+
 inline DisplayWifiFormState displayReadWifiFormState()
 {
 #if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_LVGL
