@@ -30,6 +30,7 @@ endif()
 
 if(TARGET lvgl)
   target_compile_definitions(lvgl PUBLIC LV_CONF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/lv_conf.h")
+  target_link_libraries(lvgl PUBLIC PkgConfig::SDL2)
 endif()
 
 add_executable(roaster-lvgl-sim main.c)

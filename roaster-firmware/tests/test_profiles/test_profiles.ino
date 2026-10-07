@@ -47,6 +47,17 @@ test(Profile_AddSetpoint_Basic) {
   assertEqual((uint32_t)50, sp1.fanSpeed);
 }
 
+test(Profile_RejectsUnsafeRoastTargets) {
+  RoastProfile profile;
+  profile.clearSetpoints();
+
+  assertFalse(profile.validateSetpoint(461, 50));
+  profile.addSetpoint(60000, 500, 50);
+  assertEqual((uint32_t)460, profile.getSetpoint(1).temp);
+  profile.setFinalTargetTemp(500);
+  assertEqual((uint32_t)460, profile.getFinalTargetTemp());
+}
+
 test(Profile_AddSetpoint_MaxCapacity) {
   RoastProfile profile;
   profile.clearSetpoints();

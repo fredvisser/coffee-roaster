@@ -59,6 +59,7 @@ inline int fanTempValue = -1;
 inline int heaterOutputValue = -1;
 inline int bdcFanMicrosValue = -1;
 inline String wifiStatusText = "No network";
+inline String webLoginPasswordText;
 inline String activeProfileText = "No profile";
 inline String profileBrowserFocusText;
 inline String revisionText;
@@ -107,6 +108,7 @@ inline lv_obj_t *progressLabel = nullptr;
 inline lv_obj_t *heaterLabel = nullptr;
 inline lv_obj_t *bdcFanLabel = nullptr;
 inline lv_obj_t *wifiLabel = nullptr;
+inline lv_obj_t *webLoginPasswordLabel = nullptr;
 inline lv_obj_t *profileLabel = nullptr;
 inline lv_obj_t *errorLabel = nullptr;
 inline lv_obj_t *revisionLabel = nullptr;
@@ -508,7 +510,8 @@ inline void showKeyboardFor(lv_obj_t *textArea)
 inline void layoutNetworkWidgets()
 {
   if (ssidCaptionLabel == nullptr || passwordCaptionLabel == nullptr || wifiLabel == nullptr || revisionLabel == nullptr ||
-      ssidTextArea == nullptr || passwordTextArea == nullptr || wifiApplyButton == nullptr || networkBackButton == nullptr)
+  webLoginPasswordLabel == nullptr || ssidTextArea == nullptr || passwordTextArea == nullptr || wifiApplyButton == nullptr ||
+  networkBackButton == nullptr)
   {
     return;
   }
@@ -543,11 +546,13 @@ inline void layoutNetworkWidgets()
   lv_obj_align(networkBackButton, LV_ALIGN_TOP_RIGHT, -12, 144);
   lv_obj_align(wifiLabel, LV_ALIGN_BOTTOM_LEFT, 12, -34);
   lv_obj_align(revisionLabel, LV_ALIGN_BOTTOM_LEFT, 12, -14);
+  lv_obj_set_width(webLoginPasswordLabel, BoardConfig::DisplayWidth - 24);
+  lv_obj_align(webLoginPasswordLabel, LV_ALIGN_TOP_LEFT, 12, 198);
 }
 
 inline void setFinalTargetValue(int value)
 {
-  finalTargetTempValue = constrain(value, 0, 500);
+  finalTargetTempValue = constrain(value, 0, static_cast<int>(MAX_ROAST_TEMP));
   updateDerivedLabels();
   if (activeScreen == DisplayScreen::Start)
   {
@@ -941,6 +946,7 @@ inline void refreshScreenLayout()
   setWidgetHidden(profileListContainer, !showProfileListControls);
   setWidgetHidden(profileLabel, !(showStartControls || showProfileGraphControls));
   setWidgetHidden(wifiLabel, !showNetworkControls);
+  setWidgetHidden(webLoginPasswordLabel, !showNetworkControls || activeTextArea != nullptr);
   setWidgetHidden(revisionLabel, !showNetworkControls);
   setWidgetHidden(ssidCaptionLabel, !showNetworkFields);
   setWidgetHidden(passwordCaptionLabel, !showNetworkFields);
@@ -1253,6 +1259,7 @@ inline void updateDerivedLabels()
   lv_obj_set_style_text_color(mainSupportLabel, lv_color_hex(ColorTextMuted), 0);
   lv_obj_set_style_text_color(profileLabel, lv_color_hex(ColorTextPrimary), 0);
   lv_obj_set_style_text_color(wifiLabel, lv_color_hex(ColorTextMuted), 0);
+  lv_obj_set_style_text_color(webLoginPasswordLabel, lv_color_hex(ColorTextPrimary), 0);
   lv_obj_set_style_text_color(revisionLabel, lv_color_hex(ColorTextMuted), 0);
 
   if (activeScreen == DisplayScreen::Start)
@@ -1270,6 +1277,7 @@ inline void updateDerivedLabels()
   {
     lv_label_set_text(ssidCaptionLabel, "SSID");
     lv_label_set_text(passwordCaptionLabel, "Password");
+    lv_label_set_text_fmt(webLoginPasswordLabel, "Web login (admin): %s", webLoginPasswordText.c_str());
     lv_label_set_text_fmt(wifiLabel, "%s", wifiStatusText.c_str());
     lv_label_set_text_fmt(revisionLabel, "Firmware %s", revisionText.c_str());
   }
@@ -1492,6 +1500,10 @@ inline void buildScreen()
   passwordCaptionLabel = lv_label_create(screenRoot);
   lv_obj_set_style_text_color(passwordCaptionLabel, lv_color_hex(ColorTextMuted), 0);
   lv_obj_set_style_text_font(passwordCaptionLabel, &lv_font_montserrat_14, 0);
+
+  webLoginPasswordLabel = lv_label_create(screenRoot);
+  lv_obj_set_style_text_font(webLoginPasswordLabel, &lv_font_montserrat_14, 0);
+  lv_label_set_long_mode(webLoginPasswordLabel, LV_LABEL_LONG_DOT);
 
   ssidTextArea = lv_textarea_create(screenRoot);
   lv_obj_set_size(ssidTextArea, BoardConfig::DisplayWidth - 32, 34);
@@ -1772,6 +1784,13 @@ inline void setWifiStatusText(const String &value)
 {
   ensureUiBuilt();
   wifiStatusText = value;
+  updateDerivedLabels();
+}
+
+inline void setWebLoginPassword(const String &value)
+{
+  ensureUiBuilt();
+  webLoginPasswordText = value;
   updateDerivedLabels();
 }
 

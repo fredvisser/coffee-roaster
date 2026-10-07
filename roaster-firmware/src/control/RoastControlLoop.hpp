@@ -34,8 +34,6 @@ extern int activePidBandIndex;
 extern bool pidScheduleConfigured;
 extern bool pidScheduleActive;
 
-extern RoasterState roasterState;
-
 extern PWMrelay heaterRelay;
 extern PWMrelay fanRelay;
 extern Servo bdcFan;
@@ -87,7 +85,7 @@ inline void setManualPIDGains(double newKp, double newKi, double newKd)
 
 inline void updateRoastControl(unsigned long now)
 {
-  if (roasterState != ROASTING)
+  if (getRoasterStateSnapshot() != ROASTING)
   {
     return;
   }
@@ -105,6 +103,10 @@ inline void updateRoastControl(unsigned long now)
 
   heaterFeedforwardVal = decision.feedforward;
   heaterOutputVal = constrain(heaterPidTrimVal + heaterFeedforwardVal, 0.0, 255.0);
+  if (heaterOutputVal > 0.0 && setpointFanSpeed < MIN_HEATING_FAN_PWM)
+  {
+    setpointFanSpeed = MIN_HEATING_FAN_PWM;
+  }
   fanRelay.setPWM(setpointFanSpeed);
 
   int bdcValue = constrain(5 * setpointFanSpeed + 700, 800, 2000);
