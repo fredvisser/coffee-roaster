@@ -960,6 +960,39 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   // =============================================================================
 
   // API endpoint: Debug logs
+  server.on("/api/logs/card/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(200, "application/json", debugLogger.getCardLogStatusJSON());
+  });
+
+  server.on("/api/logs/card", HTTP_GET, [](AsyncWebServerRequest *request) {
+    int fileIndex = request->hasParam("file") ? request->getParam("file")->value().toInt() : 0;
+    if (fileIndex < 0 || fileIndex >= 5) {
+      request->send(400, "application/json", "{\"error\":\"invalid_file\"}");
+      return;
+    }
+
+    int maxEntries = request->hasParam("limit") ? request->getParam("limit")->value().toInt() : 100;
+    maxEntries = constrain(maxEntries, 1, 100);
+    bool startAtEnd = !request->hasParam("cursor");
+    uint32_t cursor = 0;
+    if (!startAtEnd) {
+      String cursorValue = request->getParam("cursor")->value();
+      if (cursorValue.length() == 0) {
+        request->send(400, "application/json", "{\"error\":\"invalid_cursor\"}");
+        return;
+      }
+      for (unsigned int index = 0; index < cursorValue.length(); ++index) {
+        if (cursorValue[index] < '0' || cursorValue[index] > '9') {
+          request->send(400, "application/json", "{\"error\":\"invalid_cursor\"}");
+          return;
+        }
+      }
+      cursor = static_cast<uint32_t>(cursorValue.toInt());
+    }
+    String json = debugLogger.getCardLogPageJSON(static_cast<uint8_t>(fileIndex), cursor, startAtEnd, maxEntries);
+    request->send(200, "application/json", json);
+  });
+
   server.on("/api/logs", HTTP_GET, [](AsyncWebServerRequest *request) {
     LOG_DEBUG("API: /api/logs requested");
     int maxEntries = 50;
@@ -1541,6 +1574,22 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       margin-bottom: 12px;
       flex-wrap: wrap;
     }
+    .log-view[hidden],
+    .log-controls[hidden] { display: none; }
+    .log-status {
+      align-self: center;
+      color: #AAA;
+      font-size: 13px;
+      margin-right: auto;
+    }
+    .log-file-select {
+      min-width: 220px;
+      padding: 10px 12px;
+      color: #fff;
+      background: #222;
+      border: 1px solid #555;
+      font: inherit;
+    }
     .btn {
       padding: 12px 16px;
       background: #444444;
@@ -1751,19 +1800,37 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     <div class="card full-width">
       <div class="card-title">Debug Logs</div>
       <div class="controls">
-        <button class="btn active" onclick="filterLogs('ALL')">All</button>
-        <button class="btn" onclick="filterLogs('ERROR')">Errors</button>
-        <button class="btn" onclick="filterLogs('WARN')">Warnings</button>
-        <button class="btn" onclick="filterLogs('INFO')">Info</button>
-        <button class="btn" onclick="filterLogs('DEBUG')">Debug</button>
+        <button class="btn active" id="liveLogTab" onclick="showLogView('live')">Live</button>
+        <button class="btn" id="cardLogTab" onclick="showLogView('card')">Card History</button>
+      </div>
+      <div class="controls">
+        <button class="btn level-filter active" data-level="ALL" onclick="filterLogs('ALL')">All</button>
+        <button class="btn level-filter" data-level="ERROR" onclick="filterLogs('ERROR')">Errors</button>
+        <button class="btn level-filter" data-level="WARN" onclick="filterLogs('WARN')">Warnings</button>
+        <button class="btn level-filter" data-level="INFO" onclick="filterLogs('INFO')">Info</button>
+        <button class="btn level-filter" data-level="DEBUG" onclick="filterLogs('DEBUG')">Debug</button>
+      </div>
+      <div id="liveLogControls" class="controls log-controls">
         <button class="btn" onclick="clearLogs()">Clear Display</button>
         <button class="btn" onclick="toggleAutoScroll()">Auto-scroll: <span id="autoScrollState">ON</span></button>
       </div>
-      <div class="log-container" id="logContainer">
+      <div id="cardLogControls" class="controls log-controls" hidden>
+        <span class="log-status" id="cardLogStatus">Checking TF card...</span>
+        <select class="log-file-select" id="cardLogFile" aria-label="Saved log file" onchange="loadCardLogs(true)"></select>
+        <button class="btn" onclick="refreshCardLogs()">Refresh</button>
+        <button class="btn" id="olderCardLogsButton" onclick="loadOlderCardLogs()" disabled>Load Older</button>
+        <button class="btn" onclick="downloadCardLogs()">Download JSONL</button>
+      </div>
+      <div class="log-container log-view" id="logContainer">
         <div class="log-entry INFO">
           <span class="log-time">00:00:00</span>
           <span class="log-level INFO">INFO</span>
           <span class="log-message">Console loaded. Fetching data...</span>
+        </div>
+      </div>
+      <div class="log-container log-view" id="cardLogContainer" hidden>
+        <div class="log-entry INFO">
+          <span class="log-message">Select Card History to browse saved logs.</span>
         </div>
       </div>
     </div>
@@ -1774,6 +1841,14 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     let autoScroll = true;
     let logFilter = 'ALL';
     let wsConnected = false;
+    let activeLogView = 'live';
+    let cardLogEntries = [];
+    let cardLogCursor = 0;
+    let cardLogHasMore = false;
+    let cardLogFiles = [];
+    let cardLogFileSize = 0;
+    let cardLogsLoading = false;
+    let cardLogAvailable = false;
 
     function formatUptime(seconds) {
       const h = Math.floor(seconds / 3600);
@@ -1867,10 +1942,219 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 
     function filterLogs(level) {
       logFilter = level;
-      document.querySelectorAll('.controls .btn').forEach(btn => {
-        btn.classList.toggle('active', btn.textContent.startsWith(level) || (level === 'ALL' && btn.textContent === 'All'));
+      document.querySelectorAll('.level-filter').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.level === level);
       });
-      fetchLogs();
+      if (activeLogView === 'card') renderCardLogs();
+      else fetchLogs();
+    }
+
+    function showLogView(view) {
+      activeLogView = view;
+      const isCardView = view === 'card';
+      document.getElementById('liveLogTab').classList.toggle('active', !isCardView);
+      document.getElementById('cardLogTab').classList.toggle('active', isCardView);
+      document.getElementById('liveLogControls').hidden = isCardView;
+      document.getElementById('cardLogControls').hidden = !isCardView;
+      document.getElementById('logContainer').hidden = isCardView;
+      document.getElementById('cardLogContainer').hidden = !isCardView;
+      if (isCardView) refreshCardLogs();
+      else fetchLogs();
+    }
+
+    function formatCardUptime(milliseconds) {
+      const seconds = Math.floor(Number(milliseconds || 0) / 1000);
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const remainder = seconds % 60;
+      return `${hours}h ${minutes}m ${remainder}s`;
+    }
+
+    function formatCardFileSize(bytes) {
+      return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(0)} KB`;
+    }
+
+    async function refreshCardLogs() {
+      const statusElement = document.getElementById('cardLogStatus');
+      const selector = document.getElementById('cardLogFile');
+      statusElement.textContent = 'Checking TF card...';
+
+      try {
+        const response = await fetch('/api/logs/card/status');
+        const status = await response.json();
+        cardLogAvailable = Boolean(status.available);
+        if (!status.available) {
+          cardLogFiles = [];
+          selector.replaceChildren();
+          statusElement.textContent = 'TF card unavailable; live logs remain active.';
+          cardLogEntries = [];
+          renderCardLogs();
+          return;
+        }
+        if (status.busy) {
+          statusElement.textContent = 'TF card busy; try refresh again.';
+          return;
+        }
+
+        const selectedId = selector.value;
+        cardLogFiles = Array.isArray(status.files) ? status.files : [];
+        selector.replaceChildren();
+        cardLogFiles.forEach(file => {
+          const option = document.createElement('option');
+          option.value = file.id;
+          option.textContent = `${file.name} · ${formatCardFileSize(file.size)}`;
+          selector.appendChild(option);
+        });
+
+        if (!cardLogFiles.length) {
+          statusElement.textContent = status.logging ? 'Card is ready; no log files yet.' : 'Card is mounted, but logging is inactive.';
+          cardLogEntries = [];
+          renderCardLogs();
+          return;
+        }
+
+        if (cardLogFiles.some(file => String(file.id) === selectedId)) selector.value = selectedId;
+        statusElement.textContent = status.logging ? 'Card present · logging active' : 'Card present · saved logs are read-only';
+        await loadCardLogs(true);
+      } catch (error) {
+        cardLogAvailable = false;
+        statusElement.textContent = 'Could not read TF card status.';
+        console.error('Error fetching card log status:', error);
+      }
+    }
+
+    async function loadCardLogs(reset) {
+      if (cardLogsLoading) return;
+      const selector = document.getElementById('cardLogFile');
+      if (!selector.value && cardLogFiles.length === 0) return;
+
+      if (reset) {
+        cardLogEntries = [];
+        cardLogCursor = 0;
+        cardLogHasMore = false;
+        cardLogFileSize = 0;
+      }
+
+      cardLogsLoading = true;
+      const statusElement = document.getElementById('cardLogStatus');
+      const button = document.getElementById('olderCardLogsButton');
+      button.disabled = true;
+      try {
+        const parameters = new URLSearchParams({ file: selector.value || '0', limit: '100' });
+        if (!reset && cardLogCursor > 0) parameters.set('cursor', String(cardLogCursor));
+        const response = await fetch(`/api/logs/card?${parameters}`);
+        const page = await response.json();
+        if (page.busy) {
+          statusElement.textContent = 'TF card busy; try again shortly.';
+          return;
+        }
+        if (!page.available || !page.file_found) {
+          cardLogAvailable = Boolean(page.available);
+          statusElement.textContent = page.available ? 'Selected log file is no longer available.' : 'TF card unavailable.';
+          cardLogEntries = [];
+          renderCardLogs();
+          return;
+        }
+        if (!reset && ((Number(selector.value) === 0 && page.file_size < cardLogFileSize) ||
+            (Number(selector.value) !== 0 && page.file_size !== cardLogFileSize))) {
+          statusElement.textContent = 'Log segment rotated; refresh history to continue.';
+          return;
+        }
+
+        if (reset) cardLogFileSize = page.file_size;
+        const entries = Array.isArray(page.logs) ? page.logs : [];
+        cardLogEntries = reset ? entries : entries.concat(cardLogEntries);
+        cardLogCursor = Number(page.next_cursor || 0);
+        cardLogHasMore = Boolean(page.has_more);
+        statusElement.textContent = `${cardLogEntries.length} entries loaded · ${formatCardFileSize(page.file_size)}`;
+        renderCardLogs();
+        button.disabled = !cardLogHasMore;
+      } catch (error) {
+        statusElement.textContent = 'Could not read saved logs.';
+        console.error('Error fetching card logs:', error);
+      } finally {
+        cardLogsLoading = false;
+      }
+    }
+
+    function loadOlderCardLogs() {
+      if (cardLogHasMore && cardLogCursor > 0) loadCardLogs(false);
+    }
+
+    function renderCardLogs() {
+      const container = document.getElementById('cardLogContainer');
+      const oldHeight = container.scrollHeight;
+      const oldScrollTop = container.scrollTop;
+      container.replaceChildren();
+      const visibleEntries = cardLogEntries.filter(log => logFilter === 'ALL' || log.level === logFilter);
+      visibleEntries.forEach(log => {
+        const entry = document.createElement('div');
+        entry.className = `log-entry ${log.level || 'INFO'}`;
+        const time = document.createElement('span');
+        time.className = 'log-time';
+        time.textContent = `+${formatCardUptime(log.uptime_ms)}`;
+        const level = document.createElement('span');
+        level.className = `log-level ${log.level || 'INFO'}`;
+        level.textContent = log.level || 'INFO';
+        const session = document.createElement('span');
+        session.className = 'log-time';
+        session.textContent = log.boot_id ? `boot ${log.boot_id}` : 'older log';
+        const message = document.createElement('span');
+        message.className = 'log-message';
+        message.textContent = log.message || '';
+        entry.append(time, level, session, message);
+        container.appendChild(entry);
+      });
+
+      if (visibleEntries.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'log-entry INFO';
+        empty.textContent = !cardLogAvailable ? 'TF card unavailable; saved history cannot be read.' :
+          (cardLogEntries.length ? 'No entries match this filter.' : 'No saved entries in this file.');
+        container.appendChild(empty);
+      } else if (oldHeight > 0 && cardLogEntries.length > visibleEntries.length) {
+        container.scrollTop = oldScrollTop + container.scrollHeight - oldHeight;
+      } else {
+        container.scrollTop = container.scrollHeight;
+      }
+    }
+
+    async function downloadCardLogs() {
+      const fileId = document.getElementById('cardLogFile').value;
+      const selectedFile = cardLogFiles.find(file => String(file.id) === fileId);
+      if (!selectedFile) return;
+
+      const statusElement = document.getElementById('cardLogStatus');
+      statusElement.textContent = 'Preparing JSONL download...';
+      const allEntries = [];
+      let cursor = null;
+      let initialSize = null;
+      try {
+        while (true) {
+          const parameters = new URLSearchParams({ file: fileId, limit: '100' });
+          if (cursor !== null) parameters.set('cursor', String(cursor));
+          const response = await fetch(`/api/logs/card?${parameters}`);
+          const page = await response.json();
+          if (!page.available || !page.file_found || page.busy) throw new Error('Card log file is unavailable or busy.');
+          if (initialSize === null) initialSize = page.file_size;
+          else if ((Number(fileId) === 0 && page.file_size < initialSize) ||
+              (Number(fileId) !== 0 && page.file_size !== initialSize)) throw new Error('Log segment rotated during download.');
+          allEntries.unshift(...(page.logs || []));
+          if (!page.has_more || !page.next_cursor) break;
+          cursor = page.next_cursor;
+        }
+
+        const content = allEntries.map(entry => JSON.stringify(entry)).join('\n') + (allEntries.length ? '\n' : '');
+        const url = URL.createObjectURL(new Blob([content], { type: 'application/x-ndjson' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = selectedFile.name;
+        link.click();
+        URL.revokeObjectURL(url);
+        statusElement.textContent = `Downloaded ${allEntries.length} entries.`;
+      } catch (error) {
+        statusElement.textContent = error.message || 'Could not download saved logs.';
+      }
     }
 
     function clearLogs() {

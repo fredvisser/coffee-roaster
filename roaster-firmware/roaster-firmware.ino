@@ -425,6 +425,12 @@ void setup()
   fanRelay.setPeriod(10);
 
   bdcFan.writeMicroseconds(800);
+
+  if (debugLogger.beginCard()) {
+    LOG_INFO("TF card logging enabled");
+  } else {
+    LOG_WARN("TF card unavailable; continuing with RAM and Serial logs");
+  }
   
   LOG_INFO("System initialized - entering IDLE state");
 

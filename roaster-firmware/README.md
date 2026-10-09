@@ -22,6 +22,7 @@ ESP32-S3 JC4827W543C-based coffee roaster control system with PID temperature co
   - Emergency shutdown procedures
   - Hardware watchdog timer
 - **Profile Management**: Custom roast profiles with time/temperature/fan curves
+- **Persistent Debug Logs**: Appends JSON Lines to the onboard TF/microSD card when available
 
 ## Hardware Requirements
 
@@ -31,6 +32,11 @@ ESP32-S3 JC4827W543C-based coffee roaster control system with PID temperature co
 - PWM fan
 - BDC fan with servo control
 - Integrated local display and touch hardware on the JC4827W543C board
+- Optional FAT32-formatted microSD/TF card (8–32 GB)
+
+### TF Card Logging
+
+At boot, the firmware mounts the TF card over SPI using GPIO10 (CS), GPIO11 (MOSI), GPIO12 (clock), and GPIO13 (MISO). Debug entries are appended as JSON Lines with a boot ID and uptime in milliseconds. The active file is `/roaster-debug.jsonl`; up to four 1 MiB rotated segments are retained alongside it. Open `http://roaster-dev.local/console` and choose **Card History** to page through, filter, and download a segment. If the card is absent or cannot be written, the roaster continues using the RAM log buffer and Serial output. Card detection happens at boot, so insert a card before powering on.
 
 ## Building
 
