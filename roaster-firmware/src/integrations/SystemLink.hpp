@@ -76,6 +76,9 @@ static const size_t SYSTEMLINK_MAX_TRACE_SAMPLES = 900;
 static const size_t SYSTEMLINK_MAX_TRACE_SAMPLES = 1800;
 #endif
 static const int SYSTEMLINK_STATUS_TAG_RETENTION_DAYS = 30;
+static const uint32_t SYSTEMLINK_ACTIVE_TAG_INTERVAL_MS = 500UL;
+static const uint32_t SYSTEMLINK_IDLE_TAG_INTERVAL_MS = 2000UL;
+static const uint32_t SYSTEMLINK_IDLE_CHAMBER_INTERVAL_MS = 900000UL;
 
 static const char *SYSTEMLINK_PROP_RETENTION = "nitagRetention";
 static const char *SYSTEMLINK_PROP_HISTORY_TTL_DAYS = "nitagHistoryTTLDays";
@@ -288,7 +291,7 @@ static bool systemLinkShouldPublishChamberTemp(const SystemLinkTelemetrySnapshot
   }
 
   uint32_t now = millis();
-  if (!systemLinkLastTelemetrySentValid || now - systemLinkLastIdleChamberPublishMs >= 300000UL) {
+  if (!systemLinkLastTelemetrySentValid || now - systemLinkLastIdleChamberPublishMs >= SYSTEMLINK_IDLE_CHAMBER_INTERVAL_MS) {
     systemLinkLastIdleChamberPublishMs = now;
     return true;
   }
@@ -1212,7 +1215,9 @@ static void systemLinkWorkerTask(void *parameter) {
     }
 
     uint32_t now = millis();
-    if (systemLinkHasRequiredConfig() && (lastTagPublishMs == 0 || (now - lastTagPublishMs) >= 1000UL)) {
+    bool roasting = systemLinkIsTrackedRoastState(roasterState);
+    uint32_t tagIntervalMs = roasting ? SYSTEMLINK_ACTIVE_TAG_INTERVAL_MS : SYSTEMLINK_IDLE_TAG_INTERVAL_MS;
+    if (systemLinkHasRequiredConfig() && (lastTagPublishMs == 0 || (now - lastTagPublishMs) >= tagIntervalMs)) {
       systemLinkPublishRealtimeTags();
       lastTagPublishMs = now;
     }
