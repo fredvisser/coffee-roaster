@@ -550,6 +550,9 @@ void setup()
   LOG_INFOF("Final display final target value is %dF", displayReadFinalTargetTemp());
 
   displaySetWifiIp(ipAddress);
+  displaySetWebAccessInfo(serverSecurityGetHostname() + ".local",
+                         SERVER_SECURITY_USERNAME,
+                         serverSecurityGetPassword());
   displaySetRevision(VERSION);
 
   displayShowScreen(DisplayScreen::Start);
@@ -574,6 +577,7 @@ void loop()
 
   // Check WiFi connection and auto-reconnect if needed
   checkWiFiConnection(wifiCredentials);
+  serviceServerSettings();
 
   if (tickTimer.isReady())
   {

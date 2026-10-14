@@ -1,3 +1,4 @@
+### Helper Scripts
 # Coffee Roaster Firmware
 
 ESP32-S3 JC4827W543C-based coffee roaster control system with PID temperature control, dual fan management, LVGL touchscreen UI, and web interfaces.
@@ -196,6 +197,14 @@ After initial USB flash, firmware can be updated wirelessly without physical acc
   - `./tools/tests.sh compile safety` - Compile the safety suite
   - `./tools/tests.sh run pid` - Compile, upload, and monitor the PID suite
 - **Legacy aliases**: `./setup_libraries.sh` and `./run_tests.sh` remain available during the transition
+
+## Web UI Security
+
+The web UI, API, and OTA endpoints require HTTP Basic Authentication. The fixed username is `admin`; the firmware generates an eight-character alphanumeric password on first boot and shows it on the touchscreen's Wi-Fi settings screen. The `/WebSocket` endpoint is unauthenticated for Artisan compatibility and broadcasts roast telemetry, controller state, and debug logs to connected clients. Keep the device on a trusted network. The access QR contains the web credentials and should be treated as a secret. Browser handling of credentials embedded in a URL varies; enter the displayed credentials if scanning does not authenticate automatically.
+
+Open `/server` to change the mDNS name or set a new eight-character alphanumeric password. The default address is `http://roaster-dev.local`; the mDNS name is configurable.
+
+The device serves plain HTTP, so Basic Authentication does not encrypt credentials or traffic. Keep it on a trusted, isolated Wi-Fi network and do not port-forward it or expose it directly to the internet.
 
 ## Configuration
 

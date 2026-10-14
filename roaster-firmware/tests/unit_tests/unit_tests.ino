@@ -11,6 +11,7 @@
  * 4. Monitor: ./tools/tests.sh monitor unit --board jc4827w543c
  */
 
+#include "../../src/network/ServerSecurity.hpp"
 #include <AUnitVerbose.h> // Verbose runner prints PASS results
 using namespace aunit;
 
@@ -118,4 +119,37 @@ test(Framework_SerialOutput)
 {
   Serial.println("  → Framework test executed successfully");
   assertTrue(true);
+}
+
+test(ServerSecurity_HostnameValidation)
+{
+  assertTrue(serverSecurityHostnameIsValid("roaster-dev"));
+  assertTrue(serverSecurityHostnameIsValid("a"));
+  assertFalse(serverSecurityHostnameIsValid(""));
+  assertFalse(serverSecurityHostnameIsValid("-roaster"));
+  assertFalse(serverSecurityHostnameIsValid("roaster-"));
+  assertFalse(serverSecurityHostnameIsValid("roaster.local"));
+  assertFalse(serverSecurityHostnameIsValid("roaster_dev"));
+
+  String tooLongHostname;
+  for (size_t index = 0; index <= SERVER_SECURITY_HOST_MAX; index++) {
+    tooLongHostname += 'a';
+  }
+  assertFalse(serverSecurityHostnameIsValid(tooLongHostname));
+}
+
+test(ServerSecurity_PasswordValidation)
+{
+  assertTrue(serverSecurityPasswordIsValid("Abc234XY"));
+  assertFalse(serverSecurityPasswordIsValid("Abc234X"));
+  assertFalse(serverSecurityPasswordIsValid("Abc234XYZ"));
+  assertFalse(serverSecurityPasswordIsValid("Abc234!Y"));
+}
+
+test(ServerSecurity_GeneratedPassword)
+{
+  char password[SERVER_SECURITY_PASSWORD_LENGTH + 1];
+  serverSecurityGeneratePassword(password);
+  assertTrue(strlen(password) == SERVER_SECURITY_PASSWORD_LENGTH);
+  assertTrue(serverSecurityPasswordIsValid(String(password)));
 }

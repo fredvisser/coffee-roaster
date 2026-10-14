@@ -4,6 +4,10 @@ Use this guide to connect the roaster to [Artisan](https://artisan-scope.org) fo
 
 The roaster firmware can stream roast data directly to Artisan once the device is on WiFi and the web interface is reachable.
 
+## Authentication Compatibility
+
+The `/WebSocket` endpoint is exempt from Basic Authentication so Artisan can connect using the included settings file without credentials. It publishes roast telemetry; the web pages, APIs, and OTA endpoints still require the touchscreen password.
+
 ## What You Need
 
 - a running roaster with current firmware

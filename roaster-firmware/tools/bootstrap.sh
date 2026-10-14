@@ -94,7 +94,7 @@ if [ -f "$LVGL_CONFIG_SOURCE" ]; then
     if [ -d "$ARDUINO_LIB_DIR/lvgl" ]; then
         cp "$LVGL_CONFIG_SOURCE" "$LVGL_CONFIG_LIBRARY"
         for config in "$LVGL_CONFIG_ROOT" "$LVGL_CONFIG_LIBRARY"; do
-            perl -0pi -e 's/^#if 0 /#if 1 /m; s/^#define LV_FONT_MONTSERRAT_16 0$/#define LV_FONT_MONTSERRAT_16 1/m; s/^#define LV_FONT_MONTSERRAT_22 0$/#define LV_FONT_MONTSERRAT_22 1/m; s/^#define LV_FONT_MONTSERRAT_48 0$/#define LV_FONT_MONTSERRAT_48 1/m' "$config"
+            perl -0pi -e 's/^#if 0 /#if 1 /m; s/^#define LV_FONT_MONTSERRAT_16 0$/#define LV_FONT_MONTSERRAT_16 1/m; s/^#define LV_FONT_MONTSERRAT_22 0$/#define LV_FONT_MONTSERRAT_22 1/m; s/^#define LV_FONT_MONTSERRAT_48 0$/#define LV_FONT_MONTSERRAT_48 1/m; s/^#define LV_USE_QRCODE 0$/#define LV_USE_QRCODE 1/m' "$config"
         done
         echo "✓ LVGL configuration staged"
     else

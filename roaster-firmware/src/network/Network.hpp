@@ -19,6 +19,8 @@
 #include "../profiles/ProfileManager.hpp"    // Profile backend logic
 #include "ProfileWebUI.hpp"     // Profile UI HTML/CSS/JS
 #include "../integrations/SystemLinkWebUI.hpp"
+#include "ServerSecurity.hpp"
+#include "ServerConfigWebUI.hpp"
 #include <vector>
 
 // Removed global JsonDocument to prevent heap fragmentation
@@ -584,7 +586,7 @@ void initWebSocket() {
 
 String networkAccessAddress() {
   if (mdnsInitialized) {
-    return "roaster-dev.local";
+    return serverSecurityGetHostname() + ".local";
   }
 
   if (WiFi.status() == WL_CONNECTED) {
@@ -637,7 +639,8 @@ void tryStartMdns(bool verboseLogging) {
     return;
   }
 
-  if (!MDNS.begin("roaster-dev")) {
+  String hostname = serverSecurityGetHostname();
+  if (!MDNS.begin(hostname.c_str())) {
     if (verboseLogging) {
       LOG_WARNF("mDNS start failed: internalFree=%u largestInternal=%u", static_cast<unsigned int>(freeInternalHeap), static_cast<unsigned int>(largestInternalBlock));
     }
@@ -646,7 +649,29 @@ void tryStartMdns(bool verboseLogging) {
   }
 
   mdnsInitialized = true;
-  LOG_INFOF("mDNS responder started at roaster-dev.local (internalFree=%u largestInternal=%u)", static_cast<unsigned int>(freeInternalHeap), static_cast<unsigned int>(largestInternalBlock));
+  LOG_INFOF("mDNS responder started at %s.local (internalFree=%u largestInternal=%u)", hostname.c_str(), static_cast<unsigned int>(freeInternalHeap), static_cast<unsigned int>(largestInternalBlock));
+}
+
+void serviceServerSettings() {
+  bool restartMdns = false;
+  bool refreshDisplay = false;
+  serverSecurityTakePending(restartMdns, refreshDisplay);
+
+  if (restartMdns) {
+    if (mdnsInitialized) {
+      MDNS.end();
+      mdnsInitialized = false;
+    }
+    mdnsRetryAtMs = 0;
+    tryStartMdns(true);
+    updateDisplayedNetworkAddress();
+  }
+
+  if (refreshDisplay) {
+    String hostname = serverSecurityGetHostname() + ".local";
+    String password = serverSecurityGetPassword();
+    displaySetWebAccessInfo(hostname, SERVER_SECURITY_USERNAME, password);
+  }
 }
 
 void updateWifiConnectAttemptState() {
@@ -699,6 +724,7 @@ bool beginWifiConnection(const WifiCredentials& wifiCredentials, bool forceReset
 }
 
 String initializeWifi(const WifiCredentials& wifiCredentials) {
+  serverSecurityInitialize(preferences);
   WifiCredentials normalizedCredentials = normalizeWifiCredentials(wifiCredentials);
 
   if (normalizedCredentials.ssid.length() == 0) {
@@ -738,6 +764,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   }
 
   networkServicesInitialized = true;
+  server.addMiddleware(&serverSecurityAuthMiddleware);
 
   // Default to the console app at the root URL.
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -767,6 +794,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     [](AsyncWebServerRequest *request) {},
     nullptr,
     [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (!serverSecurityIsAuthenticated(request)) return;
       if (index == 0) {
         String* body = new String();
         body->reserve(total + 1);
@@ -867,6 +895,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     [](AsyncWebServerRequest *request) {},
     nullptr,
     [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (!serverSecurityIsAuthenticated(request)) return;
       String path = request->url();
       if (path.endsWith("/activate")) return;  // handled in POST
 
@@ -1008,10 +1037,96 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     request->send(200, "application/json", getSystemLinkConfigJSON());
   });
 
+  server.on("/api/server", HTTP_GET, [](AsyncWebServerRequest *request) {
+    StaticJsonDocument<128> doc;
+    doc["hostname"] = serverSecurityGetHostname();
+    doc["username"] = SERVER_SECURITY_USERNAME;
+    String body;
+    serializeJson(doc, body);
+    AsyncWebServerResponse *response = request->beginResponse(200, "application/json", body);
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+  });
+
+  server.on("/api/server", HTTP_POST,
+    [](AsyncWebServerRequest *request) {
+      if (request->contentLength() > 512) {
+        request->send(413, "application/json", "{\"error\":\"payload_too_large\"}");
+        return;
+      }
+
+      String *body = static_cast<String *>(request->_tempObject);
+      if (body == nullptr) {
+        request->send(400, "application/json", "{\"error\":\"missing_body\"}");
+        return;
+      }
+
+      StaticJsonDocument<256> doc;
+      DeserializationError parseError = deserializeJson(doc, *body);
+      delete body;
+      request->_tempObject = nullptr;
+      if (parseError || !doc["hostname"].is<const char *>()) {
+        request->send(400, "application/json", "{\"error\":\"invalid_settings\"}");
+        return;
+      }
+
+      String hostname = doc["hostname"].as<String>();
+      String newPassword = doc["newPassword"].as<String>();
+      const bool changePassword = newPassword.length() > 0;
+      bool hostnameChanged = false;
+      bool passwordChanged = false;
+      String error;
+      if (!serverSecurityStoreSettings(preferences, hostname, newPassword, changePassword,
+                                       hostnameChanged, passwordChanged, error)) {
+        StaticJsonDocument<128> errorDoc;
+        errorDoc["error"] = error;
+        String errorBody;
+        serializeJson(errorDoc, errorBody);
+        request->send(400, "application/json", errorBody);
+        return;
+      }
+
+      if (passwordChanged) {
+        String password = serverSecurityGetPassword();
+        ElegantOTA.setAuth(SERVER_SECURITY_USERNAME, password.c_str());
+      }
+
+      StaticJsonDocument<128> responseDoc;
+      responseDoc["ok"] = true;
+      responseDoc["hostname"] = serverSecurityGetHostname();
+      responseDoc["hostnameChanged"] = hostnameChanged;
+      responseDoc["passwordChanged"] = passwordChanged;
+      String responseBody;
+      serializeJson(responseDoc, responseBody);
+      AsyncWebServerResponse *response = request->beginResponse(200, "application/json", responseBody);
+      response->addHeader("Cache-Control", "no-store");
+      request->send(response);
+    },
+    nullptr,
+    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (!serverSecurityIsAuthenticated(request) || total > 512) {
+        return;
+      }
+      if (index == 0) {
+        request->_tempObject = new String();
+        if (request->_tempObject != nullptr) {
+          static_cast<String *>(request->_tempObject)->reserve(total + 1);
+        }
+      }
+      String *body = static_cast<String *>(request->_tempObject);
+      if (body == nullptr) {
+        return;
+      }
+      for (size_t offset = 0; offset < len; offset++) {
+        *body += static_cast<char>(data[offset]);
+      }
+    });
+
   server.on("/api/systemlink", HTTP_POST,
     [](AsyncWebServerRequest *request) {},
     nullptr,
     [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (!serverSecurityIsAuthenticated(request)) return;
       if (index == 0) {
         String* body = new String();
         body->reserve(total + 1);
@@ -1283,6 +1398,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     [](AsyncWebServerRequest *request) {},
     nullptr,
     [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (!serverSecurityIsAuthenticated(request)) return;
       if (index == 0) {
         String* body = new String();
         body->reserve(total + 1);
@@ -2496,6 +2612,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     <a class="active" href="/pid">PID</a>
     <a href="/update">Update</a>
     <a href="/systemlink">SystemLink</a>
+    <a href="/server">Server</a>
   </nav>
   <div class="page">
     <div class="card">
@@ -2854,7 +2971,6 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 )rawliteral");
   });
 
-  // Profile Editor UI
   server.on("/profile", HTTP_GET, [](AsyncWebServerRequest *request) {
     LOG_INFO("Profile Editor UI accessed");
     request->send_P(200, "text/html", PROFILE_EDITOR_HTML);
@@ -2865,10 +2981,17 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     request->send_P(200, "text/html", SYSTEMLINK_CONFIG_HTML);
   });
 
+  server.on("/server", HTTP_GET, [](AsyncWebServerRequest *request) {
+    AsyncWebServerResponse *response = request->beginResponse(200, "text/html", SERVER_CONFIG_HTML);
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+  });
+
   server.addHandler(&otaStateGuardHandler);
 
   // Start ElegantOTA for over-the-air updates
-  ElegantOTA.begin(&server);  // Start ElegantOTA in async mode
+  String webPassword = serverSecurityGetPassword();
+  ElegantOTA.begin(&server, SERVER_SECURITY_USERNAME, webPassword.c_str());
   ElegantOTA.setAutoReboot(false);
   // ElegantOTA callbacks
   ElegantOTA.onStart(onOTAStart);
