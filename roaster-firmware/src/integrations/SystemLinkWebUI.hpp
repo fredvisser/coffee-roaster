@@ -200,7 +200,7 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
   </style>
 </head>
 <body>
-  <nav class="topnav">
+  <nav class="topnav" aria-label="Main navigation">
     <div class="topnav-logo">
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
         <path d="M4.5,10 C2.5,15 9,17 12,17 C15,17 21.5,15 19.5,10 C17.5,5 11,3 8,3 C5,3 6.5,5 4.5,10 Z" fill="#009944" />
@@ -211,11 +211,12 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
       </svg>
       Roaster Control
     </div>
-    <a href="/">Console</a>
+    <a href="/console">Console</a>
     <a href="/profile">Profiles</a>
     <a href="/pid">PID</a>
     <a href="/update">Update</a>
-    <a class="active" href="/systemlink">SystemLink</a>
+    <a class="active" href="/systemlink" aria-current="page">SystemLink</a>
+    <a href="/server">Server</a>
   </nav>
   <div class="shell">
     <div class="hero">

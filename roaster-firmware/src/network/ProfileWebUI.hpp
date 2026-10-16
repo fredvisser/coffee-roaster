@@ -13,7 +13,7 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
   <style>
     * { box-sizing: border-box; }
     body { font-family: 'Segoe UI', Inter, -apple-system, sans-serif; background:#333333; color:#FFFFFF; margin:0; padding:0; }
-    .topnav { max-width: 1100px; margin: 0 auto; padding: 14px; display:flex; flex-wrap:wrap; gap:10px; background:#2D2D2D; border-bottom:2px solid #444; align-items:center; }
+    .topnav { max-width: 1100px; margin: 0 auto 20px; padding: 14px; display:flex; flex-wrap:wrap; gap:10px; background:#2D2D2D; border-bottom:2px solid #444; align-items:center; }
     .topnav-logo { display:flex; align-items:center; gap:10px; margin-right:auto; font-weight:900; font-size:20px; color:#009944; text-transform:uppercase; letter-spacing:1px; }
     .topnav a { display:inline-flex; align-items:center; justify-content:center; min-width:100px; padding:12px 16px; border-radius:0; background:#3A3A3A; color:#CCCCCC; text-decoration:none; font-weight:700; text-transform:uppercase; font-size:14px; transition: 0.2s; }
     .topnav a:hover { background:#444444; color:#FFF; }
@@ -131,9 +131,9 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
   </style>
 </head>
 <body>
-  <nav class="topnav">
+  <nav class="topnav" aria-label="Main navigation">
     <div class="topnav-logo">
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
         <path d="M4.5,10 C2.5,15 9,17 12,17 C15,17 21.5,15 19.5,10 C17.5,5 11,3 8,3 C5,3 6.5,5 4.5,10 Z" fill="#009944" />
         <path d="M5,10 Q12,14 19,9" stroke="#2D2D2D" stroke-width="1.5" fill="none" />
         <path d="M9,18 Q8,20 10,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
@@ -142,11 +142,12 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
       </svg>
       Roaster Control
     </div>
-    <a href="/">Console</a>
-    <a class="active" href="/profile">Profiles</a>
+    <a href="/console">Console</a>
+    <a class="active" href="/profile" aria-current="page">Profiles</a>
     <a href="/pid">PID</a>
     <a href="/update">Update</a>
     <a href="/systemlink">SystemLink</a>
+    <a href="/server">Server</a>
   </nav>
   <div class="container">
     <div class="header">

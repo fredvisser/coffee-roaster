@@ -1462,7 +1462,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       line-height: 1.5;
     }
     .topnav {
-      max-width: 1400px;
+      max-width: 1100px;
       margin: 0 auto 20px;
       padding: 14px;
       display: flex;
@@ -1782,7 +1782,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   </style>
 </head>
 <body>
-  <nav class="topnav">
+  <nav class="topnav" aria-label="Main navigation">
     <div class="topnav-logo">
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
         <path d="M4.5,10 C2.5,15 9,17 12,17 C15,17 21.5,15 19.5,10 C17.5,5 11,3 8,3 C5,3 6.5,5 4.5,10 Z" fill="#009944" />
@@ -1793,11 +1793,12 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       </svg>
       Roaster Control
     </div>
-    <a class="active" href="/">Console</a>
+    <a class="active" href="/console" aria-current="page">Console</a>
     <a href="/profile">Profiles</a>
     <a href="/pid">PID</a>
     <a href="/update">Update</a>
     <a href="/systemlink">SystemLink</a>
+    <a href="/server">Server</a>
   </nav>
   <div class="page">
     <div class="header">
@@ -2596,7 +2597,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   </style>
 </head>
 <body>
-  <nav class="topnav">
+  <nav class="topnav" aria-label="Main navigation">
     <div class="topnav-logo">
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
         <path d="M4.5,10 C2.5,15 9,17 12,17 C15,17 21.5,15 19.5,10 C17.5,5 11,3 8,3 C5,3 6.5,5 4.5,10 Z" fill="#009944" />
@@ -2607,9 +2608,9 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       </svg>
       Roaster Control
     </div>
-    <a href="/">Console</a>
+    <a href="/console">Console</a>
     <a href="/profile">Profiles</a>
-    <a class="active" href="/pid">PID</a>
+    <a class="active" href="/pid" aria-current="page">PID</a>
     <a href="/update">Update</a>
     <a href="/systemlink">SystemLink</a>
     <a href="/server">Server</a>
@@ -3077,5 +3078,4 @@ void checkWiFiConnection(const WifiCredentials& wifiCredentials) {
 }
 
 #endif // NETWORK_HPP
-
 
