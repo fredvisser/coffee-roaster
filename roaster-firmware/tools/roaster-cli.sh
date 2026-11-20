@@ -1,5 +1,5 @@
 #!/bin/bash
-# Coffee Roaster - Legacy compile/upload runner
+# Coffee Roaster - Shared compile/upload runner
 # Canonical entrypoints are tools/firmware.sh and tools/tests.sh.
 
 set -euo pipefail
@@ -13,10 +13,6 @@ BAUD_RATE=115200
 OTA_SCHEME="${OTA_SCHEME:-http}"
 OTA_HOST="${OTA_HOST:-roaster-dev.local}"
 OTA_PORT="${OTA_PORT:-80}"
-OTA_USER="${OTA_USER:-}"
-OTA_PASS="${OTA_PASS:-}"
-OTA_RESOLVED_HOST=""
-OTA_CACHE_FILE="${OTA_CACHE_FILE:-${TMPDIR:-/tmp}/coffee-roaster-ota-host.cache}"
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIRMWARE_DIR="$(cd "$TOOLS_DIR/.." && pwd)"
 FIRMWARE_BUILD_DIR="$FIRMWARE_DIR/build"
@@ -266,149 +262,19 @@ upload_sketch() {
 }
 
 ota_base_url() {
-    local host="${OTA_RESOLVED_HOST:-$OTA_HOST}"
-    echo "${OTA_SCHEME}://${host}:${OTA_PORT}"
-}
-
-ota_python() {
-    if command -v python3 >/dev/null 2>&1; then
-        echo "python3"
-        return 0
-    fi
-
-    if command -v python >/dev/null 2>&1; then
-        echo "python"
-        return 0
-    fi
-
-    return 1
-}
-
-ota_cache_host() {
-    local host="$1"
-    if [[ "$host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-        printf '%s\n' "$host" > "$OTA_CACHE_FILE"
-    fi
-}
-
-ota_load_cached_host() {
-    if [[ ! -f "$OTA_CACHE_FILE" ]]; then
-        return 1
-    fi
-
-    local cached_host
-    cached_host=$(tr -d '[:space:]' < "$OTA_CACHE_FILE")
-    if [[ "$cached_host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-        OTA_RESOLVED_HOST="$cached_host"
-        return 0
-    fi
-
-    return 1
-}
-
-ota_probe_host() {
-    local host="$1"
-    local base_url="${OTA_SCHEME}://${host}:${OTA_PORT}"
-
-    curl --silent --show-error --connect-timeout 3 --max-time 5 \
-        --output /dev/null "$base_url/api/state"
-}
-
-resolve_ota_host_once() {
-    local python_bin
-    python_bin=$(ota_python) || return 1
-
-    "$python_bin" - "$OTA_HOST" <<'PY'
-import subprocess
-import sys
-import time
-
-host = sys.argv[1]
-try:
-    proc = subprocess.Popen(
-        ['dns-sd', '-G', 'v4', host],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    )
-except Exception:
-    print('')
-    raise SystemExit(0)
-
-deadline = time.time() + 5.0
-resolved = ''
-try:
-    while time.time() < deadline:
-        line = proc.stdout.readline()
-        if not line:
-            time.sleep(0.1)
-            continue
-        parts = line.split()
-        if len(parts) >= 6 and parts[1] == 'Add':
-            resolved = parts[5]
-            break
-finally:
-    proc.terminate()
-    try:
-        proc.wait(timeout=1)
-    except Exception:
-        proc.kill()
-
-print(resolved)
-PY
-}
-
-resolve_ota_host() {
-    OTA_RESOLVED_HOST="$OTA_HOST"
-
-    if [[ "$OTA_HOST" != *.local ]]; then
-        return 0
-    fi
-
-    if command -v dns-sd >/dev/null 2>&1; then
-        local attempt resolved
-        for attempt in 1 2 3; do
-            resolved=$(resolve_ota_host_once)
-            if [[ -n "$resolved" ]] && ota_probe_host "$resolved"; then
-                OTA_RESOLVED_HOST="$resolved"
-                ota_cache_host "$OTA_RESOLVED_HOST"
-                print_info "Resolved $OTA_HOST to $OTA_RESOLVED_HOST for OTA upload"
-                return 0
-            fi
-            print_info "mDNS resolution attempt $attempt for $OTA_HOST did not produce a reachable host"
-        done
-    fi
-
-    if ota_probe_host "$OTA_HOST"; then
-        OTA_RESOLVED_HOST="$OTA_HOST"
-        print_info "Using directly reachable host $OTA_HOST for OTA upload"
-        return 0
-    fi
-
-    if ota_load_cached_host && ota_probe_host "$OTA_RESOLVED_HOST"; then
-        print_info "Using cached OTA host $OTA_RESOLVED_HOST after mDNS lookup failed"
-        return 0
-    fi
-
-    print_error "Unable to resolve a reachable OTA host for $OTA_HOST"
-    return 1
+    echo "${OTA_SCHEME}://${OTA_HOST}:${OTA_PORT}"
 }
 
 ota_start_session() {
-    local base_url="$1"
-    shift
-
-    curl --fail --silent --show-error --http1.1 --connect-timeout 5 --max-time 20 \
-        "$@" "$base_url/ota/start?mode=fw&hash=$md5_hash" >/tmp/ota_start.log
+    ota_curl --fail --silent --show-error --http1.1 --connect-timeout 5 --max-time 20 \
+        "$1/ota/start?mode=fw&hash=$md5_hash" >/tmp/ota_start.log
 }
 
 ota_send_firmware() {
     local base_url="$1"
     local firmware_bin="$2"
-    shift 2
-
-    curl --fail --silent --show-error --http1.1 --connect-timeout 10 --max-time 180 \
-        "$@" -F "file=@$firmware_bin;type=application/octet-stream" \
+    ota_curl --fail --silent --show-error --http1.1 --connect-timeout 10 --max-time 180 \
+        -F "file=@$firmware_bin;type=application/octet-stream" \
         "$base_url/ota/upload" >/tmp/ota_upload.log
 }
 
@@ -457,41 +323,37 @@ firmware_md5() {
 }
 
 ota_upload_firmware() {
+    local sketch_path="$1"
     local firmware_bin="$FIRMWARE_BUILD_DIR/roaster-firmware.bin"
+    local token="${OTA_TOKEN:-}"
+    if [[ -z "$token" ]] && command -v security >/dev/null 2>&1; then
+        token=$(security find-generic-password -s coffee-roaster -a "${OTA_SCHEME}://${OTA_HOST}:${OTA_PORT}" -w 2>/dev/null) || token=""
+    fi
+    if [[ -z "$token" ]]; then
+        print_error "No OTA session for $OTA_HOST. Run ./tools/firmware.sh pair with the same OTA_HOST first."
+        return 1
+    fi
+    if [[ ! "$token" =~ ^[0-9a-f]{64}$ ]]; then
+        print_error "Invalid OTA session token"
+        return 1
+    fi
+
+    ensure_firmware_build "$sketch_path" ota || return 1
     local md5_hash
     md5_hash=$(firmware_md5 "$firmware_bin") || return 1
-    resolve_ota_host || return 1
-
-    local auth_args=()
-    if [[ -n "$OTA_USER" ]] || [[ -n "$OTA_PASS" ]]; then
-        auth_args=(-u "$OTA_USER:$OTA_PASS")
-    fi
 
     local attempt base_url
     for attempt in 1 2 3; do
         base_url=$(ota_base_url)
         print_info "Starting OTA session at $base_url (attempt $attempt/3)"
-        if [[ ${#auth_args[@]} -gt 0 ]]; then
-            ota_start_session "$base_url" "${auth_args[@]}"
-        else
-            ota_start_session "$base_url"
-        fi
-
-        if [[ $? -ne 0 ]]; then
+        if ! ota_start_session "$base_url"; then
             print_info "OTA start request failed on attempt $attempt"
             cat /tmp/ota_start.log 2>/dev/null || true
         else
             print_info "Uploading $(basename "$firmware_bin") via OTA..."
-            if [[ ${#auth_args[@]} -gt 0 ]]; then
-                ota_send_firmware "$base_url" "$firmware_bin" "${auth_args[@]}"
-            else
-                ota_send_firmware "$base_url" "$firmware_bin"
-            fi
-
-            if [[ $? -eq 0 ]]; then
+            if ota_send_firmware "$base_url" "$firmware_bin"; then
                 print_success "OTA upload accepted by device"
                 print_info "Device should reboot after the delayed restart window"
-                ota_cache_host "${OTA_RESOLVED_HOST:-$OTA_HOST}"
                 return 0
             fi
 
@@ -500,13 +362,22 @@ ota_upload_firmware() {
         fi
 
         if [[ $attempt -lt 3 ]]; then
-            print_info "Retrying OTA after refreshing host resolution"
-            resolve_ota_host || true
+            print_info "Retrying OTA"
         fi
     done
 
     print_error "OTA upload failed after 3 attempts"
     return 1
+}
+
+ota_curl() {
+    local -a address_args=()
+    # Avoid dual-stack mDNS lookup timeouts with macOS curl.
+    case "$OTA_HOST" in
+        *.[lL][oO][cC][aA][lL]|*.[lL][oO][cC][aA][lL].) address_args=(-4) ;;
+    esac
+    printf 'header = "Authorization: Bearer %s"\n' "$token" |
+        curl -q --config - --noproxy '*' ${address_args[@]+"${address_args[@]}"} "$@"
 }
 
 monitor_serial() {
@@ -654,6 +525,9 @@ main() {
     fi
 
     case "$action" in
+        pair)
+            python3 "$TOOLS_DIR/roaster-pair.py" "${OTA_SCHEME}://${OTA_HOST}:${OTA_PORT}"
+            ;;
         compile)
             print_header "Compiling $test_name"
             compile_sketch "$sketch_path" || {
@@ -682,7 +556,7 @@ main() {
                 exit 1
             fi
             print_header "OTA Uploading $test_name"
-            ensure_firmware_build "$sketch_path" ota && ota_upload_firmware
+            ota_upload_firmware "$sketch_path"
             ;;
         all)
             print_header "Building & Running $test_name"

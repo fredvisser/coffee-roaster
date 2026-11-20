@@ -338,6 +338,11 @@ public:
     const String url = request->url();
     const WebRequestMethodComposite method = request->method();
 
+    // Multipart callbacks run before middleware. Never hand a denied upload to ElegantOTA.
+    if (method == HTTP_POST && url.startsWith("/ota/upload") &&
+        (url != "/ota/upload" || !serverSecurityIsAuthenticated(request))) return true;
+    if (method == HTTP_GET && url.startsWith("/ota/start") && url != "/ota/start") return true;
+
     if (otaUpdateInProgress) {
       return !otaRequestAllowedDuringUpload(url, method);
     }
@@ -350,6 +355,10 @@ public:
   }
 
   void handleRequest(AsyncWebServerRequest *request) override {
+    if (request->url() != "/update" && !otaRequestAllowedDuringUpload(request->url(), request->method()) && !otaUpdateInProgress) {
+      request->send(404);
+      return;
+    }
     String message = otaUpdateInProgress ? otaInProgressMessage() : otaBusyMessage();
     if (request->url() == "/update" && !request->hasParam("embedded")) {
       String html = ROASTER_WEB_UPDATE_HEAD "<section class=\"web-panel\"><p>";
@@ -656,11 +665,7 @@ void tryStartMdns(bool verboseLogging) {
 }
 
 void serviceServerSettings() {
-  bool restartMdns = false;
-  bool refreshDisplay = false;
-  serverSecurityTakePending(restartMdns, refreshDisplay);
-
-  if (restartMdns) {
+  if (serverSecurityTakeHostnameChange()) {
     if (mdnsInitialized) {
       MDNS.end();
       mdnsInitialized = false;
@@ -668,13 +673,29 @@ void serviceServerSettings() {
     mdnsRetryAtMs = 0;
     tryStartMdns(true);
     updateDisplayedNetworkAddress();
+    displaySetWebAccessInfo(serverSecurityGetHostname() + ".local");
   }
+  if (!pairingStorageReady || otaUpdateInProgress) return;
+  bool opened;
+  int code;
+  {
+    PairingLock lock;
+    uint32_t now = millis();
+    opened = pairing.isOpen(now);
+    code = pairing.hasRequest(now) ? static_cast<int>(pairing.displayCode()) : -1;
+    pairingDisplayedCode = code;
+  }
+  displaySetPairingPrompt(opened, code);
+}
 
-  if (refreshDisplay) {
-    String hostname = serverSecurityGetHostname() + ".local";
-    String password = serverSecurityGetPassword();
-    displaySetWebAccessInfo(hostname, SERVER_SECURITY_USERNAME, password);
-  }
+void handlePairingDisplayAction(bool cancel) {
+  if (!pairingStorageReady) return;
+  PairingLock lock;
+  uint32_t now = millis();
+  if (cancel) pairing.close();
+  else if (!pairing.isOpen(now)) pairing.open(now);
+  else if (pairingDisplayedCode >= 0) pairing.approve(now, pairingDisplayedCode);
+  pairingDisplayedCode = -1;
 }
 
 void updateWifiConnectAttemptState() {
@@ -770,6 +791,13 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 
   networkServicesInitialized = true;
   server.addMiddleware(&serverSecurityAuthMiddleware);
+  server.addHandler(&otaStateGuardHandler);
+  pairingRegisterApi(server);
+  server.on("/pair", HTTP_GET, [](AsyncWebServerRequest *request) {
+    auto *response = request->beginResponse_P(200, "text/html", ROASTER_PAIR_HTML);
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+  });
 
   // Default to the console app at the root URL.
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -1045,7 +1073,6 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   server.on("/api/server", HTTP_GET, [](AsyncWebServerRequest *request) {
     StaticJsonDocument<128> doc;
     doc["hostname"] = serverSecurityGetHostname();
-    doc["username"] = SERVER_SECURITY_USERNAME;
     String body;
     serializeJson(doc, body);
     AsyncWebServerResponse *response = request->beginResponse(200, "application/json", body);
@@ -1076,13 +1103,8 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       }
 
       String hostname = doc["hostname"].as<String>();
-      String newPassword = doc["newPassword"].as<String>();
-      const bool changePassword = newPassword.length() > 0;
-      bool hostnameChanged = false;
-      bool passwordChanged = false;
       String error;
-      if (!serverSecurityStoreSettings(preferences, hostname, newPassword, changePassword,
-                                       hostnameChanged, passwordChanged, error)) {
+      if (!serverSecurityStoreHostname(preferences, hostname, error)) {
         StaticJsonDocument<128> errorDoc;
         errorDoc["error"] = error;
         String errorBody;
@@ -1091,16 +1113,9 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
         return;
       }
 
-      if (passwordChanged) {
-        String password = serverSecurityGetPassword();
-        ElegantOTA.setAuth(SERVER_SECURITY_USERNAME, password.c_str());
-      }
-
       StaticJsonDocument<128> responseDoc;
       responseDoc["ok"] = true;
       responseDoc["hostname"] = serverSecurityGetHostname();
-      responseDoc["hostnameChanged"] = hostnameChanged;
-      responseDoc["passwordChanged"] = passwordChanged;
       String responseBody;
       serializeJson(responseDoc, responseBody);
       AsyncWebServerResponse *response = request->beginResponse(200, "application/json", responseBody);
@@ -2712,8 +2727,6 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     request->send(response);
   });
 
-  server.addHandler(&otaStateGuardHandler);
-
   // ponytail: frame ElegantOTA's existing upload form; do not duplicate the OTA protocol.
   server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send_P(200, "text/html", ROASTER_WEB_UPDATE_HTML);
@@ -2722,8 +2735,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   });
 
   // Start ElegantOTA for over-the-air updates
-  String webPassword = serverSecurityGetPassword();
-  ElegantOTA.begin(&server, SERVER_SECURITY_USERNAME, webPassword.c_str());
+  ElegantOTA.begin(&server);
   ElegantOTA.setAutoReboot(false);
   // ElegantOTA callbacks
   ElegantOTA.onStart(onOTAStart);

@@ -794,9 +794,7 @@ void setup()
   LOG_INFOF("Final display final target value is %dF", displayReadFinalTargetTemp());
 
   displaySetWifiIp(ipAddress);
-  displaySetWebAccessInfo(serverSecurityGetHostname() + ".local",
-                         SERVER_SECURITY_USERNAME,
-                         serverSecurityGetPassword());
+  displaySetWebAccessInfo(serverSecurityGetHostname() + ".local");
   displaySetRevision(VERSION);
 
   displayShowScreen(DisplayScreen::Start);

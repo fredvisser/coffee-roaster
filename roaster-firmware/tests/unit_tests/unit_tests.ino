@@ -132,24 +132,8 @@ test(ServerSecurity_HostnameValidation)
   assertFalse(serverSecurityHostnameIsValid("roaster_dev"));
 
   String tooLongHostname;
-  for (size_t index = 0; index <= SERVER_SECURITY_HOST_MAX; index++) {
+  for (size_t index = 0; index < 64; index++) {
     tooLongHostname += 'a';
   }
   assertFalse(serverSecurityHostnameIsValid(tooLongHostname));
-}
-
-test(ServerSecurity_PasswordValidation)
-{
-  assertTrue(serverSecurityPasswordIsValid("Abc234XY"));
-  assertFalse(serverSecurityPasswordIsValid("Abc234X"));
-  assertFalse(serverSecurityPasswordIsValid("Abc234XYZ"));
-  assertFalse(serverSecurityPasswordIsValid("Abc234!Y"));
-}
-
-test(ServerSecurity_GeneratedPassword)
-{
-  char password[SERVER_SECURITY_PASSWORD_LENGTH + 1];
-  serverSecurityGeneratePassword(password);
-  assertTrue(strlen(password) == SERVER_SECURITY_PASSWORD_LENGTH);
-  assertTrue(serverSecurityPasswordIsValid(String(password)));
 }

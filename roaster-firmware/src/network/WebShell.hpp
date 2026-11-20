@@ -60,3 +60,52 @@ static const char ROASTER_WEB_UPDATE_HTML[] =
   ROASTER_WEB_UPDATE_HEAD
   "<iframe class=\"ota-frame\" src=\"/update?embedded=1\" title=\"Firmware uploader\"></iframe>"
   "</main></body></html>";
+
+static const char ROASTER_PAIR_HTML[] =
+  "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">"
+  "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Pair roaster</title>"
+  ROASTER_WEB_STYLE R"pair(
+<main class="web-shell">
+  <header class="web-heading"><h1>Pair this browser</h1></header>
+  <div class="web-panel">
+    <p>On the roaster, open Wi-Fi settings, then Web access. Tap <strong>Pair browser/CLI</strong>.</p>
+    <label>Session name <input id="name" maxlength="32" value="Browser"></label>
+    <button id="pair" type="button">Request to pair</button>
+    <p id="status" role="status"></p>
+  </div>
+</main>
+<script>
+  const button = document.querySelector('#pair');
+  const status = document.querySelector('#status');
+  async function post(url, headers) {
+    const r = await fetch(url, {method: 'POST', headers, cache: 'no-store', signal: AbortSignal.timeout(6000)});
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error);
+    return data;
+  }
+  button.onclick = async () => {
+    button.disabled = true;
+    try {
+      const name = document.querySelector('#name').value;
+      const offer = await post('/api/pair-request?name=' + encodeURIComponent(name));
+      status.textContent = 'Check that the roaster shows ' + offer.code + ', then tap Approve.';
+      const deadline = Date.now() + 60000;
+      while (Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        if ((await post('/api/pair-claim', {
+          'X-Roaster-Pair': offer.ticket,
+          'X-Roaster-Paired-At': String(Math.floor(Date.now() / 1000))
+        })).ok) {
+          location.replace('/console');
+          return;
+        }
+      }
+      throw new Error('Pairing timed out.');
+    } catch (e) {
+      status.textContent = e.message;
+      button.disabled = false;
+    }
+  };
+</script>
+</html>
+)pair";

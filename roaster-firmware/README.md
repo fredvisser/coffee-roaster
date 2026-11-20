@@ -156,11 +156,12 @@ After the initial USB flash, run from `roaster-firmware/` on the same network
 as the roaster. Confirm the roaster is idle with the heater off before uploading.
 
 ```bash
-# Point to your roaster; use its IP if the .local name doesn't resolve.
+# Point to your roaster.
 export OTA_HOST=roaster-fred.local
-export OTA_USER=admin
-read -rs -p "Roaster web password: " OTA_PASS; echo  # Bash
-export OTA_PASS
+
+# Once per Mac: open Wi-Fi > Web access on the roaster and tap Pair browser/CLI.
+./tools/firmware.sh pair
+# Match the displayed code and tap Approve. The token is saved in macOS Keychain.
 
 # Upload the last matching build without recompiling (`ota` is an alias).
 ./tools/firmware.sh ota-upload --board jc4827w543c
@@ -168,8 +169,13 @@ export OTA_PASS
 # If you've edited the source and haven't built it yet, use this instead:
 ./tools/firmware.sh ota-upload --board jc4827w543c --rebuild
 
-unset OTA_PASS
 ```
+
+Use the same `OTA_HOST` for pairing and uploading. OTA uses IPv4 for `.local`
+names to avoid mDNS lookup timeouts on macOS. If the name still doesn't resolve,
+use the roaster's IP address for both commands and pair again under that address.
+If the roaster still runs older firmware without pairing, install this version
+over USB or through its existing `/update` page, then pair before using `ota-upload`.
 
 Both `ota-upload` and USB `upload` reuse `build/roaster-firmware.bin` from the
 last successful build if it matches the selected board and the required artifacts
@@ -193,7 +199,6 @@ change on the device. If needed, use the roaster's `/update` page and select
 - **`tools/tests.sh`**: Named test-suite entrypoint
   - `./tools/tests.sh compile safety` - Compile the safety suite
   - `./tools/tests.sh run pid` - Compile, upload, and monitor the PID suite
-- **Legacy aliases**: `./setup_libraries.sh` and `./run_tests.sh` remain available during the transition
 
 ## PID tuning
 
@@ -264,11 +269,23 @@ Compile the embedded checks with `./tools/tests.sh compile step-response` and
 Console, Profiles, PID, Update, SystemLink, and Server share the same navigation
 and page frame. The Update page uses the built-in ElegantOTA uploader.
 
-The web UI, API, and OTA endpoints require HTTP Basic Authentication. The fixed username is `admin`; the firmware generates an eight-character alphanumeric password on first boot and shows it on the touchscreen's Wi-Fi settings screen. The `/WebSocket` endpoint is unauthenticated for Artisan compatibility and broadcasts roast telemetry, controller state, and debug logs to connected clients. Keep the device on a trusted network. The access QR contains the web credentials and should be treated as a secret. Browser handling of credentials embedded in a URL varies; enter the displayed credentials if scanning does not authenticate automatically.
+Open **Wi-Fi > Web access** on the touchscreen and tap **Pair browser/CLI**.
+Open the address or scan the QR code, then select **Request to pair** in the
+browser. Compare the four-digit codes and tap **Approve** on the roaster.
+Pairing requests expire after one minute. Scripts can use `firmware.sh pair`
+on macOS, or the `/api/pair-request?cli=1` and `/api/pair-claim` endpoints and
+send `Authorization: Bearer <token>` on subsequent requests.
 
-Open `/server` to change the mDNS name or set a new eight-character alphanumeric password. The default address is `http://roaster-dev.local`; the mDNS name is configurable.
+Paired sessions survive a firmware reboot and have full access to the web UI,
+API, and OTA. The **Server** page lists and revokes sessions and lets you change
+the mDNS name. New sessions record the pairing date, using the browser or CLI
+clock if the roaster clock isn't set. Sessions saved without a date stay valid.
+Changing the address requires pairing the browser again. The
+`/WebSocket` endpoint remains unauthenticated for Artisan telemetry.
 
-The device serves plain HTTP, so Basic Authentication does not encrypt credentials or traffic. Keep it on a trusted, isolated Wi-Fi network and do not port-forward it or expose it directly to the internet.
+The device still serves plain HTTP. Anyone able to intercept traffic can steal
+a session and use it until revoked. Keep the roaster on a trusted, isolated LAN;
+do not expose it directly to the internet.
 
 ## Configuration
 
@@ -324,8 +341,6 @@ Comprehensive test suite covering:
 ```
 
 See `tests/README.md` for complete testing documentation.
-
-Compatibility note: `./run_tests.sh` and `./setup_libraries.sh` still work, but they now forward to the `tools/` entrypoints.
 
 ## Web Profile Editor
 

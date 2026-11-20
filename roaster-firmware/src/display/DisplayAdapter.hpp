@@ -146,14 +146,22 @@ inline void displaySetWifiIp(const String &ipAddress)
 #endif
 }
 
-inline void displaySetWebAccessInfo(const String &hostname, const String &username, const String &password)
+inline void displaySetWebAccessInfo(const String &hostname)
 {
 #if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_LVGL
-  LvglDisplay::setWebAccessInfo(hostname, username, password);
+  LvglDisplay::setWebAccessInfo(hostname);
 #else
   (void)hostname;
-  (void)username;
-  (void)password;
+#endif
+}
+
+inline void displaySetPairingPrompt(bool open, int code)
+{
+#if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_LVGL
+  LvglDisplay::setPairingPrompt(open, code);
+#else
+  (void)open;
+  (void)code;
 #endif
 }
 

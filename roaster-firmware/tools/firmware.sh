@@ -13,6 +13,7 @@ Commands:
   build       Compile the main firmware
   upload      Upload the latest matching build over USB
   ota-upload  Upload the latest matching build over Wi-Fi (alias: ota)
+  pair        Request a persistent CLI session (macOS Keychain)
   monitor     Open the serial monitor for the main firmware target
   port        Show the detected serial port and any owning processes
   run         Compile, upload, and monitor over serial
@@ -74,6 +75,9 @@ case "$command_name" in
         ;;
     upload)
         legacy_action="upload"
+        ;;
+    pair)
+        legacy_action="pair"
         ;;
     ota|ota-upload)
         legacy_action="ota"

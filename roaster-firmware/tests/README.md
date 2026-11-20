@@ -84,8 +84,6 @@ the production relay's switched GPIO rather than an ideal average-power input.
 Run `./tools/tests.sh run host-json` with ArduinoJson installed by bootstrap to
 check that history text remains attached to its own record after buffers are reused.
 
-Legacy compatibility note: `./run_tests.sh` still works and forwards to the new `tools/` entrypoints.
-
 ### Running Individual Test Suites
 
 #### Profile Management Tests

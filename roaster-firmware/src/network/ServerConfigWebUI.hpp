@@ -16,6 +16,10 @@ static const char SERVER_CONFIG_HTML[] PROGMEM = R"rawliteral(
     button:hover { background: #007A36; }
     #status { min-height: 1.5em; color: #009944; }
     .note { color: #AAA; font-size: 14px; }
+    #sessions { padding: 0; list-style: none; }
+    #sessions li { display: flex; align-items: center; gap: 12px; margin-block: 8px; }
+    #sessions button { flex-shrink: 0; margin-top: 0; }
+    #sessions span { overflow-wrap: anywhere; }
   </style>
 </head>
 <body>
@@ -26,13 +30,12 @@ static const char SERVER_CONFIG_HTML[] PROGMEM = R"rawliteral(
       <label for="hostname">mDNS name</label>
       <input id="hostname" name="hostname" maxlength="63" required pattern="[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?" autocomplete="off">
       <p class="note">The address will be this name followed by .local.</p>
-      <label for="username">Web username</label>
-      <input id="username" value="admin" readonly>
-      <label for="newPassword">New password</label>
-      <input id="newPassword" name="newPassword" type="password" minlength="8" maxlength="8" pattern="[A-Za-z0-9]{8}" autocomplete="new-password">
-      <p class="note">Leave blank to keep the current password. New passwords must be 8 letters or digits.</p>
       <button type="submit">Save settings</button>
     </form>
+    <section class="web-panel">
+      <h2>Paired sessions</h2>
+      <ul id="sessions"></ul>
+    </section>
     <p id="status" role="status" aria-live="polite"></p>
   </main>
   <script>
@@ -42,29 +45,55 @@ static const char SERVER_CONFIG_HTML[] PROGMEM = R"rawliteral(
       if (!response.ok) throw new Error('Could not load server settings.');
       const settings = await response.json();
       document.getElementById('hostname').value = settings.hostname;
-      document.getElementById('username').value = settings.username;
+    }
+    async function loadSessions() {
+      const response = await fetch('/api/pair-sessions', { cache: 'no-store' });
+      if (!response.ok) throw new Error('Could not load paired sessions.');
+      const list = document.getElementById('sessions');
+      list.replaceChildren();
+      for (const session of await response.json()) {
+        const row = list.appendChild(document.createElement('li'));
+        const revoke = row.appendChild(document.createElement('button'));
+        revoke.type = 'button';
+        revoke.textContent = 'Revoke';
+        revoke.setAttribute('aria-label', 'Revoke ' + session.name);
+        const date = session.pairedAt ? new Date(session.pairedAt * 1000).toLocaleDateString() : 'date not recorded';
+        const details = row.appendChild(document.createElement('span'));
+        details.textContent = `${session.name} (${session.cli ? 'CLI' : 'Browser'}, ${date})${session.current ? ' - This session' : ''}`;
+        revoke.onclick = async () => {
+          revoke.disabled = true;
+          try {
+            const result = await fetch('/api/pair-revoke?id=' + encodeURIComponent(session.id), { method: 'POST' });
+            if (!result.ok) throw new Error('Could not revoke session.');
+            if (session.current) location.replace('/pair');
+            else await loadSessions();
+          } catch (error) {
+            statusNode.textContent = error.message;
+            revoke.disabled = false;
+          }
+        };
+      }
     }
     document.getElementById('settings').addEventListener('submit', async (event) => {
       event.preventDefault();
       statusNode.textContent = '';
       const hostname = document.getElementById('hostname').value.trim();
-      const newPassword = document.getElementById('newPassword').value;
       try {
         const response = await fetch('/api/server', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           cache: 'no-store',
-          body: JSON.stringify({ hostname, newPassword })
+          body: JSON.stringify({ hostname })
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || 'Could not save settings.');
-        document.getElementById('newPassword').value = '';
-        statusNode.textContent = 'Saved. Reconnect at http://' + result.hostname + '.local/ and use the updated password if it changed.';
+        statusNode.textContent = 'Saved. If the address changed, pair again at http://' + result.hostname + '.local/.';
       } catch (error) {
         statusNode.textContent = error.message;
       }
     });
     loadSettings().catch((error) => { statusNode.textContent = error.message; });
+    loadSessions().catch((error) => { statusNode.textContent = error.message; });
   </script>
 </body>
 </html>

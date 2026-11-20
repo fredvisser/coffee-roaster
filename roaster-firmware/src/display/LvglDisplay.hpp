@@ -46,8 +46,6 @@ inline DisplayScreen activeScreen = DisplayScreen::Start;
 inline RoasterState currentRoasterState = IDLE;
 inline DisplayWifiFormState wifiFormState;
 inline String webAccessHostname = "roaster-dev.local";
-inline String webAccessUsername = "admin";
-inline String webAccessPassword;
 inline bool networkAccessQrVisible = false;
 inline constexpr uint16_t ProfileWaveformCapacity = 480;
 inline constexpr uint8_t ActionQueueCapacity = 8;
@@ -137,6 +135,7 @@ inline lv_obj_t *finalTargetUpButton = nullptr;
 inline lv_obj_t *ssidTextArea = nullptr;
 inline lv_obj_t *passwordTextArea = nullptr;
 inline lv_obj_t *webAccessQrCode = nullptr;
+inline lv_obj_t *webPairButton = nullptr;
 inline lv_obj_t *webAccessInfoLabel = nullptr;
 inline lv_obj_t *webAccessButton = nullptr;
 inline lv_obj_t *webAccessBackButton = nullptr;
@@ -537,6 +536,7 @@ inline void layoutNetworkWidgets()
     lv_obj_align(webAccessInfoLabel, LV_ALIGN_TOP_LEFT, 198, 66);
     lv_obj_set_size(webAccessBackButton, 116, 34);
     lv_obj_align(webAccessBackButton, LV_ALIGN_BOTTOM_RIGHT, -12, -16);
+    lv_obj_align(webPairButton, LV_ALIGN_BOTTOM_LEFT, 12, -16);
     return;
   }
 
@@ -971,6 +971,7 @@ inline void refreshScreenLayout()
   setWidgetHidden(webAccessInfoLabel, !showNetworkQr);
   setWidgetHidden(webAccessButton, !showNetworkButtons);
   setWidgetHidden(webAccessBackButton, !showNetworkQr);
+  setWidgetHidden(webPairButton, !showNetworkQr);
   setWidgetHidden(ssidCaptionLabel, !showNetworkFields);
   setWidgetHidden(passwordCaptionLabel, !showNetworkFields);
   setWidgetHidden(profileNameModal, !profileNameModalVisible);
@@ -1585,9 +1586,12 @@ inline void buildScreen()
   webAccessBackButton = makeButton(screenRoot, "Back", LV_ALIGN_BOTTOM_RIGHT, -12, -16, 116, 34, ColorPanel);
   lv_obj_add_event_cb(webAccessBackButton, [](lv_event_t *event) {
     if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    queueAction(DisplayAction::CloseWebPairing);
     networkAccessQrVisible = false;
     refreshScreenLayout();
   }, LV_EVENT_CLICKED, nullptr);
+  webPairButton = makeButton(screenRoot, "Pair browser/CLI", LV_ALIGN_BOTTOM_LEFT, 12, -16, 180, 34, ColorAccentReady);
+  lv_obj_add_event_cb(webPairButton, actionButtonEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(DisplayAction::PairWebClient)));
 
   keyboard = lv_keyboard_create(screenRoot);
   lv_obj_set_size(keyboard, BoardConfig::DisplayWidth, 108);
@@ -1837,23 +1841,27 @@ inline void setWifiStatusText(const String &value)
   updateDerivedLabels();
 }
 
-inline void setWebAccessInfo(const String &hostname, const String &username, const String &password)
+inline void setPairingPrompt(bool open, int code)
+{
+  if (!webPairButton || !webAccessInfoLabel) return;
+  char text[155];
+  if (code >= 0)
+    snprintf(text, sizeof(text), "%s\nCode: %04d\nApprove only if it matches.", webAccessHostname.c_str(), code);
+  else
+    snprintf(text, sizeof(text), "%s\n%s", webAccessHostname.c_str(), open ? "Waiting for pairing..." : "Use the QR to open the web UI.");
+  if (strcmp(lv_label_get_text(webAccessInfoLabel), text) != 0) {
+    lv_label_set_text(webAccessInfoLabel, text);
+    lv_label_set_text(lv_obj_get_child(webPairButton, 0), code >= 0 ? "Approve" : "Pair browser/CLI");
+  }
+}
+
+inline void setWebAccessInfo(const String &hostname)
 {
   ensureUiBuilt();
   webAccessHostname = hostname;
-  webAccessUsername = username;
-  webAccessPassword = password;
-  String qrUrl = String("http://") + webAccessUsername + ":" + webAccessPassword + "@" + webAccessHostname + "/console";
-  lv_result_t qrResult = webAccessQrCode != nullptr ? lv_qrcode_update(webAccessQrCode, qrUrl.c_str(), qrUrl.length()) : LV_RESULT_INVALID;
-  if (qrResult == LV_RESULT_OK)
-  {
-    String details = "Address: " + webAccessHostname + "\nUsername: " + webAccessUsername + "\nPassword: " + webAccessPassword;
-    lv_label_set_text(webAccessInfoLabel, details.c_str());
-  }
-  else
-  {
-    lv_label_set_text(webAccessInfoLabel, "Access QR could not be generated.");
-  }
+  String qrUrl = String("http://") + webAccessHostname + "/console";
+  if (webAccessQrCode) lv_qrcode_update(webAccessQrCode, qrUrl.c_str(), qrUrl.length());
+  setPairingPrompt(false, -1);
   if (activeScreen == DisplayScreen::Network)
   {
     refreshScreenLayout();

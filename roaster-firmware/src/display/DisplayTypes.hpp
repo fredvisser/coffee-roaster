@@ -31,7 +31,9 @@ enum class DisplayAction
   PreviousProfile,
   NextProfile,
   ReturnToProfileList,
-  ReturnToStateScreen
+  ReturnToStateScreen,
+  PairWebClient,
+  CloseWebPairing
 };
 
 struct DisplayProfileSummary
