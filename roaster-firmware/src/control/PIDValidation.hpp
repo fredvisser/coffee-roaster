@@ -33,6 +33,13 @@ public:
         double withinTwoDegreesPercent;
         uint16_t sampleCount;
         uint16_t holdSampleCount;
+        uint16_t rampSampleCount;
+        double rampMeanAbsError;
+        double rampWithinThreeDegreesPercent;
+        double meanSignedError;
+        double meanLagSeconds;
+        double saturatedPercent;
+        double maxOvershoot;
         char lastError[32];
     };
 
@@ -46,8 +53,8 @@ public:
         absErrorSum = 0.0;
         squaredErrorSum = 0.0;
         holdAbsErrorSum = 0.0;
-        lastTargetTemp = 0.0;
-        hasLastTargetTemp = false;
+        rampAbsErrorSum = signedErrorSum = lagSum = 0.0;
+        rampWithinThree = saturatedCount = 0;
         withinOneDegreeCount = 0;
         withinTwoDegreesCount = 0;
     }
@@ -67,7 +74,15 @@ public:
     bool isComplete() const { return summary.complete; }
     Summary getSummary() const { return summary; }
 
-    void recordSample(double actualTemp, double targetTemp) {
+    void begin(double currentTemp, double targetTemp) {
+        reset();
+        summary.active = true;
+        summary.startTemp = currentTemp;
+        summary.finalTargetTemp = targetTemp;
+    }
+
+    void recordSample(double actualTemp, double targetTemp, double targetRate = 0.0,
+                      double heaterOutput = 0.0) {
         if (!summary.active || summary.complete) {
             return;
         }
@@ -77,6 +92,9 @@ public:
         summary.sampleCount++;
         absErrorSum += absError;
         squaredErrorSum += error * error;
+        signedErrorSum += error;
+        summary.maxOvershoot = max(summary.maxOvershoot, error);
+        if (heaterOutput >= 254.0) saturatedCount++;
         summary.maxAbsError = max(summary.maxAbsError, absError);
         if (absError <= 1.0) {
             withinOneDegreeCount++;
@@ -85,14 +103,16 @@ public:
             withinTwoDegreesCount++;
         }
 
-        if (hasLastTargetTemp && fabs(targetTemp - lastTargetTemp) <= 0.25) {
+        if (fabs(targetRate) < 1e-6) {
             summary.holdSampleCount++;
             holdAbsErrorSum += absError;
             summary.holdMaxAbsError = max(summary.holdMaxAbsError, absError);
+        } else {
+            summary.rampSampleCount++;
+            rampAbsErrorSum += absError;
+            lagSum += -error / targetRate;
+            if (absError <= 3.0) rampWithinThree++;
         }
-
-        lastTargetTemp = targetTemp;
-        hasLastTargetTemp = true;
     }
 
     void finish(bool completed, double durationSeconds, const char *reason) {
@@ -111,18 +131,26 @@ public:
             summary.rmse = sqrt(squaredErrorSum / static_cast<double>(summary.sampleCount));
             summary.withinOneDegreePercent = 100.0 * static_cast<double>(withinOneDegreeCount) / static_cast<double>(summary.sampleCount);
             summary.withinTwoDegreesPercent = 100.0 * static_cast<double>(withinTwoDegreesCount) / static_cast<double>(summary.sampleCount);
+            summary.meanSignedError = signedErrorSum / summary.sampleCount;
+            summary.saturatedPercent = 100.0 * saturatedCount / summary.sampleCount;
         }
 
         if (summary.holdSampleCount > 0) {
             summary.holdMeanAbsError = holdAbsErrorSum / static_cast<double>(summary.holdSampleCount);
         }
+        if (summary.rampSampleCount > 0) {
+            summary.rampMeanAbsError = rampAbsErrorSum / summary.rampSampleCount;
+            summary.rampWithinThreeDegreesPercent = 100.0 * rampWithinThree / summary.rampSampleCount;
+            summary.meanLagSeconds = lagSum / summary.rampSampleCount;
+        }
 
         summary.passed = completed &&
                          summary.sampleCount >= 30 &&
-                         summary.meanAbsError <= 1.5 &&
-                         summary.withinTwoDegreesPercent >= 90.0 &&
-                         summary.maxAbsError <= 4.0 &&
-                         (summary.holdSampleCount == 0 || (summary.holdMeanAbsError <= 1.0 && summary.holdMaxAbsError <= 2.0));
+                         summary.rampSampleCount >= 15 && summary.holdSampleCount >= 10 &&
+                         summary.rampMeanAbsError <= 2.0 &&
+                         summary.rampWithinThreeDegreesPercent >= 90.0 &&
+                         summary.maxOvershoot <= 4.0 &&
+                         summary.holdMeanAbsError <= 1.0 && summary.saturatedPercent < 20.0;
     }
 
     static void buildValidationProfile(RoastProfile &profileToBuild, uint32_t fanPercent = 70) {
@@ -139,8 +167,11 @@ private:
     double absErrorSum = 0.0;
     double squaredErrorSum = 0.0;
     double holdAbsErrorSum = 0.0;
-    double lastTargetTemp = 0.0;
-    bool hasLastTargetTemp = false;
+    double rampAbsErrorSum = 0.0;
+    double signedErrorSum = 0.0;
+    double lagSum = 0.0;
+    uint16_t rampWithinThree = 0;
+    uint16_t saturatedCount = 0;
     uint16_t withinOneDegreeCount = 0;
     uint16_t withinTwoDegreesCount = 0;
 };

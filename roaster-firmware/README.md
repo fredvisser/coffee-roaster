@@ -64,7 +64,7 @@ cd roaster-firmware
 # 2. Run automated setup script (installs all dependencies)
 ./tools/bootstrap.sh
 
-# 3. Compile and upload firmware
+# 3. Upload over USB (builds if needed)
 ./tools/firmware.sh upload
 
 # Or just compile (creates .bin in build/ directory)
@@ -125,7 +125,7 @@ The automated `./tools/bootstrap.sh` script handles this configuration automatic
 # Compile
 ./tools/firmware.sh build --board jc4827w543c
 
-# Upload
+# Upload that build over USB without recompiling
 ./tools/firmware.sh upload --board jc4827w543c
 ```
 
@@ -152,45 +152,42 @@ The firmware revision defaults to the current Git commit. Override it with
 
 ## Over-The-Air (OTA) Updates
 
-After initial USB flash, firmware can be updated wirelessly without physical access to the device.
+After the initial USB flash, run from `roaster-firmware/` on the same network
+as the roaster. Confirm the roaster is idle with the heater off before uploading.
 
-### Accessing OTA Interface
+```bash
+# Point to your roaster; use its IP if the .local name doesn't resolve.
+export OTA_HOST=roaster-fred.local
+export OTA_USER=admin
+read -rs -p "Roaster web password: " OTA_PASS; echo  # Bash
+export OTA_PASS
 
-1. Connect to the same WiFi network as the roaster
-2. Navigate to: **`http://roaster-dev.local/update`**
-   - Alternative: Use device IP address if mDNS doesn't work
+# Upload the last matching build without recompiling (`ota` is an alias).
+./tools/firmware.sh ota-upload --board jc4827w543c
 
-### Uploading New Firmware
+# If you've edited the source and haven't built it yet, use this instead:
+./tools/firmware.sh ota-upload --board jc4827w543c --rebuild
 
-1. **Compile firmware** to generate `.bin` file:
-   ```bash
-  ./tools/firmware.sh build
-   ```
+unset OTA_PASS
+```
 
-2. **Access OTA interface** at `http://roaster-dev.local/update`
+Both `ota-upload` and USB `upload` reuse `build/roaster-firmware.bin` from the
+last successful build if it matches the selected board and the required artifacts
+are present. Otherwise they build automatically. Source edits do **not** invalidate
+the saved binary: after editing, run `build` before uploading or pass `--rebuild`
+to either upload command.
 
-3. **Upload firmware**:
-   - Click "Choose File" and select `build/roaster-firmware.bin`
-   - Click "Update"
-   - Device will automatically update and reboot (~30 seconds)
-
-4. **Verify update**: Check version or timestamp in debug console
-
-### OTA Best Practices
-
-- ✅ Test firmware on bench hardware before OTA deployment
-- ✅ Keep backup `.bin` files of known-good firmware
-- ✅ Ensure stable WiFi connection during update
-- ✅ Wait for device to fully reboot before reconnecting
-- ⚠️ Never interrupt power during OTA update
-- ⚠️ OTA updates preserve WiFi credentials and roast profiles
+Keep power and Wi-Fi connected until the roaster reboots, then confirm the expected
+change on the device. If needed, use the roaster's `/update` page and select
+`build/roaster-firmware.bin` for a manual OTA upload.
 
 ### Helper Scripts
 
 - **`tools/bootstrap.sh`**: Automated dependency installation (arduino-cli required)
 - **`tools/firmware.sh`**: Main firmware build, upload, OTA, and monitor entrypoint
   - `./tools/firmware.sh build` - Compile main firmware
-  - `./tools/firmware.sh upload` - Compile and upload to a connected board
+  - `./tools/firmware.sh upload` - Upload over USB; build only if needed
+  - `./tools/firmware.sh ota-upload` - Upload over Wi-Fi; build only if needed (`ota` also works)
   - `./tools/firmware.sh run` - Compile, upload, and monitor
   - `./tools/firmware.sh build --board jc4827w543c` - Compile for the JC4827W543C target
 - **`tools/tests.sh`**: Named test-suite entrypoint
@@ -198,7 +195,74 @@ After initial USB flash, firmware can be updated wirelessly without physical acc
   - `./tools/tests.sh run pid` - Compile, upload, and monitor the PID suite
 - **Legacy aliases**: `./setup_libraries.sh` and `./run_tests.sh` remain available during the transition
 
+## PID tuning
+
+With the idle roaster below 140F, load 1/2 cup of coffee beans. On mains power, open `/pid` and select
+**Start autotune**. Stay with the roaster; you can cancel while it runs.
+The tune uses full fan speed and fits one local thermal model
+without waiting for equilibrium, then runs a ramp/hold check at the same fan PWM.
+Successive fits must stabilize before early completion; acquisition has a 175-second
+ceiling. Heating stops by 295 seconds with either a verified candidate or an explicit
+inconclusive result. Cooling continues separately. Current settings are not
+overwritten: review the proposed gains next to the saved gains, then select
+**Apply verified gains** if you want to use them.
+
+The tuning record includes the measured temperature range. A quick local check does **not**
+qualify the full roasting range or different airflow/bean loads. Initial SIMC
+tuning uses PI (Kd = 0), retaining effective model delay rather than replacing it
+with a noise-threshold onset estimate.
+
+The latest ten run summaries survive reboot in NVS, including failures and manual
+adjustments and current-controller verification results. History, downloads,
+and whole-controller restore remain available through the PID API. Active, previous, and
+last-verified snapshots are stored independently of the rotating history.
+**Manual override** edits Kp, Ki, and Kd and scales scheduled gains without deleting
+the thermal model. These edits are unverified. Legacy model coefficients are disabled; retune
+after upgrading. Existing scalar PID gains remain available as fallback.
+
+The current full trace is available at `/api/calibrate-pid/trace` (JSON) or
+`/api/pid/trace.csv`. With a TF card, existing
+console logging retains `PIDTRACE` rows with fields:
+`runId,elapsedMs,tempF,targetF,heater,feedforward,P,I,D,inletF,fanPWM,targetRateFps,Kp,Ki,Kd,phase`.
+Older traces are found in the SD console logs, not retained in NVS. A new run or
+reboot clears the RAM trace. Storage failures are reported, not treated as saves.
+JSON trace metadata includes the terminal error code and run ID. Heater output is
+the requested PWM, not a measured electrical-power reading. The heater driver
+latches duty for each one-second window, so 250ms controller updates cannot restart
+the window and suppress heating; zero output still switches it off immediately.
+Optional SystemLink mirroring runs after cooling, never during tuning/control.
+
+If a tune stops with `sensor_pair_inconsistent`, inspect both thermocouples and
+their wiring: the fan/inlet reading may be normal while the bean reading drops
+implausibly low. `fan_sensor_failed` indicates an invalid or discontinuous fan
+reading. Both stop heating and retain error latching; do not bypass the checks.
+
+Quick tweaks (change one setting about 10%, repeat the same check, then compare):
+
+| Symptom | Adjustment |
+|---|---|
+| Lag at full heater power | Gains cannot add missing heat; reduce the ramp or correct airflow/load safely. |
+| Ramp lag, good hold, available power | Check airflow and load; the local tune may not cover that ramp. |
+| Slow but stable response | Increase Kp 10%. |
+| Settled hold error | Check sensor/model bias first; then increase Ki 10%. |
+| Oscillation | Reduce Kp; reduce Ki for slow integral-driven hunting. |
+| Overshoot / noisy output | Check saturation/anti-windup; reduce Ki for overshoot or Kd for noise. |
+
+Ki is integral **gain**, not integral time. The restore API restores gains, model,
+and feedforward together. The separate current-controller check API covers only 120-200F; a pass
+updates the last-verified snapshot without claiming higher-temperature qualification.
+Targets for the built-in candidate check are ramp MAE <= 2F, hold MAE <= 1F,
+90% of ramp points within 3F, and overshoot <= 4F after stated recovery windows.
+These targets require supervised hardware qualification before deployment.
+
+Run deterministic, hardware-free regressions with `./tools/tests.sh run host`.
+Compile the embedded checks with `./tools/tests.sh compile step-response` and
+`./tools/tests.sh compile pid`; run them on a supervised bench when available.
+
 ## Web UI Security
+
+Console, Profiles, PID, Update, SystemLink, and Server share the same navigation
+and page frame. The Update page uses the built-in ElegantOTA uploader.
 
 The web UI, API, and OTA endpoints require HTTP Basic Authentication. The fixed username is `admin`; the firmware generates an eight-character alphanumeric password on first boot and shows it on the touchscreen's Wi-Fi settings screen. The `/WebSocket` endpoint is unauthenticated for Artisan compatibility and broadcasts roast telemetry, controller state, and debug logs to connected clients. Keep the device on a trusted network. The access QR contains the web credentials and should be treated as a secret. Browser handling of credentials embedded in a URL varies; enter the displayed credentials if scanning does not authenticate automatically.
 

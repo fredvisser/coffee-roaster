@@ -1717,16 +1717,20 @@ static String systemLinkBuildCalibrationCsv(const StepResponseTuner &tuner) {
   csv.reserve(256 + sampleCount * 50 + 512);
 
   // Trace data header
-  csv += "elapsedMs,actualTempF,setpointTempF,heaterOutput,phaseId\n";
+  csv += "elapsedMs,actualTempF,setpointTempF,heaterOutput,feedforward,P,I,D,inletTempF,fanPWM,targetRateFps,kp,ki,kd,phaseId\n";
 
   for (uint16_t i = 0; i < sampleCount; i++) {
     StepResponseTuner::TraceSample s = tuner.getTraceSample(i);
-    char row[80];
-    snprintf(row, sizeof(row), "%u,%.1f,%.1f,%.1f,%u\n",
+    char row[240];
+    snprintf(row, sizeof(row), "%u,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.0f,%.3f,%.5f,%.6f,%.5f,%u\n",
              static_cast<unsigned>(s.elapsedMs),
              static_cast<double>(s.actualTempF),
              static_cast<double>(s.setpointTempF),
              static_cast<double>(s.heaterOutput),
+             static_cast<double>(s.feedforward), static_cast<double>(s.proportional),
+             static_cast<double>(s.integral), static_cast<double>(s.derivative),
+             static_cast<double>(s.ambientTempF), static_cast<double>(s.fan), static_cast<double>(s.targetRate),
+             static_cast<double>(s.kp), static_cast<double>(s.ki), static_cast<double>(s.kd),
              static_cast<unsigned>(s.phaseId));
     csv += row;
   }
@@ -1881,7 +1885,8 @@ static bool systemLinkUploadCalibrationCsv(const String &filename,
 // Create a test result for a calibration run.
 static bool systemLinkCreateCalibrationResult(const StepResponseTuner &tuner,
                                                const String &fileId,
-                                               String &resultId) {
+                                               String &resultId,
+                                               const PIDTuningStore::Record *record) {
   StepResponseTuner::Summary summary = tuner.getSummary();
 
   DynamicJsonDocument doc(4096);
@@ -1914,6 +1919,20 @@ static bool systemLinkCreateCalibrationResult(const StepResponseTuner &tuner,
   properties["worstFitRmseF"] = String(summary.worstFitRmse, 3);
   properties["maxTempF"] = String(summary.maxTemp, 1);
   properties["totalSamples"] = String(summary.totalSamples);
+  properties["durationSeconds"] = String(summary.elapsedSeconds, 2);
+  properties["rampMaeF"] = String(summary.verification.rampMeanAbsError, 3);
+  properties["holdMaeF"] = String(summary.verification.holdMeanAbsError, 3);
+  properties["overshootF"] = String(summary.verification.maxOvershoot, 3);
+  properties["saturatedPercent"] = String(summary.verification.saturatedPercent, 2);
+  if (record) {
+    properties["localRunId"] = String(record->id);
+    properties["bootId"] = String(record->bootId);
+    properties["fanPWM"] = String(record->fan);
+    properties["loadCondition"] = record->load;
+    properties["outcome"] = record->outcome;
+    properties["reason"] = record->reason;
+    properties["firmware"] = record->firmware;
+  }
 
   // Recommended PID gains
   properties["recommendedKp"] = String(summary.recommendedKp, 4);
@@ -1965,7 +1984,7 @@ static bool systemLinkCreateCalibrationResult(const StepResponseTuner &tuner,
 
 // Top-level function: build CSV, upload file, create test result.
 // Called from the main .ino when step-response tuning completes.
-static void systemLinkPublishCalibration(const StepResponseTuner &tuner) {
+static void systemLinkPublishCalibration(const StepResponseTuner &tuner, const PIDTuningStore::Record *record) {
   if (!systemLinkHasRequiredConfig() || WiFi.status() != WL_CONNECTED) {
     LOG_INFO("SystemLink: Skipping calibration publish (not configured or offline)");
     return;
@@ -1981,7 +2000,8 @@ static void systemLinkPublishCalibration(const StepResponseTuner &tuner) {
 
   String uploadUri;
   String fileId;
-  String filename = "calibration-step-response.csv";
+  String filename = "calibration-" + String(record ? record->bootId : 0) + "-" +
+                    String(record ? record->id : 0) + ".csv";
 
   if (systemLinkUploadCalibrationCsv(filename, csvContent, uploadUri)) {
     fileId = systemLinkExtractIdFromUri(uploadUri);
@@ -1994,7 +2014,7 @@ static void systemLinkPublishCalibration(const StepResponseTuner &tuner) {
   csvContent = "";
 
   String resultId;
-  if (systemLinkCreateCalibrationResult(tuner, fileId, resultId)) {
+  if (systemLinkCreateCalibrationResult(tuner, fileId, resultId, record)) {
     LOG_INFOF("SystemLink: Calibration result created (resultId=%s)", resultId.c_str());
   } else {
     LOG_ERROR("SystemLink: Failed to create calibration test result");

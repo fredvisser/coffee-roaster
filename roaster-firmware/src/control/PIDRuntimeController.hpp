@@ -5,6 +5,7 @@
 #include <Preferences.h>
 #include <math.h>
 #include "../platform/CalibrationTypes.hpp"
+#include "../support/DebugLog.hpp"
 
 class PIDRuntimeController {
 public:
@@ -29,6 +30,8 @@ public:
         double ki = 0.0;
         double kd = 0.0;
         double feedforward = 0.0;
+        double targetRate = 0.0;
+        bool outsideRange = false;
     };
 
     void clear() {
@@ -65,7 +68,10 @@ public:
 
         for (uint8_t index = 0; index < Calibration::BAND_COUNT; index++) {
             const Calibration::BandCharacterization &source = summary.bands[index];
-            if (!source.valid) {
+            if (!source.valid) continue;
+            if (!validModel(source.heaterCoeff, source.coolingCoeff,
+                                             source.timeConstant, source.kp, source.ki, source.kd)) {
+                LOG_WARN("Invalid PID model ignored");
                 continue;
             }
 
@@ -81,10 +87,15 @@ public:
             band.kp = source.kp;
             band.ki = source.ki;
             band.kd = source.kd;
+            if (!validBand(band)) {
+                band.valid = false;
+                LOG_WARN("Invalid PID model range or dynamics ignored");
+                continue;
+            }
             validBandCount++;
         }
 
-        enabled = validBandCount >= 2;
+        enabled = validBandCount >= 1;
         return enabled;
     }
 
@@ -93,6 +104,11 @@ public:
 
         enabled = prefs.getBool("pid_sched", false);
         if (!enabled) {
+            return false;
+        }
+        if (prefs.getUInt("pid_model_ver", 0) != MODEL_VERSION) {
+            LOG_WARN("Legacy PID model disabled; retune before enabling feedforward");
+            enabled = false;
             return false;
         }
 
@@ -113,10 +129,13 @@ public:
             band.kp = prefs.getDouble(makeBandKey(index, "kp"), 0.0);
             band.ki = prefs.getDouble(makeBandKey(index, "ki"), 0.0);
             band.kd = prefs.getDouble(makeBandKey(index, "kd"), 0.0);
-            validBandCount++;
+            band.valid = validModel(band.heaterCoeff, band.coolingCoeff, 1.0,
+                                    band.kp, band.ki, band.kd) && validBand(band);
+            if (band.valid) validBandCount++;
+            else LOG_WARN("Invalid stored PID model ignored");
         }
 
-        enabled = validBandCount >= 2;
+        enabled = validBandCount >= 1;
         if (!enabled) {
             prefs.putBool("pid_sched", false);
         }
@@ -125,6 +144,7 @@ public:
 
     void saveToPreferences(Preferences &prefs) const {
         prefs.putBool("pid_sched", enabled);
+        prefs.putUInt("pid_model_ver", MODEL_VERSION);
         for (uint8_t index = 0; index < Calibration::BAND_COUNT; index++) {
             const BandModel &band = bands[index];
             prefs.putBool(makeBandKey(index, "v"), band.valid);
@@ -156,7 +176,8 @@ public:
         }
     }
 
-    ControlDecision decide(unsigned long now, double currentTemp, double setpointTemp, double ambientTemp) {
+    ControlDecision decide(unsigned long now, double currentTemp, double setpointTemp, double ambientTemp,
+                           double profileRate = NAN) {
         ControlDecision decision;
         decision.kp = fallbackKp;
         decision.ki = fallbackKi;
@@ -182,11 +203,19 @@ public:
             }
         }
 
+        if (isfinite(profileRate)) desiredRate = profileRate;
         desiredRate = constrain(desiredRate, -0.75, 1.5);
-        double effectiveAmbient = ambientTemp > 20.0 ? ambientTemp : currentTemp;
+        double effectiveAmbient = ambientTemp;
+        if (!isfinite(effectiveAmbient) || effectiveAmbient < 20.0 || !isfinite(setpointTemp) || !isfinite(currentTemp)) {
+            LOG_ERROR("Invalid inlet temperature or setpoint; PID feedforward disabled");
+            lastDecision = decision;
+            return decision;
+        }
         double leadTarget = setpointTemp + desiredRate * min(band.deadTime, 12.0);
-        double rawFeedforward = (desiredRate - band.drift - band.coolingCoeff * (leadTarget - effectiveAmbient)) / max(band.heaterCoeff, 1e-6);
-        rawFeedforward = constrain(rawFeedforward * FEEDFORWARD_SCALE, 0.0, 255.0);
+        // Model inverse: u = (rate*tau + T - offset) / K, with drift = offset/tau learned at tuning time.
+        double rawFeedforward = (desiredRate * rampScale - band.drift +
+                                 band.coolingCoeff * leadTarget) / band.heaterCoeff;
+        rawFeedforward = constrain(rawFeedforward, 0.0, 255.0);
 
         double smoothedFeedforward = lastSetpointValid
             ? lastFeedforward + FEEDFORWARD_FILTER * (rawFeedforward - lastFeedforward)
@@ -204,6 +233,8 @@ public:
         decision.ki = band.ki;
         decision.kd = band.kd;
         decision.feedforward = smoothedFeedforward;
+        decision.targetRate = desiredRate;
+        decision.outsideRange = setpointTemp < band.minTemp || setpointTemp > band.maxTemp;
         lastDecision = decision;
         return decision;
     }
@@ -213,9 +244,11 @@ public:
     int8_t getActiveBandIndex() const { return activeBandIndex; }
     ControlDecision getLastDecision() const { return lastDecision; }
     const BandModel &getBand(uint8_t index) const { return bands[index]; }
+    double getRampScale() const { return rampScale; }
+    void setRampScale(double value) { rampScale = constrain(value, 0.5, 1.5); }
+    static constexpr uint32_t MODEL_VERSION = 3;
 
 private:
-    static constexpr double FEEDFORWARD_SCALE = 0.85;
     static constexpr double FEEDFORWARD_FILTER = 0.35;
     static constexpr double BAND_HYSTERESIS_F = 6.0;
 
@@ -231,6 +264,19 @@ private:
     double lastFeedforward = 0.0;
     BandModel bands[Calibration::BAND_COUNT];
     ControlDecision lastDecision;
+    double rampScale = 1.0;
+
+    static bool validBand(const BandModel &band) {
+        return isfinite(band.minTemp) && isfinite(band.maxTemp) && band.minTemp <= band.maxTemp &&
+               isfinite(band.targetTemp) && isfinite(band.drift) &&
+               isfinite(band.deadTime) && band.deadTime >= 0;
+    }
+
+    static bool validModel(double heater, double cooling, double tau, double p, double i, double d) {
+        return isfinite(heater) && heater > 1e-6 && isfinite(cooling) && cooling > 0.0 &&
+               isfinite(tau) && tau > 0.0 && isfinite(p) && p > 0.0 && p <= 200.0 &&
+               isfinite(i) && i >= 0.0 && i <= 20.0 && isfinite(d) && d >= 0.0 && d <= 500.0;
+    }
 
     int8_t selectBand(double setpointTemp) {
         if (activeBandIndex >= 0 && bands[activeBandIndex].valid) {

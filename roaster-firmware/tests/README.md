@@ -67,7 +67,22 @@ cd roaster-firmware
 ./tools/tests.sh list
 ./tools/tests.sh compile safety
 ./tools/tests.sh run pid
+./tools/tests.sh run host
 ```
+
+The `host` suite uses a C++17 compiler and virtual time; no board, AUnit, or extra
+package is required. It exercises the real bounded tuner, runtime, profile
+interpolation, signed feedback, validation metrics, and NVS record logic using
+small Arduino/Preferences substitutes. It checks clean/noisy delayed plants,
+rejected verification after a plant change, the 295-second deadline, sensor
+failure/cancellation, history rotation/corruption, and failed writes. Run this
+before the embedded suites. `step-response` also uses virtual time, not
+wall-clock delays pretending to represent 250-ms sampling.
+The host suite also measures heater GPIO duty under repeated 250ms updates,
+immediate shutoff and clock wrap, and verifies a delayed thermal plant driven by
+the production relay's switched GPIO rather than an ideal average-power input.
+Run `./tools/tests.sh run host-json` with ArduinoJson installed by bootstrap to
+check that history text remains attached to its own record after buffers are reused.
 
 Legacy compatibility note: `./run_tests.sh` still works and forwards to the new `tools/` entrypoints.
 

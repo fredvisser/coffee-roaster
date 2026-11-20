@@ -10,32 +10,9 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SystemLink Configuration</title>
+  )rawliteral" ROASTER_WEB_STYLE R"rawliteral(
   <style>
     * { box-sizing: border-box; }
-    body { font-family: 'Segoe UI', Inter, -apple-system, sans-serif; background: #333333; color: #FFFFFF; margin: 0; padding: 24px; min-height: 100vh; }
-    .topnav { max-width: 1100px; margin: 0 auto 20px; padding: 14px; display:flex; flex-wrap:wrap; gap:10px; background:#2D2D2D; border-bottom:2px solid #444; align-items:center; }
-    .topnav-logo { display:flex; align-items:center; gap:10px; margin-right:auto; font-weight:900; font-size:20px; color:#009944; text-transform:uppercase; letter-spacing:1px; }
-    .topnav a { display:inline-flex; align-items:center; justify-content:center; min-width:100px; padding:12px 16px; border-radius:0; background:#3A3A3A; color:#CCCCCC; text-decoration:none; font-weight:700; text-transform:uppercase; font-size:14px; transition: 0.2s; }
-    .topnav a:hover { background:#444444; color:#FFF; }
-    .topnav a.active { background:#009944; color:#fff; }
-    .shell {
-      max-width: 1100px;
-      margin: 0 auto;
-      background: #2D2D2D;
-      border: none;
-      border-top: 4px solid #009944;
-    }
-    .hero {
-      padding: 24px;
-      background: #222222;
-      border-bottom: 1px solid #444;
-    }
-    h1 {
-      margin: 0 0 8px;
-      font-size: 28px;
-      text-transform: uppercase;
-      font-weight: 900;
-    }
     .subtitle {
       color: #AAA;
       font-size: 14px;
@@ -159,33 +136,11 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
       margin-top: 8px;
     }
     @media (max-width: 640px) {
-      body { padding: 14px; }
-      .hero, .content { padding: 18px; }
-      h1 { font-size: 28px; }
+      .content { padding: 18px; }
     }
     @media (max-width: 480px) {
-      body { padding: 10px; }
-      .topnav {
-        padding: 12px;
-        gap: 8px;
-      }
-      .topnav-logo {
-        width: 100%;
-        margin-right: 0;
-        justify-content: center;
-        font-size: 18px;
-      }
-      .topnav a {
-        flex: 1 1 calc(50% - 8px);
-        min-width: 0;
-        padding: 12px 10px;
-        font-size: 12px;
-      }
-      .hero, .content, .card {
+      .content, .card {
         padding: 16px;
-      }
-      h1 {
-        font-size: 24px;
       }
       .grid {
         grid-template-columns: 1fr;
@@ -200,31 +155,14 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
   </style>
 </head>
 <body>
-  <nav class="topnav" aria-label="Main navigation">
-    <div class="topnav-logo">
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M4.5,10 C2.5,15 9,17 12,17 C15,17 21.5,15 19.5,10 C17.5,5 11,3 8,3 C5,3 6.5,5 4.5,10 Z" fill="#009944" />
-        <path d="M5,10 Q12,14 19,9" stroke="#2D2D2D" stroke-width="1.5" fill="none" />
-        <path d="M9,18 Q8,20 10,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
-        <path d="M12,19 Q11,21 13,23" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
-        <path d="M15,18 Q14,20 16,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
-      </svg>
-      Roaster Control
-    </div>
-    <a href="/console">Console</a>
-    <a href="/profile">Profiles</a>
-    <a href="/pid">PID</a>
-    <a href="/update">Update</a>
-    <a class="active" href="/systemlink" aria-current="page">SystemLink</a>
-    <a href="/server">Server</a>
-  </nav>
-  <div class="shell">
-    <div class="hero">
+  )rawliteral" ROASTER_WEB_NAV("", "", "", "", ROASTER_WEB_CURRENT, "") R"rawliteral(
+  <main class="web-shell shell">
+    <header class="web-heading">
       <h1>SystemLink</h1>
       <div class="subtitle">Configure optional publishing to NI SystemLink. The roaster can write live tags during a roast and publish a test result, including a 1 Hz roast trace CSV, when the roast passes, is terminated, or errors out.</div>
-    </div>
+    </header>
 
-    <div class="content">
+    <div class="content web-panel">
       <div class="card">
         <div class="toggle">
           <input id="enabled" type="checkbox" />
@@ -270,7 +208,7 @@ const char SYSTEMLINK_CONFIG_HTML[] PROGMEM = R"rawliteral(
       </div>
       <div class="status" id="status"></div>
     </div>
-  </div>
+  </main>
 
   <script>
     async function loadConfig() {

@@ -33,6 +33,8 @@ extern int savedValidationFinalTempOverride;
 
 uint32_t getEffectiveFinalTargetTemp();
 void resetRoastControllerState();
+bool beginPIDValidationRecord(uint32_t fanPercent);
+void finishPIDValidationRecord();
 static void systemLinkMarkRoastStarted();
 
 inline bool currentRoastUsesValidationProfile()
@@ -66,6 +68,7 @@ inline void finalizeValidationIfRunning(bool completed, const char *reason)
   }
 
   pidValidation.finish(completed, durationSeconds, reason);
+  finishPIDValidationRecord();
   restoreValidationProfileIfNeeded();
 }
 
@@ -99,6 +102,7 @@ inline bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent)
   {
     return false;
   }
+  if (!beginPIDValidationRecord(fanPercent)) return false;
 
   validationSavedProfile = profile;
   savedValidationFinalTempOverride = finalTempOverride;

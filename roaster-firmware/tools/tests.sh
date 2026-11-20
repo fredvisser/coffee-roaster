@@ -25,6 +25,8 @@ Suites:
   unit
   hardware
   step-response
+  host          Deterministic control regressions (no hardware)
+  host-json     PID history serialization (installed ArduinoJson, no hardware)
 
 Boards:
   jc4827w543c
@@ -67,6 +69,20 @@ map_suite() {
 command_name="${1:-help}"
 if [[ $# -gt 0 ]]; then
     shift
+fi
+
+if [[ ( "${1:-}" == "host" || "${1:-}" == "host-json" ) && "$command_name" == "run" ]]; then
+    test_binary="$(mktemp "${TMPDIR:-/tmp}/roaster-control.XXXXXX")"
+    trap 'rm -f "$test_binary"' EXIT
+    source_file="control_test.cpp"
+    compile_args=(-std=c++17 -Wall -Wextra -Werror -I "$TOOLS_DIR/../tests/host")
+    if [[ "$1" == "host-json" ]]; then
+        source_file="pid_json_test.cpp"
+        compile_args+=(-I "$(arduino-cli config get directories.user)/libraries/ArduinoJson/src")
+    fi
+    "${CXX:-c++}" "${compile_args[@]}" "$TOOLS_DIR/../tests/host/$source_file" -o "$test_binary"
+    "$test_binary"
+    exit
 fi
 
 if [[ "$command_name" == "list" ]]; then

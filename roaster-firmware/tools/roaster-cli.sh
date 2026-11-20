@@ -19,6 +19,7 @@ OTA_RESOLVED_HOST=""
 OTA_CACHE_FILE="${OTA_CACHE_FILE:-${TMPDIR:-/tmp}/coffee-roaster-ota-host.cache}"
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIRMWARE_DIR="$(cd "$TOOLS_DIR/.." && pwd)"
+FIRMWARE_BUILD_DIR="$FIRMWARE_DIR/build"
 TESTS_DIR="$FIRMWARE_DIR/tests"
 CLI_NAME="${ROASTER_CLI_NAME:-$0}"
 BUILD_JOBS="${ROASTER_BUILD_JOBS:-}"
@@ -131,6 +132,14 @@ compile_sketch() {
     fi
 
     local build_args=(--jobs "$BUILD_JOBS" --fqbn "$BOARD_FQBN")
+    local arduino_build_dir="$FIRMWARE_BUILD_DIR/.arduino"
+    if [[ "$sketch_name" == "roaster-firmware" ]]; then
+        # ponytail: publish from this compile's directory, never a cache-wide search.
+        build_args+=(--build-path "$arduino_build_dir")
+        if [[ "${ROASTER_FORCE_REBUILD:-0}" == 1 ]]; then
+            build_args+=(--clean)
+        fi
+    fi
     if [[ -n "$all_extra_flags" ]]; then
         build_args+=(--build-property "compiler.cpp.extra_flags=$all_extra_flags")
         build_args+=(--build-property "compiler.c.extra_flags=$all_extra_flags")
@@ -138,7 +147,9 @@ compile_sketch() {
 
     if arduino-cli compile "${build_args[@]}" "$sketch_path" 2>&1 | tee /tmp/compile.log; then
         print_success "$sketch_name compiled successfully"
-        copy_build_artifacts "$sketch_path" "$sketch_name"
+        if [[ "$sketch_name" == "roaster-firmware" ]]; then
+            copy_build_artifacts "$arduino_build_dir" || return 1
+        fi
         return 0
     else
         print_error "$sketch_name compilation failed"
@@ -148,83 +159,28 @@ compile_sketch() {
 }
 
 copy_build_artifacts() {
-    local sketch_path="$1"
-    local sketch_name="$2"
-
-    # Only copy artifacts for main firmware, not tests
-    if [[ "$sketch_name" != "roaster-firmware" ]]; then
-        return 0
-    fi
-
-    local sketch_dir=$(dirname "$sketch_path")
-    local build_dir="$sketch_dir/build"
-
-    # Create build directory if it doesn't exist
-    mkdir -p "$build_dir"
-
-    # Find the most recently compiled .bin file in arduino cache
-    # arduino-cli stores builds in ~/Library/Caches/arduino/sketches/<HASH>/
-    local cache_dir="$HOME/Library/Caches/arduino/sketches"
-    local bin_file=$(find "$cache_dir" -name "$sketch_name.ino.bin" -type f -mmin -5 2>/dev/null | head -1)
-
-    if [ -n "$bin_file" ] && [ -f "$bin_file" ]; then
-        local cache_build_dir
-        cache_build_dir=$(dirname "$bin_file")
-
-        cp "$bin_file" "$build_dir/$sketch_name.bin"
-        print_success "Build artifact copied to: $build_dir/$sketch_name.bin"
-        local size=$(ls -lh "$build_dir/$sketch_name.bin" | awk '{print $5}')
-        print_info "Firmware size: $size"
-
-        if [[ -f "$cache_build_dir/$sketch_name.ino.bootloader.bin" ]]; then
-            cp "$cache_build_dir/$sketch_name.ino.bootloader.bin" "$build_dir/$sketch_name.bootloader.bin"
+    local source="$1" file
+    for file in roaster-firmware.ino.bin roaster-firmware.ino.bootloader.bin partitions.csv build.options.json; do
+        if [[ ! -s "$source/$file" ]]; then
+            print_error "Compile did not produce $source/$file"
+            return 1
         fi
-
-        if [[ -f "$cache_build_dir/partitions.csv" ]]; then
-            cp "$cache_build_dir/partitions.csv" "$build_dir/partitions.csv"
-        fi
-
-        if [[ -f "$cache_build_dir/build.options.json" ]]; then
-            cp "$cache_build_dir/build.options.json" "$build_dir/build.options.json"
-        fi
-    else
-        print_info "No .bin file found in build cache (this is normal for test sketches)"
-    fi
-}
-
-resolve_build_cache_dir() {
-    local sketch_name="$1"
-    local cache_dir="$HOME/Library/Caches/arduino/sketches"
-    local artifact
-
-    artifact=$(find "$cache_dir" \( -name "$sketch_name.ino.bin" -o -name "$sketch_name.ino.bootloader.bin" \) -type f -mmin -30 2>/dev/null | head -1)
-    if [[ -n "$artifact" ]] && [[ -f "$artifact" ]]; then
-        dirname "$artifact"
-        return 0
-    fi
-
-    return 1
+    done
+    # Publish metadata last so a partial copy cannot pass the reuse check.
+    rm -f "$FIRMWARE_BUILD_DIR/build.options.json" &&
+        cp "$source/roaster-firmware.ino.bin" "$FIRMWARE_BUILD_DIR/roaster-firmware.bin" &&
+        cp "$source/roaster-firmware.ino.bootloader.bin" "$FIRMWARE_BUILD_DIR/roaster-firmware.bootloader.bin" &&
+        cp "$source/partitions.csv" "$FIRMWARE_BUILD_DIR/" &&
+        cp "$source/build.options.json" "$FIRMWARE_BUILD_DIR/" || return 1
+    print_success "Build artifact copied to: $FIRMWARE_BUILD_DIR/roaster-firmware.bin"
 }
 
 flash_jc_main_firmware() {
     local sketch_name="$1"
-    local sketch_dir="$FIRMWARE_DIR/build"
+    local sketch_dir="$FIRMWARE_BUILD_DIR"
     local app_bin="$sketch_dir/$sketch_name.bin"
     local bootloader_bin="$sketch_dir/$sketch_name.bootloader.bin"
     local partitions_csv="$sketch_dir/partitions.csv"
-    local cache_build_dir=""
-
-    if [[ ! -f "$app_bin" ]] || [[ ! -f "$bootloader_bin" ]] || [[ ! -f "$partitions_csv" ]]; then
-        cache_build_dir=$(resolve_build_cache_dir "$sketch_name") || {
-            print_error "Build artifacts not found for $sketch_name. Run compile first."
-            return 1
-        }
-
-        [[ -f "$app_bin" ]] || app_bin="$cache_build_dir/$sketch_name.ino.bin"
-        [[ -f "$bootloader_bin" ]] || bootloader_bin="$cache_build_dir/$sketch_name.ino.bootloader.bin"
-        [[ -f "$partitions_csv" ]] || partitions_csv="$cache_build_dir/partitions.csv"
-    fi
-
     if [[ ! -f "$app_bin" ]] || [[ ! -f "$bootloader_bin" ]] || [[ ! -f "$partitions_csv" ]]; then
         print_error "Incomplete JC flash bundle. Expected app, bootloader, and partitions artifacts."
         return 1
@@ -456,82 +412,36 @@ ota_send_firmware() {
         "$base_url/ota/upload" >/tmp/ota_upload.log
 }
 
-resolve_firmware_bin() {
-    local build_bin="$FIRMWARE_DIR/build/roaster-firmware.bin"
-    if [[ -f "$build_bin" ]]; then
-        echo "$build_bin"
-        return 0
-    fi
-
-    local cache_dir="$HOME/Library/Caches/arduino/sketches"
-    local bin_file
-    bin_file=$(find "$cache_dir" -name "roaster-firmware.ino.bin" -type f -mmin -10 2>/dev/null | head -1)
-    if [[ -n "$bin_file" ]] && [[ -f "$bin_file" ]]; then
-        echo "$bin_file"
-        return 0
-    fi
-
-    return 1
-}
-
-resolve_firmware_metadata() {
-    local build_metadata="$FIRMWARE_DIR/build/build.options.json"
-    if [[ -f "$build_metadata" ]]; then
-        echo "$build_metadata"
-        return 0
-    fi
-
-    local cache_dir="$HOME/Library/Caches/arduino/sketches"
-    local metadata_file
-    metadata_file=$(find "$cache_dir" -name build.options.json -type f -mmin -30 2>/dev/null | head -1)
-    if [[ -n "$metadata_file" ]] && [[ -f "$metadata_file" ]]; then
-        echo "$metadata_file"
-        return 0
-    fi
-
-    return 1
-}
-
 firmware_artifact_matches_target() {
-    local firmware_bin="$1"
-    local metadata_file
-    metadata_file=$(resolve_firmware_metadata) || return 1
-
-    if [[ ! -f "$firmware_bin" ]]; then
-        return 1
-    fi
-
-    if ! grep -Fq '"fqbn":'" \"$BOARD_FQBN\"" "$metadata_file"; then
-        return 1
-    fi
-
-    return 0
+    local metadata="$FIRMWARE_BUILD_DIR/build.options.json"
+    [[ -s "$FIRMWARE_BUILD_DIR/roaster-firmware.bin" && -s "$metadata" ]] &&
+        grep -Fq "\"fqbn\": \"$BOARD_FQBN\"" "$metadata" &&
+        grep -Fq -- "compiler.cpp.extra_flags=$BUILD_EXTRA_FLAGS " "$metadata"
 }
 
 ensure_firmware_build() {
-    local sketch_path="$1"
-    local sketch_name=$(basename "$sketch_path" .ino)
+    local sketch_path="$1" transport="$2"
+    if [[ "$(basename "$sketch_path")" != roaster-firmware.ino ]]; then
+        compile_sketch "$sketch_path"
+        return $?
+    fi
 
     if [[ "${ROASTER_FORCE_REBUILD:-0}" == "1" ]]; then
-        print_info "Forced rebuild requested for OTA upload"
-        compile_sketch "$sketch_path"
-        return $?
-    fi
-
-    local firmware_bin
-    firmware_bin=$(resolve_firmware_bin) || {
-        print_info "No existing firmware binary found; compiling before OTA upload"
-        compile_sketch "$sketch_path"
-        return $?
-    }
-
-    if firmware_artifact_matches_target "$firmware_bin"; then
-        print_info "Reusing existing firmware build for OTA upload"
+        print_info "Forced rebuild requested"
+    elif firmware_artifact_matches_target &&
+        { [[ "$transport" == ota ]] ||
+          [[ -s "$FIRMWARE_BUILD_DIR/roaster-firmware.bootloader.bin" && -s "$FIRMWARE_BUILD_DIR/partitions.csv" ]]; }; then
+        print_info "Reusing build/roaster-firmware.bin for $TARGET_BOARD"
         return 0
+    else
+        print_info "No complete build for $TARGET_BOARD; compiling before upload"
     fi
 
-    print_info "Existing firmware build does not match $TARGET_BOARD; compiling before OTA upload"
-    compile_sketch "$sketch_path"
+    compile_sketch "$sketch_path" || return 1
+    if ! firmware_artifact_matches_target; then
+        print_error "Compiled artifact metadata does not match $TARGET_BOARD ($BOARD_FQBN)"
+        return 1
+    fi
 }
 
 firmware_md5() {
@@ -547,20 +457,7 @@ firmware_md5() {
 }
 
 ota_upload_firmware() {
-    local sketch_path="$1"
-    local sketch_name=$(basename "$sketch_path" .ino)
-
-    if [[ "$sketch_name" != "roaster-firmware" ]]; then
-        print_error "OTA upload is only supported for the main firmware"
-        return 1
-    fi
-
-    local firmware_bin
-    firmware_bin=$(resolve_firmware_bin) || {
-        print_error "Firmware binary not found. Run compile first."
-        return 1
-    }
-
+    local firmware_bin="$FIRMWARE_BUILD_DIR/roaster-firmware.bin"
     local md5_hash
     md5_hash=$(firmware_md5 "$firmware_bin") || return 1
     resolve_ota_host || return 1
@@ -766,7 +663,7 @@ main() {
             ;;
         upload)
             print_header "Uploading $test_name"
-            compile_sketch "$sketch_path" && upload_sketch "$sketch_path" || {
+            ensure_firmware_build "$sketch_path" usb && upload_sketch "$sketch_path" || {
                 print_error "Build/upload failed - aborting"
                 exit 1
             }
@@ -780,9 +677,12 @@ main() {
             show_port_status
             ;;
         ota)
-            print_header "Building & OTA Uploading $test_name"
-            ensure_firmware_build "$sketch_path" && \
-            ota_upload_firmware "$sketch_path"
+            if [[ "$test_num" != 1 && "$test_num" != main ]]; then
+                print_error "OTA upload is only supported for the main firmware"
+                exit 1
+            fi
+            print_header "OTA Uploading $test_name"
+            ensure_firmware_build "$sketch_path" ota && ota_upload_firmware
             ;;
         all)
             print_header "Building & Running $test_name"

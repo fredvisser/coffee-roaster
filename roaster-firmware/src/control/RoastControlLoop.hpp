@@ -7,6 +7,7 @@
 #include <ESP32Servo.h>
 
 #include "PIDController.hpp"
+#include "HeaterRelay.hpp"
 #include "PIDRuntimeController.hpp"
 #include "../platform/RoasterTypes.hpp"
 #include "../profiles/RoastProfile.hpp"
@@ -36,7 +37,7 @@ extern bool pidScheduleActive;
 
 extern RoasterState roasterState;
 
-extern PWMrelay heaterRelay;
+extern HeaterRelay heaterRelay;
 extern PWMrelay fanRelay;
 extern Servo bdcFan;
 
@@ -69,21 +70,7 @@ inline void resetRoastControllerState()
   applyHeaterPIDGains(kp, ki, kd);
 }
 
-inline void setManualPIDGains(double newKp, double newKi, double newKd)
-{
-  kp = newKp;
-  ki = newKi;
-  kd = newKd;
-
-  preferences.putDouble("kp", kp);
-  preferences.putDouble("ki", ki);
-  preferences.putDouble("kd", kd);
-
-  pidRuntimeController.setFallbackGains(kp, ki, kd);
-  pidRuntimeController.clearPreferences(preferences);
-  pidScheduleConfigured = false;
-  resetRoastControllerState();
-}
+bool setManualPIDGains(double newKp, double newKi, double newKd, double rampScale);
 
 inline void updateRoastControl(unsigned long now)
 {
@@ -92,18 +79,19 @@ inline void updateRoastControl(unsigned long now)
     return;
   }
 
-  setpointTemp = profile.getTargetTemp(now);
+  setpointTemp = profile.getControlTarget(now);
   setpointFanSpeed = profile.getTargetFanSpeed(now);
   setpointProgress = profile.getProfileProgress(now);
 
-  PIDRuntimeController::ControlDecision decision = pidRuntimeController.decide(now, currentTemp, setpointTemp, fanTemp);
+  PIDRuntimeController::ControlDecision decision = pidRuntimeController.decide(now, currentTemp, setpointTemp, fanTemp,
+                                                                            profile.getTargetRate(now));
   pidScheduleActive = decision.scheduleActive;
   activePidBandIndex = decision.bandIndex;
   applyHeaterPIDGains(decision.kp, decision.ki, decision.kd);
 
-  heaterPID.run();
-
   heaterFeedforwardVal = decision.feedforward;
+  heaterPID.setOutputRange(-heaterFeedforwardVal, 255.0 - heaterFeedforwardVal);
+  heaterPID.run(heaterFeedforwardVal);
   heaterOutputVal = constrain(heaterPidTrimVal + heaterFeedforwardVal, 0.0, 255.0);
   fanRelay.setPWM(setpointFanSpeed);
 

@@ -10,17 +10,10 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Roast Profile Editor</title>
+  )rawliteral" ROASTER_WEB_STYLE R"rawliteral(
   <style>
     * { box-sizing: border-box; }
-    body { font-family: 'Segoe UI', Inter, -apple-system, sans-serif; background:#333333; color:#FFFFFF; margin:0; padding:0; }
-    .topnav { max-width: 1100px; margin: 0 auto 20px; padding: 14px; display:flex; flex-wrap:wrap; gap:10px; background:#2D2D2D; border-bottom:2px solid #444; align-items:center; }
-    .topnav-logo { display:flex; align-items:center; gap:10px; margin-right:auto; font-weight:900; font-size:20px; color:#009944; text-transform:uppercase; letter-spacing:1px; }
-    .topnav a { display:inline-flex; align-items:center; justify-content:center; min-width:100px; padding:12px 16px; border-radius:0; background:#3A3A3A; color:#CCCCCC; text-decoration:none; font-weight:700; text-transform:uppercase; font-size:14px; transition: 0.2s; }
-    .topnav a:hover { background:#444444; color:#FFF; }
-    .topnav a.active { background:#009944; color:#fff; }
-    .container { max-width: 1100px; margin: 0 auto; padding: 16px; }
     .header { display:flex; flex-direction:column; gap:12px; margin-bottom:16px; }
-    h1 { font-size: 24px; color:#fff; margin:0; text-transform:uppercase; font-weight:900; }
     .controls { display:flex; gap:8px; flex-wrap: wrap; align-items: center; }
     .control-group { display:flex; gap:8px; padding:12px; background:#2D2D2D; border:none; flex-wrap: wrap; align-items:center; }
     .control-group.primary { border-top: 4px solid #009944; }
@@ -65,31 +58,6 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
     .debug-section h3 { margin:0 0 6px 0; color:#009944; font-size:11px; text-transform:uppercase; }
     .input-modal-card { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:20px; width:min(500px, calc(100vw - 32px)); }
     @media (max-width: 480px) {
-      body {
-        padding: 0 0 12px;
-      }
-      .topnav {
-        padding: 12px;
-        gap: 8px;
-      }
-      .topnav-logo {
-        width: 100%;
-        margin-right: 0;
-        justify-content: center;
-        font-size: 18px;
-      }
-      .topnav a {
-        flex: 1 1 calc(50% - 8px);
-        min-width: 0;
-        padding: 12px 10px;
-        font-size: 12px;
-      }
-      .container {
-        padding: 12px;
-      }
-      h1 {
-        font-size: 22px;
-      }
       .controls,
       .control-group,
       .row,
@@ -131,27 +99,10 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
   </style>
 </head>
 <body>
-  <nav class="topnav" aria-label="Main navigation">
-    <div class="topnav-logo">
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M4.5,10 C2.5,15 9,17 12,17 C15,17 21.5,15 19.5,10 C17.5,5 11,3 8,3 C5,3 6.5,5 4.5,10 Z" fill="#009944" />
-        <path d="M5,10 Q12,14 19,9" stroke="#2D2D2D" stroke-width="1.5" fill="none" />
-        <path d="M9,18 Q8,20 10,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
-        <path d="M12,19 Q11,21 13,23" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
-        <path d="M15,18 Q14,20 16,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
-      </svg>
-      Roaster Control
-    </div>
-    <a href="/console">Console</a>
-    <a class="active" href="/profile" aria-current="page">Profiles</a>
-    <a href="/pid">PID</a>
-    <a href="/update">Update</a>
-    <a href="/systemlink">SystemLink</a>
-    <a href="/server">Server</a>
-  </nav>
-  <div class="container">
+  )rawliteral" ROASTER_WEB_NAV("", ROASTER_WEB_CURRENT, "", "", "", "") R"rawliteral(
+  <main class="web-shell container">
+    <header class="web-heading"><h1>Roast Profile Editor</h1></header>
     <div class="header">
-      <h1>Roast Profile Editor</h1>
       <div class="control-group primary">
         <select id="profilesList" class="input" style="flex:1; min-width:200px;" onchange="autoLoadProfile()"></select>
         <button class="btn" onclick="createNew()">New</button>
@@ -199,7 +150,7 @@ const char PROFILE_EDITOR_HTML[] PROGMEM = R"rawliteral(
         </div>
       </div>
     </div>
-  </div>
+  </main>
 
   <div id="toast" style="position:fixed; bottom:20px; right:20px; background:#161b22; border:1px solid #30363d; color:#c9d1d9; padding:10px 14px; border-radius:6px; box-shadow:0 8px 24px rgba(0,0,0,0.3); display:none; z-index:2000;"></div>
 

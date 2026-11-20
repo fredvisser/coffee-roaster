@@ -22,9 +22,14 @@ public:
     }
 
     void setGains(double newKp, double newKi, double newKd) {
+        double correction = (kp - newKp) * previousError +
+                            (newKd - kd) * filteredMeasurementRate + ki * integral;
         kp = newKp;
         ki = newKi;
         kd = newKd;
+        if (ki > 1e-9) {
+            integral = constrain(correction / ki, integralLowerBound(), integralUpperBound());
+        }
     }
 
     void setOutputRange(double newOutputMin, double newOutputMax) {
@@ -37,13 +42,12 @@ public:
         timeStepMs = max(1UL, newTimeStepMs);
     }
 
-    void run() {
+    void run(double feedforward = 0.0, unsigned long now = millis()) {
         if (stopped) {
             stopped = false;
-            reset();
+            reset(now);
         }
 
-        unsigned long now = millis();
         unsigned long dtMs = now - lastStepMs;
         if (dtMs < timeStepMs) {
             return;
@@ -67,10 +71,10 @@ public:
         double derivative = -kd * filteredMeasurementRate;
 
         double candidateIntegral = integral + 0.5 * (error + previousError) * dtSeconds;
-        double unsaturated = proportional + ki * candidateIntegral + derivative;
+        double unsaturated = proportional + ki * candidateIntegral + derivative + feedforward;
 
-        bool saturatingHigh = unsaturated > outputMax && error > 0.0;
-        bool saturatingLow = unsaturated < outputMin && error < 0.0;
+        bool saturatingHigh = unsaturated > outputMax + feedforward && error > 0.0;
+        bool saturatingLow = unsaturated < outputMin + feedforward && error < 0.0;
         if (!saturatingHigh && !saturatingLow) {
             integral = constrain(candidateIntegral, integralLowerBound(), integralUpperBound());
         }
@@ -78,6 +82,8 @@ public:
         previousError = error;
         double command = proportional + ki * integral + derivative;
         *output = constrain(command, outputMin, outputMax);
+        proportionalTerm = proportional;
+        derivativeTerm = derivative;
     }
 
     void stop() {
@@ -85,11 +91,12 @@ public:
         reset();
     }
 
-    void reset() {
-        lastStepMs = millis();
+    void reset(unsigned long now = millis()) {
+        lastStepMs = now;
         integral = 0.0;
         previousError = 0.0;
         filteredMeasurementRate = 0.0;
+        proportionalTerm = derivativeTerm = 0.0;
         previousInput = input ? *input : 0.0;
         previousInputValid = input != nullptr;
     }
@@ -101,6 +108,9 @@ public:
     double getIntegral() const {
         return integral;
     }
+    double getProportional() const { return proportionalTerm; }
+    double getIntegralTerm() const { return ki * integral; }
+    double getDerivative() const { return derivativeTerm; }
 
     void setIntegral(double newIntegral) {
         integral = constrain(newIntegral, integralLowerBound(), integralUpperBound());
@@ -119,6 +129,8 @@ private:
     double previousError = 0.0;
     double previousInput = 0.0;
     double filteredMeasurementRate = 0.0;
+    double proportionalTerm = 0.0;
+    double derivativeTerm = 0.0;
     double outputMin = 0.0;
     double outputMax = 255.0;
     unsigned long timeStepMs = 1000UL;

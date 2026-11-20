@@ -27,6 +27,8 @@ public:
 
     // Calculate targetTemp based on current time
     uint32_t getTargetTemp(uint32_t tickTime) const;
+    double getControlTarget(uint32_t tickTime) const;
+    double getTargetRate(uint32_t tickTime) const;
 
     // Calculate targetTemp at absolute time (no start offset)
     uint32_t getTargetTempAtTime(uint32_t timeMs) const;
@@ -78,6 +80,23 @@ void RoastProfile::startProfile(uint32_t currentTemp, uint32_t tickTime)
 
 uint32_t RoastProfile::getTargetTemp(uint32_t tickTime) const
 {
+    return static_cast<uint32_t>(lround(getControlTarget(tickTime)));
+}
+
+double RoastProfile::getTargetRate(uint32_t tickTime) const
+{
+    uint32_t elapsed = tickTime - _startTime;
+    for (int i = 1; i < _setpointCount; ++i) {
+        if (elapsed < _setpoints[i].time && _setpoints[i].time > _setpoints[i - 1].time) {
+            return (static_cast<double>(_setpoints[i].temp) - _setpoints[i - 1].temp) *
+                   1000.0 / (_setpoints[i].time - _setpoints[i - 1].time);
+        }
+    }
+    return 0.0;
+}
+
+double RoastProfile::getControlTarget(uint32_t tickTime) const
+{
     uint32_t currentTime = tickTime - _startTime;
     for (int i = 0; i < _setpointCount; i++)
     {
@@ -100,9 +119,7 @@ uint32_t RoastProfile::getTargetTemp(uint32_t tickTime) const
 
                 double timeRatio = (double)(currentTime - prevTime) / (double)(nextTime - prevTime);
                 double result = (double)prevTemp + ((double)nextTemp - (double)prevTemp) * timeRatio;
-                int32_t out = (int32_t)lround(result);
-                if (out < 0) out = 0; if (out > 500) out = 500;
-                return (uint32_t)out;
+                return constrain(result, 0.0, 500.0);
             }
         }
     }
