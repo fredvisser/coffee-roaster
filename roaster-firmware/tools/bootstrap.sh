@@ -72,7 +72,7 @@ LIBRARIES=(
     "PWMrelay"
     "ArduinoJson"
     "lvgl"
-    "GFX Library for Arduino@1.6.8"
+    "GFX Library for Arduino"
     "Dev Device Pins"
     "TAMC_GT911"
 )
