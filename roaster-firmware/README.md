@@ -75,6 +75,9 @@ cd roaster-firmware
 
 #### 1. Install Arduino CLI
 
+Use Arduino CLI 1.5.1 (also pinned in CI); the workflow scripts require
+the `compile --jobs` option, which is unavailable in the action's default 0.x CLI.
+
 ```bash
 brew install arduino-cli  # macOS
 # or download from https://arduino.github.io/arduino-cli/
