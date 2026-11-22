@@ -77,6 +77,7 @@ cd roaster-firmware
 
 Use Arduino CLI 1.5.1 (also pinned in CI); the workflow scripts require
 the `compile --jobs` option, which is unavailable in the action's default 0.x CLI.
+CI also pins ESP32 core 3.3.11, matching bootstrap and the manual setup below.
 
 ```bash
 brew install arduino-cli  # macOS
