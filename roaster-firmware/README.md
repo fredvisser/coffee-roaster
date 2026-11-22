@@ -1,3 +1,4 @@
+### Helper Scripts
 # Coffee Roaster Firmware
 
 ESP32-S3 JC4827W543C-based coffee roaster control system with PID temperature control, dual fan management, LVGL touchscreen UI, and web interfaces.
@@ -22,6 +23,7 @@ ESP32-S3 JC4827W543C-based coffee roaster control system with PID temperature co
   - Emergency shutdown procedures
   - Hardware watchdog timer
 - **Profile Management**: Custom roast profiles with time/temperature/fan curves
+- **Persistent Debug Logs**: Appends JSON Lines to the onboard TF/microSD card when available
 
 ## Hardware Requirements
 
@@ -31,6 +33,11 @@ ESP32-S3 JC4827W543C-based coffee roaster control system with PID temperature co
 - PWM fan
 - BDC fan with servo control
 - Integrated local display and touch hardware on the JC4827W543C board
+- Optional FAT32-formatted microSD/TF card (8–32 GB)
+
+### TF Card Logging
+
+At boot, the firmware mounts the TF card over SPI using GPIO10 (CS), GPIO11 (MOSI), GPIO12 (clock), and GPIO13 (MISO). Debug entries are appended as JSON Lines with a boot ID and uptime in milliseconds. The active file is `/roaster-debug.jsonl`; up to four 1 MiB rotated segments are retained alongside it. Open `http://roaster-dev.local/console` and choose **Card History** to page through, filter, and download a segment. If the card is absent or cannot be written, the roaster continues using the RAM log buffer and Serial output. Card detection happens at boot, so insert a card before powering on.
 
 ## Building
 
@@ -57,7 +64,7 @@ cd roaster-firmware
 # 2. Run automated setup script (installs all dependencies)
 ./tools/bootstrap.sh
 
-# 3. Compile and upload firmware
+# 3. Upload over USB (builds if needed)
 ./tools/firmware.sh upload
 
 # Or just compile (creates .bin in build/ directory)
@@ -67,6 +74,13 @@ cd roaster-firmware
 ### Manual Setup
 
 #### 1. Install Arduino CLI
+
+Use Arduino CLI 1.5.1 (also pinned in CI); the workflow scripts require
+the `compile --jobs` option, which is unavailable in the action's default 0.x CLI.
+CI also pins ESP32 core 3.3.11, matching bootstrap and the manual setup below.
+The validated networking versions are AsyncTCP 3.4.9 and
+ESPAsyncWebServer 3.9.3; newer versions can exceed the controller's OTA
+application slot.
 
 ```bash
 brew install arduino-cli  # macOS
@@ -93,8 +107,8 @@ arduino-cli lib install "MAX6675 library" "SimpleTimer" \
 
 ```bash
 cd ~/Documents/Arduino/libraries
-git clone https://github.com/ESP32Async/AsyncTCP.git
-git clone https://github.com/ESP32Async/ESPAsyncWebServer.git
+git clone --branch v3.4.9 --depth 1 https://github.com/ESP32Async/AsyncTCP.git
+git clone --branch v3.9.3 --depth 1 https://github.com/ESP32Async/ESPAsyncWebServer.git
 ```
 
 #### 5. Configure ElegantOTA for Async Mode ⚠️ IMPORTANT
@@ -118,7 +132,7 @@ The automated `./tools/bootstrap.sh` script handles this configuration automatic
 # Compile
 ./tools/firmware.sh build --board jc4827w543c
 
-# Upload
+# Upload that build over USB without recompiling
 ./tools/firmware.sh upload --board jc4827w543c
 ```
 
@@ -145,53 +159,196 @@ The firmware revision defaults to the current Git commit. Override it with
 
 ## Over-The-Air (OTA) Updates
 
-After initial USB flash, firmware can be updated wirelessly without physical access to the device.
+After the initial USB flash, run from `roaster-firmware/` on the same network
+as the roaster. Confirm the roaster is idle with the heater off before uploading.
 
-### Accessing OTA Interface
+```bash
+# Once per Mac: open Wi-Fi > Web access on the roaster and tap Pair browser/CLI.
+./tools/firmware.sh pair --host roaster-fred.local
+# Match the displayed code and tap Approve. The token is saved in macOS Keychain.
 
-1. Connect to the same WiFi network as the roaster
-2. Navigate to: **`http://roaster-dev.local/update`**
-   - Alternative: Use device IP address if mDNS doesn't work
+# Upload the last matching build without recompiling (`ota` is an alias).
+./tools/firmware.sh ota-upload --host roaster-fred.local --board jc4827w543c
 
-### Uploading New Firmware
+# If you've edited the source and haven't built it yet, use this instead:
+./tools/firmware.sh ota-upload --host roaster-fred.local --board jc4827w543c --rebuild
 
-1. **Compile firmware** to generate `.bin` file:
-   ```bash
-  ./tools/firmware.sh build
-   ```
+```
 
-2. **Access OTA interface** at `http://roaster-dev.local/update`
+Use the same `--host` for pairing and uploading (hostname or IP address).
+The default is `roaster-dev.local`; `OTA_HOST` is no longer read by this entrypoint.
+OTA uses IPv4 for `.local`
+names to avoid mDNS lookup timeouts on macOS. If the name still doesn't resolve,
+use the roaster's IP address for both commands and pair again under that address.
+If the roaster still runs older firmware without pairing, install this version
+over USB or through its existing `/update` page, then pair before using `ota-upload`.
 
-3. **Upload firmware**:
-   - Click "Choose File" and select `build/roaster-firmware.bin`
-   - Click "Update"
-   - Device will automatically update and reboot (~30 seconds)
+Both `ota-upload` and USB `upload` reuse `build/roaster-firmware.bin` from the
+last successful build if it matches the selected board and the required artifacts
+are present. Otherwise they build automatically. Source edits do **not** invalidate
+the saved binary: after editing, run `build` before uploading or pass `--rebuild`
+to either upload command.
 
-4. **Verify update**: Check version or timestamp in debug console
-
-### OTA Best Practices
-
-- ✅ Test firmware on bench hardware before OTA deployment
-- ✅ Keep backup `.bin` files of known-good firmware
-- ✅ Ensure stable WiFi connection during update
-- ✅ Wait for device to fully reboot before reconnecting
-- ⚠️ Never interrupt power during OTA update
-- ⚠️ OTA updates preserve WiFi credentials and roast profiles
+Keep power and Wi-Fi connected until the roaster reboots, then confirm the expected
+change on the device. If needed, use the roaster's `/update` page and select
+`build/roaster-firmware.bin` for a manual OTA upload.
 
 ### Helper Scripts
+
+`tools/workflow-runner.sh` is the shared runner behind the firmware and test
+entrypoints, not a user-facing CLI. Its former numeric targets and `all`
+action are no longer supported; use the entrypoints below.
 
 - **`tools/bootstrap.sh`**: Automated dependency installation (arduino-cli required)
 - **`tools/firmware.sh`**: Main firmware build, upload, OTA, and monitor entrypoint
   - `./tools/firmware.sh build` - Compile main firmware
-  - `./tools/firmware.sh upload` - Compile and upload to a connected board
+  - `./tools/firmware.sh upload` - Upload over USB; build only if needed
+  - `./tools/firmware.sh ota-upload` - Upload over Wi-Fi; build only if needed (`ota` also works)
   - `./tools/firmware.sh run` - Compile, upload, and monitor
   - `./tools/firmware.sh build --board jc4827w543c` - Compile for the JC4827W543C target
 - **`tools/tests.sh`**: Named test-suite entrypoint
   - `./tools/tests.sh compile safety` - Compile the safety suite
   - `./tools/tests.sh run pid` - Compile, upload, and monitor the PID suite
-- **Legacy aliases**: `./setup_libraries.sh` and `./run_tests.sh` remain available during the transition
+
+### Roaster Settings and Logs
+
+Use `tools/roaster.py` with Python 3 and curl to access a particular roaster.
+It reuses the macOS Keychain session created by `firmware.sh pair --host`, or
+an explicitly supplied `OTA_TOKEN`. Hostnames and IPv4 addresses are supported;
+requests use the firmware's plain HTTP service on port 80.
+
+```bash
+./tools/firmware.sh pair --host roaster-fred.local
+python3 tools/roaster.py --host roaster-fred.local get state
+python3 tools/roaster.py --host roaster-fred.local get pid
+python3 tools/roaster.py --host roaster-fred.local get server
+python3 tools/roaster.py --host roaster-fred.local get systemlink
+python3 tools/roaster.py --host roaster-fred.local get profiles
+python3 tools/roaster.py --host roaster-fred.local get profile --id PROFILE_ID
+
+# Settings files contain only the fields to change.
+printf '{"kp":8,"ki":0.46,"kd":0}\n' |
+  python3 tools/roaster.py --host roaster-fred.local set pid --file -
+python3 tools/roaster.py --host roaster-fred.local set server --file server.json
+python3 tools/roaster.py --host roaster-fred.local set systemlink --file systemlink.json
+python3 tools/roaster.py --host roaster-fred.local set profile --id PROFILE_ID --file profile.json
+
+# Recent RAM logs, or all retained card logs in oldest-to-newest file order.
+python3 tools/roaster.py --host roaster-fred.local logs
+python3 tools/roaster.py --host roaster-fred.local logs --card > roast-logs.jsonl
+python3 tools/roaster.py --host roaster-fred.local logs --card --file 0
+```
+
+Writable PID fields are `kp`, `ki`, `kd`, and `rampScale`. PID writes remain
+subject to firmware safety checks and are unverified manual adjustments.
+Server settings accept `hostname` (without `.local`). SystemLink settings accept
+`enabled`, `apiUrl`, `workspaceId`, `systemId`, `apiKey`, and `clearApiKey`.
+Keep credential files private and out of Git; send sensitive JSON through a file
+or stdin, not command-line arguments.
+
+Profile files contain `name` and 1-9 `setpoints`, each with integer `time`
+(seconds), `temp` (0-500F), and `fanSpeed` (0-100%). The firmware reserves the
+tenth slot. Omit `--id` to create a profile rather than update one; exported
+`id` and `active` metadata are ignored with a warning and do not activate profiles.
+
+Changing the hostname may require reconnecting and pairing under the new address.
+Logs are JSONL with the timestamps recorded by the firmware; card timestamps
+are boot-relative, not wall-clock time. API/network errors exit nonzero.
+This script does not start roasts, tuning, or heater experiments.
+
+## PID tuning
+
+With the idle roaster below 140F, load 1/2 cup of coffee beans. On mains power, open `/pid` and select
+**Start autotune**. Stay with the roaster; you can cancel while it runs.
+The tune uses full fan speed and fits one local thermal model
+without waiting for equilibrium, then runs a ramp/hold check at the same fan PWM.
+Successive fits must stabilize before early completion; acquisition has a 175-second
+ceiling. Heating stops by 295 seconds with either a verified candidate or an explicit
+inconclusive result. Cooling continues separately. Current settings are not
+overwritten: review the proposed gains next to the saved gains, then select
+**Apply verified gains** if you want to use them.
+
+The tuning record includes the measured temperature range. A quick local check does **not**
+qualify the full roasting range or different airflow/bean loads. Initial SIMC
+tuning uses PI (Kd = 0), retaining effective model delay rather than replacing it
+with a noise-threshold onset estimate.
+
+The latest ten run summaries survive reboot in NVS, including failures and manual
+adjustments and current-controller verification results. History, downloads,
+and whole-controller restore remain available through the PID API. Active, previous, and
+last-verified snapshots are stored independently of the rotating history.
+**Manual override** edits Kp, Ki, and Kd and scales scheduled gains without deleting
+the thermal model. These edits are unverified. Legacy model coefficients are disabled; retune
+after upgrading. Existing scalar PID gains remain available as fallback.
+
+The current full trace is available at `/api/calibrate-pid/trace` (JSON) or
+`/api/pid/trace.csv`. With a TF card, existing
+console logging retains `PIDTRACE` rows with fields:
+`runId,elapsedMs,tempF,targetF,heater,feedforward,P,I,D,inletF,fanPWM,targetRateFps,Kp,Ki,Kd,phase`.
+Older traces are found in the SD console logs, not retained in NVS. A new run or
+reboot clears the RAM trace. Storage failures are reported, not treated as saves.
+JSON trace metadata includes the terminal error code and run ID. Heater output is
+the requested PWM, not a measured electrical-power reading. The heater driver
+latches duty for each one-second window, so 250ms controller updates cannot restart
+the window and suppress heating; zero output still switches it off immediately.
+Optional SystemLink mirroring runs after cooling, never during tuning/control.
+
+If a tune stops with `sensor_pair_inconsistent`, inspect both thermocouples and
+their wiring: the fan/inlet reading may be normal while the bean reading drops
+implausibly low. `fan_sensor_failed` indicates an invalid or discontinuous fan
+reading. Both stop heating and retain error latching; do not bypass the checks.
+
+Quick tweaks (change one setting about 10%, repeat the same check, then compare):
+
+| Symptom | Adjustment |
+|---|---|
+| Lag at full heater power | Gains cannot add missing heat; reduce the ramp or correct airflow/load safely. |
+| Ramp lag, good hold, available power | Check airflow and load; the local tune may not cover that ramp. |
+| Slow but stable response | Increase Kp 10%. |
+| Settled hold error | Check sensor/model bias first; then increase Ki 10%. |
+| Oscillation | Reduce Kp; reduce Ki for slow integral-driven hunting. |
+| Overshoot / noisy output | Check saturation/anti-windup; reduce Ki for overshoot or Kd for noise. |
+
+Ki is integral **gain**, not integral time. The restore API restores gains, model,
+and feedforward together. The separate current-controller check API covers only 120-200F; a pass
+updates the last-verified snapshot without claiming higher-temperature qualification.
+Targets for the built-in candidate check are ramp MAE <= 2F, hold MAE <= 1F,
+90% of ramp points within 3F, and overshoot <= 4F after stated recovery windows.
+These targets require supervised hardware qualification before deployment.
+
+Run deterministic, hardware-free regressions with `./tools/tests.sh run host`.
+Compile the embedded checks with `./tools/tests.sh compile step-response` and
+`./tools/tests.sh compile pid`; run them on a supervised bench when available.
+
+## Web UI Security
+
+Console, Profiles, PID, Update, SystemLink, and Server share the same navigation
+and page frame. The Update page uses the built-in ElegantOTA uploader.
+
+Open **Wi-Fi > Web access** on the touchscreen and tap **Pair browser/CLI**.
+Open the address or scan the QR code, then select **Request to pair** in the
+browser. Compare the four-digit codes and tap **Approve** on the roaster.
+Pairing requests expire after one minute. Scripts can use `firmware.sh pair`
+on macOS, or the `/api/pair-request?cli=1` and `/api/pair-claim` endpoints and
+send `Authorization: Bearer <token>` on subsequent requests.
+
+Paired sessions survive a firmware reboot and have full access to the web UI,
+API, and OTA. The **Server** page lists and revokes sessions and lets you change
+the mDNS name. New sessions record the pairing date, using the browser or CLI
+clock if the roaster clock isn't set. Sessions saved without a date stay valid.
+Changing the address requires pairing the browser again. The
+`/WebSocket` endpoint remains unauthenticated for Artisan telemetry.
+
+The device still serves plain HTTP. Anyone able to intercept traffic can steal
+a session and use it until revoked. Keep the roaster on a trusted, isolated LAN;
+do not expose it directly to the internet.
 
 ## Configuration
+
+Sensor faults and other emergency errors latch the controller in ERROR with
+the heater off, PWM fan at 100%, and BDC fan at 2000µs throughout lockout.
+Cooling does not stop automatically in ERROR; manual reset requires valid
+sensor readings and safe temperatures.
 
 Key parameters in `roaster-firmware.ino`:
 - `KP`, `KI`, `KD`: PID tuning constants
@@ -245,8 +402,6 @@ Comprehensive test suite covering:
 ```
 
 See `tests/README.md` for complete testing documentation.
-
-Compatibility note: `./run_tests.sh` and `./setup_libraries.sh` still work, but they now forward to the `tools/` entrypoints.
 
 ## Web Profile Editor
 

@@ -10,6 +10,7 @@
 #include "../display/DisplayAdapter.hpp"
 #include "../platform/RoasterTypes.hpp"
 #include "../profiles/RoastProfile.hpp"
+#include "HeaterRelay.hpp"
 #include "PIDValidation.hpp"
 
 extern Preferences preferences;
@@ -28,7 +29,7 @@ extern bool fanSensorHasValidReading;
 extern std::atomic<bool> roastDisplayRefreshRequested;
 
 extern PWMrelay fanRelay;
-extern PWMrelay heaterRelay;
+extern HeaterRelay heaterRelay;
 extern Servo bdcFan;
 
 extern RoastProfile profile;
@@ -40,6 +41,8 @@ extern int savedValidationFinalTempOverride;
 uint32_t getEffectiveFinalTargetTemp();
 void resetRoastControllerState();
 static void systemLinkMarkRoastStarted(bool validationRun);
+bool beginPIDValidationRecord(uint32_t fanPercent);
+void finishPIDValidationRecord();
 
 inline bool currentRoastUsesValidationProfile()
 {
@@ -72,6 +75,7 @@ inline void finalizeValidationIfRunning(bool completed, const char *reason)
   }
 
   pidValidation.finish(completed, durationSeconds, reason);
+  finishPIDValidationRecord();
   restoreValidationProfileIfNeeded();
 }
 
@@ -114,8 +118,12 @@ inline bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent, bo
   {
     return false;
   }
-
   if (!beanSensorHasValidReading || !fanSensorHasValidReading)
+  {
+    return false;
+  }
+
+  if (!beginPIDValidationRecord(fanPercent))
   {
     return false;
   }
@@ -129,6 +137,7 @@ inline bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent, bo
   {
     restoreValidationProfileIfNeeded();
     pidValidation.finish(false, 0.0, "start_rejected");
+    finishPIDValidationRecord();
     return false;
   }
   return true;

@@ -12,7 +12,9 @@
 #define DEBUG
 
 #ifdef DEBUG
-#define DEBUG_SERIALBEGIN(x) Serial.begin(x)
+// ponytail: drop USB-CDC output instead of blocking when a host holds the port open
+// without reading; blocked prints were tripping the task watchdog.
+#define DEBUG_SERIALBEGIN(x) do { Serial.begin(x); Serial.setTxTimeoutMs(0); } while (0)
 #define DEBUG_PRINT(x) Serial.print(x)
 #define DEBUG_PRINTLN(x) Serial.println(x)
 #define DEBUG_PRINTF(...) Serial.printf(__VA_ARGS__)
@@ -38,6 +40,7 @@
 #include "src/control/StepResponseTuner.hpp"
 #include "src/control/PIDRuntimeController.hpp"
 #include "src/control/PIDValidation.hpp"
+#include "src/control/PIDTuningStore.hpp"
 #include "src/control/RoastControlLoop.hpp"
 #include "src/control/RoastSessionLifecycle.hpp"
 #include "src/integrations/SystemLink.hpp"
@@ -51,6 +54,7 @@ bool canClearErrorState();
 #include "src/network/Network.hpp"
 
 Preferences preferences;
+PIDTuningStore pidTuningStore(preferences);
 
 // Pin definitions
 constexpr int TC1_CS = BoardConfig::BeanThermocoupleChipSelectPin;
@@ -99,7 +103,7 @@ RolloverTimer wsBroadcastTimer(1000);
 RolloverTimer roastTraceTimer(1000);
 
 // PWM is used to control fan and heater outputs
-PWMrelay heaterRelay(HEATER, HIGH);
+HeaterRelay heaterRelay(HEATER);
 PWMrelay fanRelay(FAN, HIGH);
 
 Servo bdcFan;
@@ -221,19 +225,19 @@ void endIdleMutation()
 inline bool shouldFilterBeanTempSpikes()
 {
   RoasterState state = getRoasterStateSnapshot();
-  return state == START_ROAST || state == ROASTING || state == COOLING;
+  return state == START_ROAST || state == ROASTING || state == COOLING || state == CALIBRATING;
 }
 
 inline bool shouldFilterFanTempSpikes()
 {
   RoasterState state = getRoasterStateSnapshot();
-  return state == START_ROAST || state == ROASTING || state == COOLING;
+  return state == START_ROAST || state == ROASTING || state == COOLING || state == CALIBRATING;
 }
 
 inline bool shouldEnforceFanTempSafety()
 {
   RoasterState state = getRoasterStateSnapshot();
-  if (state == COOLING) {
+  if (state == COOLING || state == CALIBRATING) {
     return true;
   }
 
@@ -350,14 +354,20 @@ inline void enterEmergencyErrorState(const char *faultCode, const char *displayM
     return;
   }
 
+  bool interruptedTuning = getRoasterStateSnapshot() == CALIBRATING;
   setActiveFault(faultCode, displayMessage);
   setRoasterState(ERROR);
   digitalWrite(HEATER, LOW);
   resetRoastControllerState();
   heaterRelay.setPWM(0);
+  setpointFanSpeed = 255;
   fanRelay.setPWM(255);
   bdcFan.writeMicroseconds(2000);
   bdcFanMs = 2000;
+  if (interruptedTuning) {
+    stepTuner.abort(faultCode);
+    finishPIDTuningRecord();
+  }
   systemLinkUpdateLastFault(faultCode);
   systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, faultCode);
   displayShowErrorMessage(activeFaultMessage);
@@ -399,7 +409,11 @@ MAX6675 thermocouple(THERMOCOUPLE_SCK, TC1_CS, THERMOCOUPLE_MISO);
 MAX6675 thermocoupleFan(THERMOCOUPLE_SCK, TC2_CS, THERMOCOUPLE_MISO);
 PIDController heaterPID(&currentTemp, &setpointTemp, &heaterPidTrimVal, 0, 255, kp, ki, kd);
 StepResponseTuner stepTuner;
-bool autoValidateAfterCooling = false;
+bool calibrationPublishPending = false;
+PIDTuningStore::Record tuningRecord;
+PIDTuningStore::Record validationRecord;
+bool validationRecordPending = false;
+uint32_t tuningBootId = 0;
 PIDRuntimeController pidRuntimeController;
 PIDValidationSession pidValidation;
 
@@ -415,6 +429,211 @@ double appliedKd = kd;
 bool pidScheduleConfigured = false;
 bool pidScheduleActive = false;
 int activePidBandIndex = -1;
+
+PIDTuningStore::Configuration capturePIDConfiguration()
+{
+  return PIDTuningStore::capture(kp, ki, kd, pidRuntimeController);
+}
+
+bool applyPIDConfiguration(const PIDTuningStore::Configuration &config)
+{
+  if ((roasterState != IDLE && roasterState != COOLING) || !PIDTuningStore::valid(config)) {
+    LOG_WARN("PID configuration change refused: active operation or invalid values");
+    return false;
+  }
+  if (!pidTuningStore.saveActive(config, capturePIDConfiguration())) return false;
+  kp = config.kp; ki = config.ki; kd = config.kd;
+  PIDTuningStore::loadRuntime(config, pidRuntimeController);
+  pidScheduleConfigured = pidRuntimeController.isEnabled();
+  resetRoastControllerState();
+  return true;
+}
+
+bool commitPIDChange(PIDTuningStore::Record &record)
+{
+  char outcome[sizeof(record.outcome)];
+  strlcpy(outcome, record.outcome, sizeof(outcome));
+  strlcpy(record.outcome, "pending_apply", sizeof(record.outcome));
+  if (!pidTuningStore.append(record)) return false;
+  bool applied = applyPIDConfiguration(record.proposed);
+  strlcpy(record.outcome, applied ? outcome : "apply_failed", sizeof(record.outcome));
+  bool saved = pidTuningStore.update(record);
+  if (!saved) LOG_ERROR("PID history update failed; reload current controller before retrying");
+  return applied && saved;
+}
+
+void initializePIDRecord(PIDTuningStore::Record &record, const char *outcome)
+{
+  record = {};
+  record.bootId = tuningBootId;
+  record.uptimeMs = millis();
+  time_t now = time(nullptr);
+  record.unixTime = now > 1600000000 ? static_cast<uint32_t>(now) : 0;
+  strlcpy(record.firmware, VERSION, sizeof(record.firmware));
+  strlcpy(record.outcome, outcome, sizeof(record.outcome));
+  record.before = capturePIDConfiguration();
+  record.proposed = record.before;
+  record.parentId = pidTuningStore.latestId();
+  PIDTuningStore::Record parent;
+  if (record.parentId && pidTuningStore.readRecord(record.parentId, parent)) {
+    record.fan = parent.fan;
+    record.tauFactor = parent.tauFactor;
+    strlcpy(record.load, parent.load, sizeof(record.load));
+  }
+}
+
+bool beginPIDValidationRecord(uint32_t fanPercent)
+{
+  if (validationRecordPending || badReadingCount || !isfinite(currentTemp) || currentTemp < 32 ||
+      !isfinite(fanTemp) || fanTemp < 20 || fanTemp >= MAX_SAFE_FAN_TEMP || fanPercent < 20 || fanPercent > 100) {
+    LOG_WARN("PID verification refused: invalid sensors, fan or pending result");
+    return false;
+  }
+  initializePIDRecord(validationRecord, "validating");
+  validationRecord.parentId = pidTuningStore.latestId();
+  validationRecord.fan = fanPercent * 255 / 100;
+  if (!validationRecord.load[0]) strlcpy(validationRecord.load, "unspecified", sizeof(validationRecord.load));
+  return pidTuningStore.append(validationRecord);
+}
+
+void finishPIDValidationRecord()
+{
+  auto report = pidValidation.getSummary();
+  validationRecord.durationMs = report.durationSeconds * 1000;
+  validationRecord.rampMae = report.rampMeanAbsError;
+  validationRecord.rampWithin3Percent = report.rampWithinThreeDegreesPercent;
+  validationRecord.holdMae = report.holdMeanAbsError;
+  validationRecord.overshoot = report.maxOvershoot;
+  validationRecord.saturatedPercent = report.saturatedPercent;
+  validationRecord.lagSeconds = report.meanLagSeconds;
+  strlcpy(validationRecord.outcome, report.passed ? "validation_passed" : "validation_failed", sizeof(validationRecord.outcome));
+  snprintf(validationRecord.reason, sizeof(validationRecord.reason), "120_200F:%s", report.lastError);
+  validationRecordPending = true;
+}
+
+bool setManualPIDGains(double newKp, double newKi, double newKd, double rampScale)
+{
+  if (!PIDTuningStore::validGains(newKp, newKi, newKd) || !isfinite(rampScale) ||
+      rampScale < 0.5 || rampScale > 1.5 || (roasterState != IDLE && roasterState != COOLING)) {
+    LOG_WARN("Invalid or unsafe PID adjustment refused");
+    return false;
+  }
+  PIDTuningStore::Record record;
+  initializePIDRecord(record, "adjusted");
+  auto &config = record.proposed;
+  for (auto &band : config.bands) {
+    if (!band.valid) continue;
+    band.kp *= newKp / config.kp;
+    band.ki = config.ki > 0 ? band.ki * newKi / config.ki : newKi;
+    band.kd = config.kd > 0 ? band.kd * newKd / config.kd : newKd;
+  }
+  config.kp = newKp; config.ki = newKi; config.kd = newKd; config.rampScale = rampScale;
+  strlcpy(record.reason, "manual_adjustment_not_verified", sizeof(record.reason));
+  record.parentId = pidTuningStore.latestId();
+  if (!PIDTuningStore::valid(config)) return false;
+  return commitPIDChange(record);
+}
+
+bool startPIDTuning(int fanPwm, double factor, const char *load)
+{
+  if (roasterState != IDLE || calibrationPublishPending || !isfinite(currentTemp) || currentTemp > 140 || currentTemp < 32 ||
+      !isfinite(fanTemp) || fanTemp < 20 || fanTemp >= MAX_SAFE_FAN_TEMP || badReadingCount ||
+      !isfinite(factor) || factor < 0.3 || factor > 3 || fanPwm < 80 || fanPwm > 255) {
+    LOG_WARN("PID tuning start refused: check state, sensor, fan and response factor");
+    return false;
+  }
+  initializePIDRecord(tuningRecord, "running");
+  tuningRecord.fan = fanPwm;
+  tuningRecord.tauFactor = factor;
+  strlcpy(tuningRecord.load, load, sizeof(tuningRecord.load));
+  if (!pidTuningStore.append(tuningRecord)) return false;
+  setpointFanSpeed = fanPwm;
+  fanRampStep = 0;
+  stepTuner.start(currentTemp, kp, ki, kd, fanPwm, factor);
+  stepTuner.setRunId(tuningRecord.id);
+  if (!stepTuner.isRunning()) {
+    finishPIDTuningRecord();
+    return false;
+  }
+  return true;
+}
+
+bool acceptPIDTuning(uint32_t id)
+{
+  PIDTuningStore::Record record;
+  if ((roasterState != IDLE && roasterState != COOLING) ||
+      !pidTuningStore.readRecord(id, record) || strcmp(record.outcome, "verified") != 0) {
+    LOG_WARN("Only a verified tuning candidate may be applied");
+    return false;
+  }
+  if (!pidTuningStore.saveKnownGood(record.proposed)) return false;
+  strlcpy(record.outcome, "pending_apply", sizeof(record.outcome));
+  if (!pidTuningStore.update(record)) return false;
+  bool applied = applyPIDConfiguration(record.proposed);
+  strlcpy(record.outcome, applied ? "applied" : "verified", sizeof(record.outcome));
+  bool saved = pidTuningStore.update(record);
+  if (!saved) LOG_ERROR("PID apply history failed; reload current controller before retrying");
+  return applied && saved;
+}
+
+bool discardPIDTuning(uint32_t id)
+{
+  PIDTuningStore::Record record;
+  if (!pidTuningStore.readRecord(id, record) || strcmp(record.outcome, "verified") != 0) return false;
+  strlcpy(record.outcome, "rejected", sizeof(record.outcome));
+  return pidTuningStore.update(record);
+}
+
+bool restorePIDTuning(uint32_t id, bool knownGood)
+{
+  if (roasterState != IDLE && roasterState != COOLING) return false;
+  PIDTuningStore::Configuration config;
+  if (knownGood) {
+    if (!pidTuningStore.readKnownGood(config)) return false;
+  } else if (id == 0) {
+    if (!pidTuningStore.readPrevious(config)) return false;
+  } else {
+    PIDTuningStore::Record saved;
+    if (!pidTuningStore.readRecord(id, saved) ||
+        (strcmp(saved.outcome, "applied") && strcmp(saved.outcome, "verified") &&
+         strcmp(saved.outcome, "adjusted") && strcmp(saved.outcome, "restored") &&
+         strcmp(saved.outcome, "validation_passed"))) return false;
+    config = saved.proposed;
+  }
+  PIDTuningStore::Record record;
+  initializePIDRecord(record, "restored");
+  record.parentId = id;
+  record.proposed = config;
+  strlcpy(record.reason, knownGood ? "last_verified_restore" : "controller_restore", sizeof(record.reason));
+  return commitPIDChange(record);
+}
+
+bool recalculatePIDTuning(double factor)
+{
+  if (!isfinite(factor) || factor < 0.3 || factor > 3 ||
+      (roasterState != IDLE && roasterState != COOLING)) return false;
+  auto config = capturePIDConfiguration();
+  bool found = false;
+  for (auto &band : config.bands) {
+    if (!band.valid) continue;
+    double theta = max(static_cast<double>(band.delay), 1.0);
+    double tau = 1.0 / band.cooling;
+    double gain = band.heater / band.cooling;
+    band.kp = tau / (gain * (max(2.0, factor * theta) + theta));
+    band.ki = band.kp / min(tau, 4 * (max(2.0, factor * theta) + theta));
+    band.kd = 0;
+    config.kp = band.kp; config.ki = band.ki; config.kd = 0;
+    found = true;
+  }
+  if (!found || !PIDTuningStore::valid(config)) return false;
+  PIDTuningStore::Record record;
+  initializePIDRecord(record, "adjusted");
+  record.proposed = config;
+  record.tauFactor = factor;
+  record.parentId = pidTuningStore.latestId();
+  strlcpy(record.reason, "recalculated_requires_validation", sizeof(record.reason));
+  return commitPIDChange(record);
+}
 
 // Helper function for reliable final-target reads from the active display.
 int readDisplayFinalTargetTempWithRetry(int retries = 2)
@@ -455,6 +674,10 @@ void updateCalibrationControl(unsigned long now)
 void updateStepResponseCalibration(unsigned long now)
 {
   heaterOutputVal = stepTuner.getOutput(currentTemp, fanTemp, setpointFanSpeed);
+  if (!strcmp(stepTuner.getLastError(), "sensor_pair_inconsistent")) {
+    enterEmergencyErrorState("sensor_pair_inconsistent", "Bean/fan sensors inconsistent during tuning");
+    return;
+  }
   setpointTemp = stepTuner.getSetpoint();
   heaterPidTrimVal = heaterOutputVal;
   heaterFeedforwardVal = 0.0;
@@ -468,38 +691,19 @@ void updateStepResponseCalibration(unsigned long now)
 
   if (stepTuner.isComplete())
   {
-    double newKp, newKi, newKd;
-    stepTuner.getPID(newKp, newKi, newKd);
-
-    setManualPIDGains(newKp, newKi, newKd);
-    pidRuntimeController.clearPreferences(preferences);
-    pidScheduleConfigured = false;
-    activePidBandIndex = -1;
-
-    // Load per-band models into runtime controller
-    Calibration::CharacterizationSummary cs = stepTuner.getCharacterizationSummary();
-    pidRuntimeController.loadFromSummary(cs);
-    if (pidRuntimeController.isEnabled()) {
-      pidRuntimeController.saveToPreferences(preferences);
-      pidScheduleConfigured = true;
-      LOG_INFO("Step-response band models loaded into gain scheduler");
-    }
-
-    LOG_INFOF("Step-response tuning saved: Kp=%.4f, Ki=%.6f, Kd=%.4f", kp, ki, kd);
-
+    finishPIDTuningRecord();
     resetRoastControllerState();
     heaterRelay.setPWM(0);
-    autoValidateAfterCooling = true;
     enterCoolingState();
 
     // Keep heating disabled and cooling active before any network operation.
-    systemLinkPublishCalibration(stepTuner);
     sendWsMessage("{ \"pushMessage\": \"pidTuningComplete\" }");
     return;
   }
 
   if (!stepTuner.isRunning())
   {
+    finishPIDTuningRecord();
     LOG_WARNF("Step-response tuning ended: %s", stepTuner.getLastError());
     resetRoastControllerState();
     heaterRelay.setPWM(0);
@@ -513,6 +717,32 @@ void updateStepResponseCalibration(unsigned long now)
       sendWsMessage("{ \"pushMessage\": \"pidTuningFailed\" }");
     }
   }
+
+}
+
+void finishPIDTuningRecord()
+{
+    auto summary = stepTuner.getSummary();
+    PIDRuntimeController candidate;
+    candidate.loadFromSummary(stepTuner.getCharacterizationSummary());
+    tuningRecord.proposed = PIDTuningStore::capture(summary.recommendedKp, summary.recommendedKi,
+                                                  summary.recommendedKd, candidate);
+    tuningRecord.durationMs = static_cast<uint32_t>(summary.elapsedSeconds * 1000);
+    tuningRecord.fitRmse = summary.meanFitRmse;
+    tuningRecord.predictionRmse = summary.bands[0].model.predictionRmse;
+    tuningRecord.noise = summary.bands[0].model.noiseStdDev;
+    tuningRecord.rampMae = summary.verification.rampMeanAbsError;
+    tuningRecord.rampWithin3Percent = summary.verification.rampWithinThreeDegreesPercent;
+    tuningRecord.holdMae = summary.verification.holdMeanAbsError;
+    tuningRecord.overshoot = summary.verification.maxOvershoot;
+    tuningRecord.saturatedPercent = summary.verification.saturatedPercent;
+    tuningRecord.lagSeconds = summary.verification.meanLagSeconds;
+    strlcpy(tuningRecord.outcome, summary.passed ? "verified" :
+            strcmp(stepTuner.getLastError(), "cancelled") == 0 ? "cancelled" : "inconclusive",
+            sizeof(tuningRecord.outcome));
+    strlcpy(tuningRecord.reason, stepTuner.getLastError(), sizeof(tuningRecord.reason));
+    if (!pidTuningStore.update(tuningRecord)) LOG_ERROR("PID result could not be saved; current configuration retained");
+    calibrationPublishPending = true;
 }
 
 void setup()
@@ -572,6 +802,12 @@ void setup()
     LOG_WARNF("Boot detected hot beans at %.1fF; starting cooling", currentTemp);
     enterCoolingState();
   }
+
+  if (debugLogger.beginCard()) {
+    LOG_INFO("TF card logging enabled");
+  } else {
+    LOG_WARN("TF card unavailable; continuing with RAM and Serial logs");
+  }
   
   LOG_INFO("System initialized - entering IDLE state");
 
@@ -624,12 +860,26 @@ void setup()
   }
 
   // Load PID values
+  tuningBootId = esp_random();
   kp = preferences.getDouble("kp", 8.0);
   ki = preferences.getDouble("ki", 0.46);
   kd = preferences.getDouble("kd", 0.0);
   loadSystemLinkConfig();
   pidRuntimeController.setFallbackGains(kp, ki, kd);
   pidRuntimeController.loadFromPreferences(preferences);
+  PIDTuningStore::Configuration savedPid;
+  if (pidTuningStore.readActive(savedPid)) {
+    kp = savedPid.kp; ki = savedPid.ki; kd = savedPid.kd;
+    PIDTuningStore::loadRuntime(savedPid, pidRuntimeController);
+  }
+  PIDTuningStore::Record interrupted;
+  if (pidTuningStore.readRecord(pidTuningStore.latestId(), interrupted) &&
+      (strcmp(interrupted.outcome, "running") == 0 || strcmp(interrupted.outcome, "validating") == 0 ||
+       strcmp(interrupted.outcome, "pending_apply") == 0)) {
+    strlcpy(interrupted.outcome, "interrupted", sizeof(interrupted.outcome));
+    strlcpy(interrupted.reason, "controller_restarted", sizeof(interrupted.reason));
+    pidTuningStore.update(interrupted);
+  }
   pidScheduleConfigured = pidRuntimeController.isEnabled();
   applyHeaterPIDGains(kp, ki, kd);
   LOG_INFOF("PID Loaded: Kp=%.4f, Ki=%.4f, Kd=%.4f", kp, ki, kd);
@@ -639,6 +889,7 @@ void setup()
   // If we crash repeatedly during startup (e.g. due to corrupt NVS), purge profiles
   int bootCount = preferences.getInt("boot_count", 0);
   Serial.printf("Boot count: %d\n", bootCount); // Force print to Serial
+  LOG_INFOF("Reset reason: %s", systemLinkResetReasonName(esp_reset_reason()));
   if (bootCount > 5) {
     LOG_ERRORF("CRITICAL: Boot loop detected (count=%d)! Purging all profiles to recover system.", bootCount);
     Serial.println("CRITICAL: Purging profiles due to boot loop!");
@@ -701,6 +952,7 @@ void setup()
   LOG_INFOF("Final display final target value is %dF", displayReadFinalTargetTemp());
 
   displaySetWifiIp(ipAddress);
+  displaySetWebAccessInfo(serverSecurityGetHostname() + ".local");
   displaySetRevision(VERSION);
 
   displayShowScreen(displayScreenForCurrentState());
@@ -725,6 +977,7 @@ void loop()
 
   // Check WiFi connection and auto-reconnect if needed
   checkWiFiConnection(wifiCredentials);
+  serviceServerSettings();
 
   if (getRoasterStateSnapshot() == IDLE && profileDisplayRefreshRequested.exchange(false, std::memory_order_acq_rel))
   {
@@ -863,14 +1116,19 @@ void loop()
       }
 
       bool isImplausibleFanReading = false;
-      if (!isFanRangeError && !isFanSpike && heaterOutputVal <= 0.0 && currentTemp < 140.0) {
+      if (!isFanRangeError && !isFanSpike &&
+          (roasterState == CALIBRATING || (heaterOutputVal <= 0.0 && currentTemp < 140.0))) {
         if (fReading > currentTemp + 30.0) {
           isImplausibleFanReading = true;
           fanOverTempCount = 0;
-          LOG_WARNF("Fan temp implausible with heater off ignored: bean=%.1fF fan=%.1fF", currentTemp, fReading);
+          LOG_WARNF("Bean/fan sensors inconsistent: bean=%.1fF fan=%.1fF heater=%.1f", currentTemp, fReading, heaterOutputVal);
         }
       }
 
+      if (roasterState == CALIBRATING && (isFanRangeError || isFanSpike || isImplausibleFanReading)) {
+        enterEmergencyErrorState(isImplausibleFanReading ? "sensor_pair_inconsistent" : "fan_sensor_failed",
+                                 isImplausibleFanReading ? "Bean/fan sensors inconsistent during tuning" : "Fan sensor fault during tuning");
+      }
       if (!isFanRangeError && !isFanSpike && !isImplausibleFanReading) {
         fanTemp = fReading;
         fanSensorHasValidReading = true;
@@ -970,7 +1228,7 @@ void loop()
       switch (state)
     {
     case IDLE:
-      digitalWrite(HEATER, LOW);
+      heaterRelay.setPWM(0);
       digitalWrite(FAN, LOW);
       heaterRelay.setPWM(0);
       fanRelay.setPWM(0);
@@ -1076,7 +1334,7 @@ void loop()
 
     case COOLING:
     {
-      digitalWrite(HEATER, LOW);
+      heaterRelay.setPWM(0);
 
       DisplayTelemetry telemetry;
       telemetry.roasterState = getRoasterStateSnapshot();
@@ -1090,7 +1348,6 @@ void loop()
       unsigned long coolingDuration = millis() - coolingStartTime;
       if (coolingDuration > MAX_COOLING_TIME)
       {
-        autoValidateAfterCooling = false;
         finalizeValidationIfRunning(false, "cooling_timeout");
         LOG_ERRORF("Cooling timeout after %lu minutes; keeping cooling active", coolingDuration / 60000);
         systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "cooling_timeout");
@@ -1104,6 +1361,7 @@ void loop()
       {
         restoreValidationProfileIfNeeded();
         systemLinkFinishRoast(SYSTEMLINK_OUTCOME_NONE, "cooling_complete");
+        setpointFanSpeed = 0;
         fanRelay.setPWM(0);
         bdcFan.writeMicroseconds(800);
         digitalWrite(FAN, LOW);
@@ -1114,16 +1372,6 @@ void loop()
         sendWsMessage("{ \"pushMessage\": \"endRoasting\" }");
         displayShowScreen(DisplayScreen::Start);
 
-        // Auto-validate after step-response tuning
-        if (autoValidateAfterCooling) {
-          autoValidateAfterCooling = false;
-          LOG_INFO("Starting auto-validation after step-response tuning");
-          if (startValidationRoast(200.0, 70)) {
-            sendWsMessage("{ \"pushMessage\": \"pidValidationStarted\" }");
-          } else {
-            LOG_WARN("Auto-validation could not start (temp or state issue)");
-          }
-        }
       }
       break;
     }
@@ -1132,21 +1380,20 @@ void loop()
     {
       finalizeValidationIfRunning(false, "error_state");
       // ERROR state: Keep system in safe mode until manual reset
-      // Heater must stay OFF, cooling fan at safe speed
       digitalWrite(HEATER, LOW);
       heaterRelay.setPWM(0);
       resetRoastControllerState();
 
-      // Run cooling fan at safe speed (not maximum to avoid mechanical stress)
-      fanRelay.setPWM(200);           // ~78% speed for sustained cooling
-      bdcFan.writeMicroseconds(1500); // Mid-range for BDC fan
-      bdcFanMs = 1500;
+      setpointFanSpeed = 255;
+      fanRelay.setPWM(setpointFanSpeed);
+      bdcFan.writeMicroseconds(2000);
+      bdcFanMs = 2000;
 
       // Update display with current temperature
       DisplayTelemetry telemetry;
       telemetry.roasterState = getRoasterStateSnapshot();
       telemetry.currentTempF = (int)currentTemp;
-      telemetry.fanPercent = (int)round(200.0 * 100.0 / 255.0);
+      telemetry.fanPercent = 100;
       telemetry.bdcFanMicros = bdcFanMs;
       displayUpdateTelemetry(telemetry);
 
@@ -1235,10 +1482,20 @@ void loop()
   {
     if (getRoasterStateSnapshot() == ROASTING && pidValidation.isActive())
     {
-      pidValidation.recordSample(currentTemp, setpointTemp);
+      pidValidation.recordSample(currentTemp, setpointTemp, profile.getTargetRate(millis()), heaterOutputVal);
     }
     systemLinkRecordRoastSample();
     roastTraceTimer.reset();
+  }
+  if (calibrationPublishPending && roasterState == IDLE && !otaUpdateInProgress) {
+    systemLinkPublishCalibration(stepTuner, &tuningRecord);
+    calibrationPublishPending = false;
+  }
+  if (validationRecordPending && (roasterState == COOLING || roasterState == IDLE || roasterState == ERROR)) {
+    validationRecordPending = false;
+    if (!pidTuningStore.update(validationRecord)) LOG_ERROR("PID validation history could not be saved");
+    else if (!strcmp(validationRecord.outcome, "validation_passed") &&
+             !pidTuningStore.saveKnownGood(validationRecord.proposed)) LOG_ERROR("Verified PID snapshot could not be saved");
   }
 }
 
@@ -1247,10 +1504,10 @@ void loop()
 void handleStartRoastCommand()
 {
   LOG_INFO("Start roast command received");
-
-  if (getRoasterStateSnapshot() != IDLE)
+  RoasterState state = getRoasterStateSnapshot();
+  if (state != IDLE)
   {
-    LOG_WARNF("Ignoring start command while state=%d", getRoasterStateSnapshot());
+    LOG_WARNF("Ignoring start command while state=%d", state);
     return;
   }
 
@@ -1328,6 +1585,10 @@ void handleStopRoastCommand()
   heaterRelay.setPWM(0);
   digitalWrite(HEATER, LOW);
 
+  if (state == CALIBRATING) {
+    stepTuner.abort("cancelled");
+    finishPIDTuningRecord();
+  }
   enterCoolingState();
 }
 
@@ -1335,6 +1596,7 @@ void handleStopCoolingCommand()
 {
   if (getRoasterStateSnapshot() != COOLING)
   {
+    LOG_WARN("Stop cooling refused outside cooling state");
     return;
   }
 
@@ -1346,7 +1608,6 @@ void handleStopCoolingCommand()
     displayShowErrorMessage("Cooling still required");
     return;
   }
-
   finalizeValidationIfRunning(false, "cooling_skipped");
   restoreValidationProfileIfNeeded();
   systemLinkFinishRoast(SYSTEMLINK_OUTCOME_TERMINATED, "cooling_skipped");

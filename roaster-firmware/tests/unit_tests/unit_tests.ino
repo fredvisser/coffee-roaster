@@ -11,6 +11,7 @@
  * 4. Monitor: ./tools/tests.sh monitor unit --board jc4827w543c
  */
 
+#include "../../src/network/ServerSecurity.hpp"
 #include <AUnitVerbose.h> // Verbose runner prints PASS results
 using namespace aunit;
 
@@ -118,4 +119,21 @@ test(Framework_SerialOutput)
 {
   Serial.println("  → Framework test executed successfully");
   assertTrue(true);
+}
+
+test(ServerSecurity_HostnameValidation)
+{
+  assertTrue(serverSecurityHostnameIsValid("roaster-dev"));
+  assertTrue(serverSecurityHostnameIsValid("a"));
+  assertFalse(serverSecurityHostnameIsValid(""));
+  assertFalse(serverSecurityHostnameIsValid("-roaster"));
+  assertFalse(serverSecurityHostnameIsValid("roaster-"));
+  assertFalse(serverSecurityHostnameIsValid("roaster.local"));
+  assertFalse(serverSecurityHostnameIsValid("roaster_dev"));
+
+  String tooLongHostname;
+  for (size_t index = 0; index < 64; index++) {
+    tooLongHostname += 'a';
+  }
+  assertFalse(serverSecurityHostnameIsValid(tooLongHostname));
 }

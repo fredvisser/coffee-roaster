@@ -25,6 +25,8 @@ Suites:
   unit
   hardware
   step-response
+  host          Deterministic control regressions (no hardware)
+  host-json     PID history serialization (installed ArduinoJson, no hardware)
 
 Boards:
   jc4827w543c
@@ -38,25 +40,25 @@ EOF
 map_suite() {
     case "$1" in
         pid)
-            echo "2"
+            echo "pid"
             ;;
         profiles|profile)
-            echo "3"
+            echo "profiles"
             ;;
         state|state-machine|state_machine)
-            echo "4"
+            echo "state"
             ;;
         safety)
-            echo "5"
+            echo "safety"
             ;;
         unit|runner)
-            echo "6"
+            echo "unit"
             ;;
         hardware|hardware-validation|hardware_validation)
-            echo "7"
+            echo "hardware"
             ;;
         step-response|step_response)
-            echo "8"
+            echo "step-response"
             ;;
         *)
             return 1
@@ -67,6 +69,20 @@ map_suite() {
 command_name="${1:-help}"
 if [[ $# -gt 0 ]]; then
     shift
+fi
+
+if [[ ( "${1:-}" == "host" || "${1:-}" == "host-json" ) && "$command_name" == "run" ]]; then
+    test_binary="$(mktemp "${TMPDIR:-/tmp}/roaster-control.XXXXXX")"
+    trap 'rm -f "$test_binary"' EXIT
+    source_file="control_test.cpp"
+    compile_args=(-std=c++17 -Wall -Wextra -Werror -I "$TOOLS_DIR/../tests/host")
+    if [[ "$1" == "host-json" ]]; then
+        source_file="pid_json_test.cpp"
+        compile_args+=(-I "$(arduino-cli config get directories.user)/libraries/ArduinoJson/src")
+    fi
+    "${CXX:-c++}" "${compile_args[@]}" "$TOOLS_DIR/../tests/host/$source_file" -o "$test_binary"
+    "$test_binary"
+    exit
 fi
 
 if [[ "$command_name" == "list" ]]; then
@@ -100,16 +116,16 @@ done
 
 case "$command_name" in
     compile|build)
-        legacy_action="compile"
+        action="compile"
         ;;
     upload)
-        legacy_action="upload"
+        action="upload"
         ;;
     monitor)
-        legacy_action="monitor"
+        action="monitor"
         ;;
     run|all)
-        legacy_action="all"
+        action="run"
         ;;
     help|-h|--help)
         usage
@@ -128,7 +144,7 @@ if [[ -z "$suite" ]]; then
     exit 1
 fi
 
-suite_id=$(map_suite "$suite") || {
+suite_target=$(map_suite "$suite") || {
     echo "Unknown suite: $suite" >&2
     usage >&2
     exit 1
@@ -138,5 +154,4 @@ if [[ -n "$board" ]]; then
     export ROASTER_TARGET_BOARD="$board"
 fi
 
-export ROASTER_CLI_NAME="./tools/tests.sh"
-exec "$TOOLS_DIR/roaster-cli.sh" "$suite_id" "$legacy_action"
+exec "$TOOLS_DIR/workflow-runner.sh" "$suite_target" "$action"

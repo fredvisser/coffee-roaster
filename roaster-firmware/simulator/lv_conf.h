@@ -10,6 +10,7 @@
 #define LV_USE_OS LV_OS_SDL2
 #define LV_USE_SDL 1
 #define LV_USE_SNAPSHOT 1
+#define LV_USE_QRCODE 1
 
 #define LV_FONT_MONTSERRAT_14 1
 #define LV_FONT_MONTSERRAT_16 1

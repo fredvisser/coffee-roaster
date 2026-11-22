@@ -8,6 +8,7 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
+#include "PIDTuningJson.hpp"
 #include <ESPmDNS.h>
 #include <ElegantOTA.h>  // v3.1.7+ with async mode enabled for ESPAsyncWebServer compatibility
 #include <atomic>
@@ -18,8 +19,11 @@
 #include "../control/PIDRuntimeController.hpp"
 #include "../control/PIDValidation.hpp"
 #include "../profiles/ProfileManager.hpp"    // Profile backend logic
+#include "WebShell.hpp"
 #include "ProfileWebUI.hpp"     // Profile UI HTML/CSS/JS
 #include "../integrations/SystemLinkWebUI.hpp"
+#include "ServerSecurity.hpp"
+#include "ServerConfigWebUI.hpp"
 #include <vector>
 
 // Removed global JsonDocument to prevent heap fragmentation
@@ -70,7 +74,6 @@ void initializeWebAuthentication()
     Serial.printf("Web login password reset: username=admin password=%s\n", generatedPassword);
   }
 
-  displaySetWebLoginPassword(webAuthenticationPassword);
   webAuthentication.setUsername("admin");
   webAuthentication.setPassword(webAuthenticationPassword.c_str());
   webAuthentication.setAuthType(AsyncAuthType::AUTH_BASIC);
@@ -337,8 +340,22 @@ extern unsigned long restartAt;
 
 // Helper to refresh the active profile view after profile changes
 void plotProfileOnWaveform();
-bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent, bool idleMutationReserved);
-void setManualPIDGains(double newKp, double newKi, double newKd);
+bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent, bool idleMutationReserved = false);
+extern PIDTuningStore pidTuningStore;
+bool setManualPIDGains(double newKp, double newKi, double newKd, double rampScale);
+PIDTuningStore::Configuration capturePIDConfiguration();
+bool startPIDTuning(int fanPwm, double factor, const char *load);
+bool acceptPIDTuning(uint32_t id);
+bool discardPIDTuning(uint32_t id);
+bool restorePIDTuning(uint32_t id, bool knownGood);
+bool recalculatePIDTuning(double factor);
+void finishPIDTuningRecord();
+
+static bool pidNumber(const String &text, double &out) {
+  char *end = nullptr;
+  out = strtod(text.c_str(), &end);
+  return end != text.c_str() && *end == '\0' && isfinite(out);
+}
 
 void refreshActiveProfileDisplay() {
     String activeId = profileManager.getActiveProfileId();
@@ -395,6 +412,11 @@ public:
     const String url = request->url();
     const WebRequestMethodComposite method = request->method();
 
+    // Multipart callbacks run before middleware. Never hand a denied upload to ElegantOTA.
+    if (method == HTTP_POST && url.startsWith("/ota/upload") &&
+        (url != "/ota/upload" || !serverSecurityIsAuthenticated(request))) return true;
+    if (method == HTTP_GET && url.startsWith("/ota/start") && url != "/ota/start") return true;
+
     if (otaUpdateInProgress) {
       return !otaRequestAllowedDuringUpload(url, method);
     }
@@ -407,30 +429,20 @@ public:
   }
 
   void handleRequest(AsyncWebServerRequest *request) override {
-    if (otaUpdateInProgress) {
-      if (request->url() == "/update") {
-        String html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>OTA In Progress</title></head><body style=\"font-family:sans-serif;background:#111;color:#eee;padding:24px;\">";
-        html += "<h1>Firmware Update In Progress</h1><p>";
-        html += otaInProgressMessage();
-        html += "</p><p>Wait for the upload to finish before using the web UI again.</p></body></html>";
-        request->send(409, "text/html", html);
-        return;
-      }
-
-      request->send(409, "text/plain", otaInProgressMessage());
+    if (request->url() != "/update" && !otaRequestAllowedDuringUpload(request->url(), request->method()) && !otaUpdateInProgress) {
+      request->send(404);
       return;
     }
-
-    if (request->url() == "/update") {
-      String html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>OTA Blocked</title></head><body style=\"font-family:sans-serif;background:#111;color:#eee;padding:24px;\">";
-      html += "<h1>Firmware Update Blocked</h1><p>";
-      html += otaBusyMessage();
-      html += "</p><p>Wait until the roaster returns to IDLE, then retry the update.</p></body></html>";
+    String message = otaUpdateInProgress ? otaInProgressMessage() : otaBusyMessage();
+    if (request->url() == "/update" && !request->hasParam("embedded")) {
+      String html = ROASTER_WEB_UPDATE_HEAD "<section class=\"web-panel\"><p>";
+      html += message;
+      html += "</p></section></main></body></html>";
       request->send(409, "text/html", html);
       return;
     }
 
-    request->send(409, "text/plain", otaBusyMessage());
+    request->send(409, "text/plain", message);
   }
 
   bool isRequestHandlerTrivial() const override {
@@ -560,6 +572,7 @@ const char* getStateName(byte state) {
     case 2: return "ROASTING";
     case 3: return "COOLING";
     case 4: return "ERROR";
+    case 5: return "CALIBRATING";
     default: return "UNKNOWN";
   }
 }
@@ -653,13 +666,13 @@ void initWebSocket() {
   }
 
   ws.onEvent(onEvent);
-  server.addHandler(&ws).addMiddleware(&webAuthentication);
+  server.addHandler(&ws);
   webSocketInitialized = true;
 }
 
 String networkAccessAddress() {
   if (mdnsInitialized) {
-    return "roaster-dev.local";
+    return serverSecurityGetHostname() + ".local";
   }
 
   if (WiFi.status() == WL_CONNECTED) {
@@ -712,7 +725,8 @@ void tryStartMdns(bool verboseLogging) {
     return;
   }
 
-  if (!MDNS.begin("roaster-dev")) {
+  String hostname = serverSecurityGetHostname();
+  if (!MDNS.begin(hostname.c_str())) {
     if (verboseLogging) {
       LOG_WARNF("mDNS start failed: internalFree=%u largestInternal=%u", static_cast<unsigned int>(freeInternalHeap), static_cast<unsigned int>(largestInternalBlock));
     }
@@ -721,7 +735,41 @@ void tryStartMdns(bool verboseLogging) {
   }
 
   mdnsInitialized = true;
-  LOG_INFOF("mDNS responder started at roaster-dev.local (internalFree=%u largestInternal=%u)", static_cast<unsigned int>(freeInternalHeap), static_cast<unsigned int>(largestInternalBlock));
+  LOG_INFOF("mDNS responder started at %s.local (internalFree=%u largestInternal=%u)", hostname.c_str(), static_cast<unsigned int>(freeInternalHeap), static_cast<unsigned int>(largestInternalBlock));
+}
+
+void serviceServerSettings() {
+  if (serverSecurityTakeHostnameChange()) {
+    if (mdnsInitialized) {
+      MDNS.end();
+      mdnsInitialized = false;
+    }
+    mdnsRetryAtMs = 0;
+    tryStartMdns(true);
+    updateDisplayedNetworkAddress();
+    displaySetWebAccessInfo(serverSecurityGetHostname() + ".local");
+  }
+  if (!pairingStorageReady || otaUpdateInProgress) return;
+  bool opened;
+  int code;
+  {
+    PairingLock lock;
+    uint32_t now = millis();
+    opened = pairing.isOpen(now);
+    code = pairing.hasRequest(now) ? static_cast<int>(pairing.displayCode()) : -1;
+    pairingDisplayedCode = code;
+  }
+  displaySetPairingPrompt(opened, code);
+}
+
+void handlePairingDisplayAction(bool cancel) {
+  if (!pairingStorageReady) return;
+  PairingLock lock;
+  uint32_t now = millis();
+  if (cancel) pairing.close();
+  else if (!pairing.isOpen(now)) pairing.open(now);
+  else if (pairingDisplayedCode >= 0) pairing.approve(now, pairingDisplayedCode);
+  pairingDisplayedCode = -1;
 }
 
 void updateWifiConnectAttemptState() {
@@ -763,6 +811,8 @@ bool beginWifiConnection(const WifiCredentials& wifiCredentials, bool forceReset
   WiFi.disconnect(true);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
+  // ponytail: 15 dBm trims TX current spikes that browned out the controller supply; raise if RSSI is poor.
+  WiFi.setTxPower(WIFI_POWER_15dBm);
   WiFi.setAutoReconnect(false);
 
   wifiConnectAttemptActive = true;
@@ -774,6 +824,7 @@ bool beginWifiConnection(const WifiCredentials& wifiCredentials, bool forceReset
 }
 
 String initializeWifi(const WifiCredentials& wifiCredentials) {
+  serverSecurityInitialize(preferences);
   WifiCredentials normalizedCredentials = normalizeWifiCredentials(wifiCredentials);
 
   if (normalizedCredentials.ssid.length() == 0) {
@@ -806,7 +857,6 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 
   updateDisplayedNetworkAddress();
 
-  initializeWebAuthentication();
   initWebSocket();
 
   if (networkServicesInitialized) {
@@ -814,6 +864,14 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   }
 
   networkServicesInitialized = true;
+  server.addMiddleware(&serverSecurityAuthMiddleware);
+  server.addHandler(&otaStateGuardHandler);
+  pairingRegisterApi(server);
+  server.on("/pair", HTTP_GET, [](AsyncWebServerRequest *request) {
+    auto *response = request->beginResponse_P(200, "text/html", ROASTER_PAIR_HTML);
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+  });
 
   // Default to the console app at the root URL.
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -843,7 +901,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     [](AsyncWebServerRequest *request) {},
     nullptr,
     [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-      if (!requireWebAuthentication(request)) return;
+      if (!serverSecurityIsAuthenticated(request)) return;
       if (index == 0) {
         String* body = new String();
         body->reserve(total + 1);
@@ -962,7 +1020,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     [](AsyncWebServerRequest *request) {},
     nullptr,
     [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-      if (!requireWebAuthentication(request)) return;
+      if (!serverSecurityIsAuthenticated(request)) return;
       String path = request->url();
       if (path.endsWith("/activate")) return;  // handled in POST
 
@@ -1067,6 +1125,39 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   // =============================================================================
 
   // API endpoint: Debug logs
+  server.on("/api/logs/card/status", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(200, "application/json", debugLogger.getCardLogStatusJSON());
+  });
+
+  server.on("/api/logs/card", HTTP_GET, [](AsyncWebServerRequest *request) {
+    int fileIndex = request->hasParam("file") ? request->getParam("file")->value().toInt() : 0;
+    if (fileIndex < 0 || fileIndex >= 5) {
+      request->send(400, "application/json", "{\"error\":\"invalid_file\"}");
+      return;
+    }
+
+    int maxEntries = request->hasParam("limit") ? request->getParam("limit")->value().toInt() : 100;
+    maxEntries = constrain(maxEntries, 1, 100);
+    bool startAtEnd = !request->hasParam("cursor");
+    uint32_t cursor = 0;
+    if (!startAtEnd) {
+      String cursorValue = request->getParam("cursor")->value();
+      if (cursorValue.length() == 0) {
+        request->send(400, "application/json", "{\"error\":\"invalid_cursor\"}");
+        return;
+      }
+      for (unsigned int index = 0; index < cursorValue.length(); ++index) {
+        if (cursorValue[index] < '0' || cursorValue[index] > '9') {
+          request->send(400, "application/json", "{\"error\":\"invalid_cursor\"}");
+          return;
+        }
+      }
+      cursor = static_cast<uint32_t>(cursorValue.toInt());
+    }
+    String json = debugLogger.getCardLogPageJSON(static_cast<uint8_t>(fileIndex), cursor, startAtEnd, maxEntries);
+    request->send(200, "application/json", json);
+  });
+
   server.on("/api/logs", HTTP_GET, [](AsyncWebServerRequest *request) {
     LOG_DEBUG("API: /api/logs requested");
     int maxEntries = 50;
@@ -1082,11 +1173,83 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     request->send(200, "application/json", getSystemLinkConfigJSON());
   });
 
+  server.on("/api/server", HTTP_GET, [](AsyncWebServerRequest *request) {
+    StaticJsonDocument<128> doc;
+    doc["hostname"] = serverSecurityGetHostname();
+    String body;
+    serializeJson(doc, body);
+    AsyncWebServerResponse *response = request->beginResponse(200, "application/json", body);
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+  });
+
+  server.on("/api/server", HTTP_POST,
+    [](AsyncWebServerRequest *request) {
+      if (request->contentLength() > 512) {
+        request->send(413, "application/json", "{\"error\":\"payload_too_large\"}");
+        return;
+      }
+
+      String *body = static_cast<String *>(request->_tempObject);
+      if (body == nullptr) {
+        request->send(400, "application/json", "{\"error\":\"missing_body\"}");
+        return;
+      }
+
+      StaticJsonDocument<256> doc;
+      DeserializationError parseError = deserializeJson(doc, *body);
+      delete body;
+      request->_tempObject = nullptr;
+      if (parseError || !doc["hostname"].is<const char *>()) {
+        request->send(400, "application/json", "{\"error\":\"invalid_settings\"}");
+        return;
+      }
+
+      String hostname = doc["hostname"].as<String>();
+      String error;
+      if (!serverSecurityStoreHostname(preferences, hostname, error)) {
+        StaticJsonDocument<128> errorDoc;
+        errorDoc["error"] = error;
+        String errorBody;
+        serializeJson(errorDoc, errorBody);
+        request->send(400, "application/json", errorBody);
+        return;
+      }
+
+      StaticJsonDocument<128> responseDoc;
+      responseDoc["ok"] = true;
+      responseDoc["hostname"] = serverSecurityGetHostname();
+      String responseBody;
+      serializeJson(responseDoc, responseBody);
+      AsyncWebServerResponse *response = request->beginResponse(200, "application/json", responseBody);
+      response->addHeader("Cache-Control", "no-store");
+      request->send(response);
+    },
+    nullptr,
+    [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (!serverSecurityIsAuthenticated(request) || total > 512) {
+        return;
+      }
+      if (index == 0) {
+        request->_tempObject = new String();
+        if (request->_tempObject != nullptr) {
+          static_cast<String *>(request->_tempObject)->reserve(total + 1);
+        }
+      }
+      String *body = static_cast<String *>(request->_tempObject);
+      if (body == nullptr) {
+        return;
+      }
+      for (size_t offset = 0; offset < len; offset++) {
+        *body += static_cast<char>(data[offset]);
+      }
+    });
+
   server.on("/api/systemlink", HTTP_POST,
     [](AsyncWebServerRequest *request) {},
     nullptr,
     [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-      if (!requireWebAuthentication(request)) return;
+      if (!serverSecurityIsAuthenticated(request)) return;
       if (index == 0) {
         String* body = new String();
         body->reserve(total + 1);
@@ -1127,8 +1290,17 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       doc["sampleCount"] = stepTuner.getSampleCount();
       doc["lastError"] = stepTuner.getLastError();
       doc["method"] = "step_response";
+        doc["deadlineSeconds"] = 295;
+        doc["storageError"] = pidTuningStore.getError();
+        doc["cooling"] = roasterState == COOLING;
+        PIDTuningStore::Record runRecord;
+        if (pidTuningStore.readRecord(stepTuner.getRunId(), runRecord)) {
+          doc["runId"] = runRecord.id;
+          doc["outcome"] = runRecord.outcome;
+        }
 
       StepResponseTuner::Summary ss = stepTuner.getSummary();
+        doc["elapsedSeconds"] = ss.elapsedSeconds;
       JsonObject model = doc.createNestedObject("model");
       model["valid"] = ss.valid;
       model["passed"] = ss.passed;
@@ -1146,6 +1318,13 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       model["totalBands"] = ss.totalBands;
       model["tauCFactor"] = ss.tauCFactor;
       model["currentSetpoint"] = ss.currentSetpoint;
+      JsonObject verification = doc.createNestedObject("verification");
+      verification["passed"] = ss.verification.passed;
+      verification["rampMae"] = ss.verification.rampMeanAbsError;
+      verification["holdMae"] = ss.verification.holdMeanAbsError;
+      verification["overshoot"] = ss.verification.maxOvershoot;
+      verification["lagSeconds"] = ss.verification.meanLagSeconds;
+      verification["saturatedPercent"] = ss.verification.saturatedPercent;
 
       // Band details with FOPDT models
       JsonArray bands = model.createNestedArray("bands");
@@ -1168,6 +1347,8 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
           item["fitRmse"] = br.model.fitRmse;
           item["baselineTemp"] = br.model.baselineTemp;
           item["finalTemp"] = br.model.finalTemp;
+          item["predictionRmse"] = br.model.predictionRmse;
+          item["noiseStdDev"] = br.model.noiseStdDev;
         }
       }
 
@@ -1221,12 +1402,29 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     doc["sampleCount"] = summary.sampleCount;
     doc["holdSampleCount"] = summary.holdSampleCount;
     doc["lastError"] = summary.lastError;
+    doc["rampMeanAbsError"] = summary.rampMeanAbsError;
+    doc["rampWithinThreeDegreesPercent"] = summary.rampWithinThreeDegreesPercent;
+    doc["meanLagSeconds"] = summary.meanLagSeconds;
+    doc["saturatedPercent"] = summary.saturatedPercent;
     String out;
     serializeJson(doc, out);
     request->send(200, "application/json", out);
   });
 
   // API endpoint: Start PID Calibration
+  // ponytail: must be registered before "/api/calibrate-pid"; AsyncWebServer
+  // prefix-matches "/api/calibrate-pid/..." to the start handler otherwise.
+  server.on("/api/calibrate-pid/cancel", HTTP_POST, [](AsyncWebServerRequest *request) {
+    if (!serverSecurityIsAuthenticated(request)) return;
+    if (getRoasterStateSnapshot() != CALIBRATING) {
+      request->send(400, "application/json", "{\"error\":\"No calibration is currently running\"}");
+      return;
+    }
+
+    stepTuner.cancel();
+    request->send(200, "application/json", "{\"ok\":true,\"status\":\"cancel_requested\"}");
+  });
+
   server.on("/api/calibrate-pid", HTTP_POST, [](AsyncWebServerRequest *request) {
     LOG_INFO("API: /api/calibrate-pid requested");
 
@@ -1241,25 +1439,21 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       return;
     }
     
-    int fanSpeed = 255;
-    if (request->hasParam("fan")) {
-        fanSpeed = request->getParam("fan")->value().toInt();
+    double fanSpeed = 255, tauCFactor = 1;
+    if ((request->hasParam("fan") && !pidNumber(request->getParam("fan")->value(), fanSpeed)) ||
+        (request->hasParam("tau_c") && !pidNumber(request->getParam("tau_c")->value(), tauCFactor)) ||
+        fanSpeed < 80 || fanSpeed > 255 || floor(fanSpeed) != fanSpeed) {
+      request->send(400, "application/json", "{\"error\":\"invalid_tuning_parameters\"}");
+      return;
     }
-
-    setpointFanSpeed = constrain(fanSpeed, 80, 255);
-
-    double tauCFactor = 0.5;
-    if (request->hasParam("tau_c")) {
-      tauCFactor = request->getParam("tau_c")->value().toFloat();
-    }
-    stepTuner.start(currentTemp, kp, ki, kd, setpointFanSpeed, tauCFactor);
-    if (!stepTuner.isRunning()) {
-      String error = String("{\"error\":\"") + stepTuner.getLastError() + "\"}";
-      request->send(400, "application/json", error);
+    String load = request->hasParam("load") ? request->getParam("load")->value() : "unspecified";
+    if (load.length() > 31 || !startPIDTuning(static_cast<int>(fanSpeed), tauCFactor, load.c_str())) {
+      request->send(400, "application/json", "{\"error\":\"start_refused_check_conditions_or_storage\"}");
       return;
     }
     if (!idleGuard.transitionTo(CALIBRATING)) {
-      stepTuner.cancel();
+      stepTuner.abort("start_state_race");
+      finishPIDTuningRecord();
       request->send(409, "application/json", "{\"error\":\"roaster_state_changed\"}");
       return;
     }
@@ -1269,22 +1463,16 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     request->send(200, "application/json", msg);
   });
 
-  server.on("/api/calibrate-pid/cancel", HTTP_POST, [](AsyncWebServerRequest *request) {
-    if (getRoasterStateSnapshot() != CALIBRATING) {
-      request->send(400, "application/json", "{\"error\":\"No calibration is currently running\"}");
-      return;
-    }
-
-    stepTuner.cancel();
-    request->send(200, "application/json", "{\"ok\":true,\"status\":\"cancel_requested\"}");
-  });
-
   server.on("/api/calibrate-pid/trace", HTTP_GET, [](AsyncWebServerRequest *request) {
     String out = "{";
     out += "\"running\":";
 
     out += stepTuner.isRunning() ? "true" : "false";
     out += ",\"method\":\"step_response\"";
+    out += ",\"runId\":" + String(stepTuner.getRunId());
+    out += ",\"lastError\":\"";
+    out += stepTuner.getLastError();
+    out += "\",\"heaterOutputKind\":\"requested_PWM_0_255\"";
     out += ",\"phase\":\"";
     out += stepTuner.getPhaseName();
       out += "\",\"bandIndex\":";
@@ -1303,12 +1491,98 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
         out += String(sample.setpointTempF, 1);
         out += ",\"heaterOutput\":";
         out += String(sample.heaterOutput, 1);
+        out += ",\"feedforward\":"; out += String(sample.feedforward, 2);
+        out += ",\"proportional\":"; out += String(sample.proportional, 2);
+        out += ",\"integral\":"; out += String(sample.integral, 2);
+        out += ",\"derivative\":"; out += String(sample.derivative, 2);
+        out += ",\"ambientTempF\":"; out += String(sample.ambientTempF, 2);
+        out += ",\"targetRate\":"; out += String(sample.targetRate, 3);
+        out += ",\"fan\":"; out += String(sample.fan, 0);
+        out += ",\"kp\":"; out += String(sample.kp, 4);
+        out += ",\"ki\":"; out += String(sample.ki, 6);
+        out += ",\"kd\":"; out += String(sample.kd, 4);
         out += ",\"phaseId\":";
         out += String(sample.phaseId);
         out += '}';
       }
     out += "]}";
     request->send(200, "application/json", out);
+  });
+
+  server.on("/api/pid/trace.csv", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(200, "text/csv", systemLinkBuildCalibrationCsv(stepTuner));
+  });
+  server.on("/api/pid/history", HTTP_GET, [](AsyncWebServerRequest *request) {
+    DynamicJsonDocument doc(12288);
+    if (request->hasParam("id")) {
+      double id;
+      PIDTuningStore::Record record;
+      if (!pidNumber(request->getParam("id")->value(), id) || id < 1 || id > UINT32_MAX ||
+          floor(id) != id || !pidTuningStore.readRecord(static_cast<uint32_t>(id), record)) {
+        request->send(404, "application/json", "{\"error\":\"history_not_found\"}"); return;
+      }
+      if (request->hasParam("format") && request->getParam("format")->value() == "csv") {
+        String out = "id,outcome,durationSeconds,kp,ki,kd,fitRmse,predictionRmse,rampMae,holdMae,overshoot\n";
+        out += String(record.id) + "," + record.outcome + "," + String(record.durationMs / 1000.0, 2) + "," +
+               String(record.proposed.kp, 6) + "," + String(record.proposed.ki, 6) + "," +
+               String(record.proposed.kd, 6) + "," + String(record.fitRmse, 3) + "," +
+               String(record.predictionRmse, 3) + "," + String(record.rampMae, 3) + "," +
+               String(record.holdMae, 3) + "," + String(record.overshoot, 3) + "\n";
+        request->send(200, "text/csv", out); return;
+      }
+      pidRecordJson(doc.to<JsonObject>(), record, true);
+    } else {
+      JsonArray records = doc.createNestedArray("records");
+      uint32_t latest = pidTuningStore.latestId();
+      for (uint8_t offset = 0; offset < PIDTuningStore::HISTORY_SIZE && latest > offset; ++offset) {
+        PIDTuningStore::Record record;
+        if (pidTuningStore.readRecord(latest - offset, record))
+          pidRecordJson(records.createNestedObject(), record, false);
+      }
+      doc["storageError"] = pidTuningStore.getError();
+      doc["traceNote"] = "Current trace in RAM; older PIDTRACE rows in SD console logs when a card is available.";
+    }
+    if (doc.overflowed()) {
+      request->send(500, "application/json", "{\"error\":\"history_response_capacity\"}"); return;
+    }
+    String out; serializeJson(doc, out);
+    request->send(200, "application/json", out);
+  });
+
+  server.on("/api/pid/apply", HTTP_POST, [](AsyncWebServerRequest *request) {
+    double id;
+    if (!request->hasParam("id") || !pidNumber(request->getParam("id")->value(), id) ||
+        id < 1 || id > UINT32_MAX || floor(id) != id || !acceptPIDTuning(static_cast<uint32_t>(id))) {
+      request->send(409, "application/json", "{\"error\":\"candidate_not_verified_state_or_storage_error\"}"); return;
+    }
+    request->send(200, "application/json", "{\"ok\":true}");
+  });
+  server.on("/api/pid/discard", HTTP_POST, [](AsyncWebServerRequest *request) {
+    double id;
+    if (!request->hasParam("id") || !pidNumber(request->getParam("id")->value(), id) ||
+        id < 1 || id > UINT32_MAX || floor(id) != id || !discardPIDTuning(static_cast<uint32_t>(id))) {
+      request->send(409, "application/json", "{\"error\":\"candidate_or_storage_error\"}"); return;
+    }
+    request->send(200, "application/json", "{\"ok\":true}");
+  });
+  server.on("/api/pid/restore", HTTP_POST, [](AsyncWebServerRequest *request) {
+    double id = 0;
+    bool good = request->hasParam("good");
+    if ((good && (request->getParam("good")->value() != "1" || request->hasParam("id"))) ||
+        (request->hasParam("id") && !pidNumber(request->getParam("id")->value(), id)) ||
+        id < 0 || id > UINT32_MAX || floor(id) != id ||
+        !restorePIDTuning(static_cast<uint32_t>(id), good)) {
+      request->send(409, "application/json", "{\"error\":\"restore_state_history_or_storage_error\"}"); return;
+    }
+    request->send(200, "application/json", "{\"ok\":true}");
+  });
+  server.on("/api/pid/recalculate", HTTP_POST, [](AsyncWebServerRequest *request) {
+    double factor;
+    if (!request->hasParam("tau_c") || !pidNumber(request->getParam("tau_c")->value(), factor) ||
+        !recalculatePIDTuning(factor)) {
+      request->send(409, "application/json", "{\"error\":\"recalculate_requires_model_safe_state_and_valid_factor\"}"); return;
+    }
+    request->send(200, "application/json", "{\"ok\":true,\"verified\":false}");
   });
 
   server.on("/api/pid/validate", HTTP_POST, [](AsyncWebServerRequest *request) {
@@ -1325,12 +1599,14 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 
     double target = PIDValidationSession::VALIDATION_RAMP_END_TEMP_F;
 
-    int fanPercent = 70;
-    if (request->hasParam("fanPercent")) {
-      fanPercent = request->getParam("fanPercent")->value().toInt();
+    double fanPercent = 70;
+    if ((request->hasParam("fanPercent") && !pidNumber(request->getParam("fanPercent")->value(), fanPercent)) ||
+        fanPercent < 20 || fanPercent > 100 || floor(fanPercent) != fanPercent) {
+      request->send(400, "application/json", "{\"error\":\"fanPercent must be an integer from 20 to 100\"}");
+      return;
     }
 
-    if (!startValidationRoast(target, constrain(fanPercent, 20, 100), true)) {
+    if (!startValidationRoast(target, static_cast<uint32_t>(fanPercent), true)) {
       request->send(409, "application/json", "{\"error\":\"failed_to_start_validation\"}");
       return;
     }
@@ -1338,7 +1614,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     StaticJsonDocument<256> doc;
     doc["ok"] = true;
     doc["target"] = target;
-    doc["fanPercent"] = constrain(fanPercent, 20, 100);
+    doc["fanPercent"] = fanPercent;
     doc["message"] = "Validation roast started";
     String out;
     serializeJson(doc, out);
@@ -1347,13 +1623,15 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 
   // API endpoint: Get current PID values
   server.on("/api/pid", HTTP_GET, [](AsyncWebServerRequest *request) {
-    StaticJsonDocument<512> doc;
-    doc["kp"] = kp;
-    doc["ki"] = ki;
-    doc["kd"] = kd;
+    StaticJsonDocument<3072> doc;
+    pidConfigurationJson(doc.to<JsonObject>(), capturePIDConfiguration());
     doc["scheduleEnabled"] = pidRuntimeController.isEnabled();
     doc["activeBand"] = pidRuntimeController.getActiveBandIndex();
     doc["validBandCount"] = pidRuntimeController.getValidBandCount();
+    auto active = pidRuntimeController.getLastDecision();
+    doc["appliedKp"] = active.kp; doc["appliedKi"] = active.ki; doc["appliedKd"] = active.kd;
+    doc["outsideRange"] = active.outsideRange;
+    doc["feedforward"] = active.feedforward;
     String out;
     serializeJson(doc, out);
     request->send(200, "application/json", out);
@@ -1364,7 +1642,11 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     [](AsyncWebServerRequest *request) {},
     nullptr,
     [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
-      if (!requireWebAuthentication(request)) return;
+      if (!serverSecurityIsAuthenticated(request)) return;
+      if (total > 256) {
+        request->send(413, "application/json", "{\"error\":\"pid_body_too_large\"}");
+        return;
+      }
       if (index == 0) {
         String* body = new String();
         body->reserve(total + 1);
@@ -1393,6 +1675,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       double newKp = doc.containsKey("kp") ? doc["kp"].as<double>() : kp;
       double newKi = doc.containsKey("ki") ? doc["ki"].as<double>() : ki;
       double newKd = doc.containsKey("kd") ? doc["kd"].as<double>() : kd;
+      double rampScale = doc.containsKey("rampScale") ? doc["rampScale"].as<double>() : pidRuntimeController.getRampScale();
 
       IdleMutationGuard idleGuard;
       if (!idleGuard) {
@@ -1400,7 +1683,14 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
         return;
       }
 
-      setManualPIDGains(newKp, newKi, newKd);
+      if ((doc.containsKey("kp") && !doc["kp"].is<double>()) ||
+          (doc.containsKey("ki") && !doc["ki"].is<double>()) ||
+          (doc.containsKey("kd") && !doc["kd"].is<double>()) ||
+          (doc.containsKey("rampScale") && !doc["rampScale"].is<double>()) ||
+          !setManualPIDGains(newKp, newKi, newKd, rampScale)) {
+        request->send(409, "application/json", "{\"error\":\"invalid_gains_active_operation_or_storage_error\"}");
+        return;
+      }
 
       StaticJsonDocument<384> resp;
       resp["ok"] = true;
@@ -1424,75 +1714,16 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Roaster Debug Console</title>
+  )rawliteral" ROASTER_WEB_STYLE R"rawliteral(
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: 'Segoe UI', Inter, -apple-system, sans-serif;
-      background: #333333;
-      color: #FFFFFF;
-      padding: 20px;
-      line-height: 1.5;
-    }
-    .topnav {
-      max-width: 1400px;
-      margin: 0 auto 20px;
-      padding: 14px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      background: #2D2D2D;
-      border-bottom: 2px solid #444;
-      align-items: center;
-    }
-    .topnav-logo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-right: auto;
-      font-weight: 900;
-      font-size: 20px;
-      color: #009944;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-    }
-    .topnav a {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 100px;
-      padding: 12px 16px;
-      border-radius: 0;
-      background: #3A3A3A;
-      color: #CCCCCC;
-      text-decoration: none;
-      font-weight: 700;
-      text-transform: uppercase;
-      font-size: 14px;
-      transition: 0.2s;
-    }
-    .topnav a:hover { background: #444444; color: #FFF; }
-    .topnav a.active { background: #009944; color: #fff; }
+    * { margin: 0; padding: 0; }
     .page {
-      max-width: 1400px;
-      margin: 0 auto;
       display: grid;
       grid-template-columns: minmax(0, 1fr);
       gap: 18px;
     }
-    .header {
-      background: #2D2D2D;
-      border: none;
-      border-top: 4px solid #009944;
-      padding: 24px;
-    }
-    .header h1 {
-      font-size: 28px;
-      font-weight: 900;
-      color: #fff;
-      text-transform: uppercase;
-      margin-bottom: 8px;
-    }
-    .header .subtitle {
+    .page > .web-heading { margin-bottom: 0; }
+    .web-heading .subtitle {
       color: #AAA;
       font-size: 14px;
       display: flex;
@@ -1662,6 +1893,22 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       margin-bottom: 12px;
       flex-wrap: wrap;
     }
+    .log-view[hidden],
+    .log-controls[hidden] { display: none; }
+    .log-status {
+      align-self: center;
+      color: #AAA;
+      font-size: 13px;
+      margin-right: auto;
+    }
+    .log-file-select {
+      min-width: 220px;
+      padding: 10px 12px;
+      color: #fff;
+      background: #222;
+      border: 1px solid #555;
+      font: inherit;
+    }
     .btn {
       padding: 12px 16px;
       background: #444444;
@@ -1688,35 +1935,12 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       .grid {
         grid-template-columns: 1fr;
       }
-      .header h1 {
-        font-size: 22px;
-      }
     }
     @media (max-width: 480px) {
-      body {
-        padding: 12px;
-      }
-      .topnav {
-        padding: 12px;
-        gap: 8px;
-      }
-      .topnav-logo {
-        width: 100%;
-        margin-right: 0;
-        justify-content: center;
-        font-size: 18px;
-      }
-      .topnav a {
-        flex: 1 1 calc(50% - 8px);
-        min-width: 0;
-        padding: 12px 10px;
-        font-size: 12px;
-      }
-      .header,
       .card {
         padding: 16px;
       }
-      .header .subtitle,
+      .web-heading .subtitle,
       .controls,
       .metric-row,
       .log-entry {
@@ -1738,25 +1962,9 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   </style>
 </head>
 <body>
-  <nav class="topnav">
-    <div class="topnav-logo">
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M4.5,10 C2.5,15 9,17 12,17 C15,17 21.5,15 19.5,10 C17.5,5 11,3 8,3 C5,3 6.5,5 4.5,10 Z" fill="#009944" />
-        <path d="M5,10 Q12,14 19,9" stroke="#2D2D2D" stroke-width="1.5" fill="none" />
-        <path d="M9,18 Q8,20 10,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
-        <path d="M12,19 Q11,21 13,23" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
-        <path d="M15,18 Q14,20 16,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
-      </svg>
-      Roaster Control
-    </div>
-    <a class="active" href="/">Console</a>
-    <a href="/profile">Profiles</a>
-    <a href="/pid">PID</a>
-    <a href="/update">Update</a>
-    <a href="/systemlink">SystemLink</a>
-  </nav>
-  <div class="page">
-    <div class="header">
+  )rawliteral" ROASTER_WEB_NAV(ROASTER_WEB_CURRENT, "", "", "", "", "") R"rawliteral(
+  <main class="web-shell page">
+    <header class="web-heading">
       <h1>Roaster Debug Console</h1>
       <div class="subtitle">
         <span class="status-badge">
@@ -1766,7 +1974,7 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
         <span id="uptime">Uptime: --</span>
         <span>Last Update: <span id="lastUpdate">--</span></span>
       </div>
-    </div>
+    </header>
 
   <div class="grid">
     <div class="card">
@@ -1872,29 +2080,55 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     <div class="card full-width">
       <div class="card-title">Debug Logs</div>
       <div class="controls">
-        <button class="btn active" onclick="filterLogs('ALL')">All</button>
-        <button class="btn" onclick="filterLogs('ERROR')">Errors</button>
-        <button class="btn" onclick="filterLogs('WARN')">Warnings</button>
-        <button class="btn" onclick="filterLogs('INFO')">Info</button>
-        <button class="btn" onclick="filterLogs('DEBUG')">Debug</button>
+        <button class="btn active" id="liveLogTab" onclick="showLogView('live')">Live</button>
+        <button class="btn" id="cardLogTab" onclick="showLogView('card')">Card History</button>
+      </div>
+      <div class="controls">
+        <button class="btn level-filter active" data-level="ALL" onclick="filterLogs('ALL')">All</button>
+        <button class="btn level-filter" data-level="ERROR" onclick="filterLogs('ERROR')">Errors</button>
+        <button class="btn level-filter" data-level="WARN" onclick="filterLogs('WARN')">Warnings</button>
+        <button class="btn level-filter" data-level="INFO" onclick="filterLogs('INFO')">Info</button>
+        <button class="btn level-filter" data-level="DEBUG" onclick="filterLogs('DEBUG')">Debug</button>
+      </div>
+      <div id="liveLogControls" class="controls log-controls">
         <button class="btn" onclick="clearLogs()">Clear Display</button>
         <button class="btn" onclick="toggleAutoScroll()">Auto-scroll: <span id="autoScrollState">ON</span></button>
       </div>
-      <div class="log-container" id="logContainer">
+      <div id="cardLogControls" class="controls log-controls" hidden>
+        <span class="log-status" id="cardLogStatus">Checking TF card...</span>
+        <select class="log-file-select" id="cardLogFile" aria-label="Saved log file" onchange="loadCardLogs(true)"></select>
+        <button class="btn" onclick="refreshCardLogs()">Refresh</button>
+        <button class="btn" id="olderCardLogsButton" onclick="loadOlderCardLogs()" disabled>Load Older</button>
+        <button class="btn" onclick="downloadCardLogs()">Download JSONL</button>
+      </div>
+      <div class="log-container log-view" id="logContainer">
         <div class="log-entry INFO">
           <span class="log-time">00:00:00</span>
           <span class="log-level INFO">INFO</span>
           <span class="log-message">Console loaded. Fetching data...</span>
         </div>
       </div>
+      <div class="log-container log-view" id="cardLogContainer" hidden>
+        <div class="log-entry INFO">
+          <span class="log-message">Select Card History to browse saved logs.</span>
+        </div>
+      </div>
     </div>
   </div>
-  </div>
+  </main>
 
   <script>
     let autoScroll = true;
     let logFilter = 'ALL';
     let wsConnected = false;
+    let activeLogView = 'live';
+    let cardLogEntries = [];
+    let cardLogCursor = 0;
+    let cardLogHasMore = false;
+    let cardLogFiles = [];
+    let cardLogFileSize = 0;
+    let cardLogsLoading = false;
+    let cardLogAvailable = false;
 
     function formatUptime(seconds) {
       const h = Math.floor(seconds / 3600);
@@ -1988,10 +2222,219 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 
     function filterLogs(level) {
       logFilter = level;
-      document.querySelectorAll('.controls .btn').forEach(btn => {
-        btn.classList.toggle('active', btn.textContent.startsWith(level) || (level === 'ALL' && btn.textContent === 'All'));
+      document.querySelectorAll('.level-filter').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.level === level);
       });
-      fetchLogs();
+      if (activeLogView === 'card') renderCardLogs();
+      else fetchLogs();
+    }
+
+    function showLogView(view) {
+      activeLogView = view;
+      const isCardView = view === 'card';
+      document.getElementById('liveLogTab').classList.toggle('active', !isCardView);
+      document.getElementById('cardLogTab').classList.toggle('active', isCardView);
+      document.getElementById('liveLogControls').hidden = isCardView;
+      document.getElementById('cardLogControls').hidden = !isCardView;
+      document.getElementById('logContainer').hidden = isCardView;
+      document.getElementById('cardLogContainer').hidden = !isCardView;
+      if (isCardView) refreshCardLogs();
+      else fetchLogs();
+    }
+
+    function formatCardUptime(milliseconds) {
+      const seconds = Math.floor(Number(milliseconds || 0) / 1000);
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const remainder = seconds % 60;
+      return `${hours}h ${minutes}m ${remainder}s`;
+    }
+
+    function formatCardFileSize(bytes) {
+      return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(0)} KB`;
+    }
+
+    async function refreshCardLogs() {
+      const statusElement = document.getElementById('cardLogStatus');
+      const selector = document.getElementById('cardLogFile');
+      statusElement.textContent = 'Checking TF card...';
+
+      try {
+        const response = await fetch('/api/logs/card/status');
+        const status = await response.json();
+        cardLogAvailable = Boolean(status.available);
+        if (!status.available) {
+          cardLogFiles = [];
+          selector.replaceChildren();
+          statusElement.textContent = 'TF card unavailable; live logs remain active.';
+          cardLogEntries = [];
+          renderCardLogs();
+          return;
+        }
+        if (status.busy) {
+          statusElement.textContent = 'TF card busy; try refresh again.';
+          return;
+        }
+
+        const selectedId = selector.value;
+        cardLogFiles = Array.isArray(status.files) ? status.files : [];
+        selector.replaceChildren();
+        cardLogFiles.forEach(file => {
+          const option = document.createElement('option');
+          option.value = file.id;
+          option.textContent = `${file.name} · ${formatCardFileSize(file.size)}`;
+          selector.appendChild(option);
+        });
+
+        if (!cardLogFiles.length) {
+          statusElement.textContent = status.logging ? 'Card is ready; no log files yet.' : 'Card is mounted, but logging is inactive.';
+          cardLogEntries = [];
+          renderCardLogs();
+          return;
+        }
+
+        if (cardLogFiles.some(file => String(file.id) === selectedId)) selector.value = selectedId;
+        statusElement.textContent = status.logging ? 'Card present · logging active' : 'Card present · saved logs are read-only';
+        await loadCardLogs(true);
+      } catch (error) {
+        cardLogAvailable = false;
+        statusElement.textContent = 'Could not read TF card status.';
+        console.error('Error fetching card log status:', error);
+      }
+    }
+
+    async function loadCardLogs(reset) {
+      if (cardLogsLoading) return;
+      const selector = document.getElementById('cardLogFile');
+      if (!selector.value && cardLogFiles.length === 0) return;
+
+      if (reset) {
+        cardLogEntries = [];
+        cardLogCursor = 0;
+        cardLogHasMore = false;
+        cardLogFileSize = 0;
+      }
+
+      cardLogsLoading = true;
+      const statusElement = document.getElementById('cardLogStatus');
+      const button = document.getElementById('olderCardLogsButton');
+      button.disabled = true;
+      try {
+        const parameters = new URLSearchParams({ file: selector.value || '0', limit: '100' });
+        if (!reset && cardLogCursor > 0) parameters.set('cursor', String(cardLogCursor));
+        const response = await fetch(`/api/logs/card?${parameters}`);
+        const page = await response.json();
+        if (page.busy) {
+          statusElement.textContent = 'TF card busy; try again shortly.';
+          return;
+        }
+        if (!page.available || !page.file_found) {
+          cardLogAvailable = Boolean(page.available);
+          statusElement.textContent = page.available ? 'Selected log file is no longer available.' : 'TF card unavailable.';
+          cardLogEntries = [];
+          renderCardLogs();
+          return;
+        }
+        if (!reset && ((Number(selector.value) === 0 && page.file_size < cardLogFileSize) ||
+            (Number(selector.value) !== 0 && page.file_size !== cardLogFileSize))) {
+          statusElement.textContent = 'Log segment rotated; refresh history to continue.';
+          return;
+        }
+
+        if (reset) cardLogFileSize = page.file_size;
+        const entries = Array.isArray(page.logs) ? page.logs : [];
+        cardLogEntries = reset ? entries : entries.concat(cardLogEntries);
+        cardLogCursor = Number(page.next_cursor || 0);
+        cardLogHasMore = Boolean(page.has_more);
+        statusElement.textContent = `${cardLogEntries.length} entries loaded · ${formatCardFileSize(page.file_size)}`;
+        renderCardLogs();
+        button.disabled = !cardLogHasMore;
+      } catch (error) {
+        statusElement.textContent = 'Could not read saved logs.';
+        console.error('Error fetching card logs:', error);
+      } finally {
+        cardLogsLoading = false;
+      }
+    }
+
+    function loadOlderCardLogs() {
+      if (cardLogHasMore && cardLogCursor > 0) loadCardLogs(false);
+    }
+
+    function renderCardLogs() {
+      const container = document.getElementById('cardLogContainer');
+      const oldHeight = container.scrollHeight;
+      const oldScrollTop = container.scrollTop;
+      container.replaceChildren();
+      const visibleEntries = cardLogEntries.filter(log => logFilter === 'ALL' || log.level === logFilter);
+      visibleEntries.forEach(log => {
+        const entry = document.createElement('div');
+        entry.className = `log-entry ${log.level || 'INFO'}`;
+        const time = document.createElement('span');
+        time.className = 'log-time';
+        time.textContent = `+${formatCardUptime(log.uptime_ms)}`;
+        const level = document.createElement('span');
+        level.className = `log-level ${log.level || 'INFO'}`;
+        level.textContent = log.level || 'INFO';
+        const session = document.createElement('span');
+        session.className = 'log-time';
+        session.textContent = log.boot_id ? `boot ${log.boot_id}` : 'older log';
+        const message = document.createElement('span');
+        message.className = 'log-message';
+        message.textContent = log.message || '';
+        entry.append(time, level, session, message);
+        container.appendChild(entry);
+      });
+
+      if (visibleEntries.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'log-entry INFO';
+        empty.textContent = !cardLogAvailable ? 'TF card unavailable; saved history cannot be read.' :
+          (cardLogEntries.length ? 'No entries match this filter.' : 'No saved entries in this file.');
+        container.appendChild(empty);
+      } else if (oldHeight > 0 && cardLogEntries.length > visibleEntries.length) {
+        container.scrollTop = oldScrollTop + container.scrollHeight - oldHeight;
+      } else {
+        container.scrollTop = container.scrollHeight;
+      }
+    }
+
+    async function downloadCardLogs() {
+      const fileId = document.getElementById('cardLogFile').value;
+      const selectedFile = cardLogFiles.find(file => String(file.id) === fileId);
+      if (!selectedFile) return;
+
+      const statusElement = document.getElementById('cardLogStatus');
+      statusElement.textContent = 'Preparing JSONL download...';
+      const allEntries = [];
+      let cursor = null;
+      let initialSize = null;
+      try {
+        while (true) {
+          const parameters = new URLSearchParams({ file: fileId, limit: '100' });
+          if (cursor !== null) parameters.set('cursor', String(cursor));
+          const response = await fetch(`/api/logs/card?${parameters}`);
+          const page = await response.json();
+          if (!page.available || !page.file_found || page.busy) throw new Error('Card log file is unavailable or busy.');
+          if (initialSize === null) initialSize = page.file_size;
+          else if ((Number(fileId) === 0 && page.file_size < initialSize) ||
+              (Number(fileId) !== 0 && page.file_size !== initialSize)) throw new Error('Log segment rotated during download.');
+          allEntries.unshift(...(page.logs || []));
+          if (!page.has_more || !page.next_cursor) break;
+          cursor = page.next_cursor;
+        }
+
+        const content = allEntries.map(entry => JSON.stringify(entry)).join('\n') + (allEntries.length ? '\n' : '');
+        const url = URL.createObjectURL(new Blob([content], { type: 'application/x-ndjson' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = selectedFile.name;
+        link.click();
+        URL.revokeObjectURL(url);
+        statusElement.textContent = `Downloaded ${allEntries.length} entries.`;
+      } catch (error) {
+        statusElement.textContent = error.message || 'Could not download saved logs.';
+      }
     }
 
     function clearLogs() {
@@ -2230,468 +2673,162 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PID Workflow</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PID Tuning</title>
+  )rawliteral" ROASTER_WEB_STYLE R"rawliteral(
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: 'Segoe UI', Inter, -apple-system, sans-serif; background: #333333; color: #FFFFFF; padding: 20px; line-height: 1.5; }
-    .topnav { max-width: 1100px; margin: 0 auto 20px; padding: 14px; display:flex; flex-wrap:wrap; gap:10px; background:#2D2D2D; border-bottom:2px solid #444; align-items:center; }
-    .topnav-logo { display:flex; align-items:center; gap:10px; margin-right:auto; font-weight:900; font-size:20px; color:#009944; text-transform:uppercase; letter-spacing:1px; }
-    .topnav a { display:inline-flex; align-items:center; justify-content:center; min-width:100px; padding:12px 16px; border-radius:0; background:#3A3A3A; color:#CCCCCC; text-decoration:none; font-weight:700; text-transform:uppercase; font-size:14px; transition: 0.2s; }
-    .topnav a:hover { background:#444444; color:#FFF; }
-    .topnav a.active { background:#009944; color:#fff; }
-    .page { max-width: 1100px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
-    .card { background: #2D2D2D; border: none; border-top: 4px solid #444; padding: 20px; }
-    .page > *, .two-col > * { min-width: 0; }
-    h1, h2 { margin-top: 0; color: #fff; text-transform: uppercase; font-weight: 800; font-size: 20px; }
-    h1 { font-size: 24px; font-weight: 900; }
-    label { display: block; margin: 12px 0 4px; color: #AAA; font-size: 13px; font-weight: bold; text-transform: uppercase; }
-    input { width: 100%; padding: 12px; border-radius: 0; border: 1px solid #444; background: #222222; color: #FFF; font-weight: bold; }
-    input:focus { outline: none; border-color: #009944; }
-    button { margin-top: 14px; width: 100%; padding: 14px; border: none; border-radius: 0; font-weight: 700; cursor: pointer; text-transform: uppercase; transition: 0.2s; }
-    button:disabled { opacity: 0.45; cursor: not-allowed; }
-    .primary { background: #009944; color: #fff; }
-    .primary:hover { background: #007A36; }
-    .secondary { background: #444444; color: #fff; }
-    .secondary:hover { background: #555555; }
-    .tertiary { background: #CC0000; color: #fff; }
-    .tertiary:hover { background: #A30000; }
-    .note { color: #AAA; font-size: 13px; margin-top: 8px; font-weight: bold; }
-    .row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-    .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
-    .button-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-    .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 16px; }
-    .metric { background: #222222; border: 1px solid #444; padding: 12px; }
-    .metric-label { color: #AAA; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: bold; }
-    .metric-value { color: #fff; font-size: 20px; font-weight: 900; margin-top: 6px; }
-    .chart { margin-top: 16px; background: #222222; border: 1px solid #444; padding: 12px; }
-    .chart canvas { width: 100%; height: 260px; display: block; }
-    .legend { display: flex; gap: 18px; margin-top: 10px; color: #AAA; font-size: 12px; font-weight: bold; text-transform: uppercase; }
-    .legend span { display: inline-flex; align-items: center; gap: 8px; }
-    .legend span::before { content: ""; width: 18px; height: 3px; border-radius: 0; display: inline-block; }
-    .legend .actual::before { background: #0050FF; }
-    .legend .setpoint::before { background: #FFFFFF; }
-    table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-    th, td { text-align: left; padding: 10px; border-bottom: 1px solid #444; font-size: 14px; font-weight: bold; }
-    th { color: #AAA; text-transform: uppercase; font-size: 12px; }
-    .small { font-size: 12px; color: #AAA; }
-    @media (max-width: 480px) {
-      body {
-        padding: 12px;
-      }
-      .topnav {
-        padding: 12px;
-        gap: 8px;
-      }
-      .topnav-logo {
-        width: 100%;
-        margin-right: 0;
-        justify-content: center;
-        font-size: 18px;
-      }
-      .topnav a {
-        flex: 1 1 calc(50% - 8px);
-        min-width: 0;
-        padding: 12px 10px;
-        font-size: 12px;
-      }
-      .card {
-        padding: 16px;
-      }
-      .row,
-      .button-row,
-      .status-grid,
-      .two-col {
-        grid-template-columns: 1fr;
-      }
-      .legend {
-        display: grid;
-        gap: 8px;
-      }
-      table {
-        display: block;
-        overflow-x: auto;
-        white-space: nowrap;
-      }
-    }
+    section { background: #2D2D2D; border-top: 4px solid #009944; padding: 1rem; margin-bottom: 1rem; }
+    h2 { margin-top: 0; }
+    fieldset { display: flex; flex-wrap: wrap; gap: .75rem; border: 0; padding: 0; margin: 0; min-width: 0; }
+    label { flex: 1 1 7rem; }
+    input { display: block; box-sizing: border-box; width: 100%; border: 1px solid #666; background: #222; color: inherit; }
+    input, button { font: inherit; padding: .5rem; }
+    button { margin: .25rem .25rem .25rem 0; border: 0; background: #009944; color: #111; font-weight: 700; cursor: pointer; }
+    button:enabled:hover { background: #007A36; color: #fff; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    #cancel { background: #444; color: #fff; }
+    #cancel:enabled:hover { background: #555; }
   </style>
 </head>
 <body>
-  <nav class="topnav">
-    <div class="topnav-logo">
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M4.5,10 C2.5,15 9,17 12,17 C15,17 21.5,15 19.5,10 C17.5,5 11,3 8,3 C5,3 6.5,5 4.5,10 Z" fill="#009944" />
-        <path d="M5,10 Q12,14 19,9" stroke="#2D2D2D" stroke-width="1.5" fill="none" />
-        <path d="M9,18 Q8,20 10,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
-        <path d="M12,19 Q11,21 13,23" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
-        <path d="M15,18 Q14,20 16,22" stroke="#009944" stroke-width="2" fill="none" stroke-linecap="round" />
-      </svg>
-      Roaster Control
-    </div>
-    <a href="/">Console</a>
-    <a href="/profile">Profiles</a>
-    <a class="active" href="/pid">PID</a>
-    <a href="/update">Update</a>
-    <a href="/systemlink">SystemLink</a>
-  </nav>
-  <div class="page">
-    <div class="card">
-      <h1>PID Workflow</h1>
-      <p class="note">Apply manual gains directly, or run the step-response PID tuning workflow. The tuner applies open-loop step inputs at 2 temperature bands, fits FOPDT models, and calculates SIMC PID gains.</p>
-      <div class="row">
-        <div>
-          <label for="kp">Kp</label>
-          <input id="kp" type="number" step="0.01" />
-        </div>
-        <div>
-          <label for="ki">Ki</label>
-          <input id="ki" type="number" step="0.01" />
-        </div>
-        <div>
-          <label for="kd">Kd</label>
-          <input id="kd" type="number" step="0.01" />
-        </div>
-      </div>
-      <button class="primary" onclick="applyPid()">Apply PID Values</button>
-      <p class="note" id="status">Loading current PID...</p>
-    </div>
-
-    <div class="two-col">
-      <div class="card">
-        <h2>PID Tuning</h2>
-        <label for="fan">Calibration Fan PWM (0-255)</label>
-        <input id="fan" type="number" value="255" />
-        <div id="stepOptions">
-          <label for="tauC">&tau;<sub>c</sub> Factor (0.3-3.0, lower = more aggressive)</label>
-          <input id="tauC" type="number" min="0.3" max="3.0" step="0.1" value="0.5" />
-        </div>
-        <div class="button-row">
-          <button id="startAutotuneButton" class="secondary" onclick="startAutotune()">Run Step-Response PID Tuning</button>
-          <button id="cancelAutotuneButton" class="tertiary" onclick="cancelAutotune()" disabled>Cancel Tuning</button>
-        </div>
-        <p class="note" id="methodNote">The step-response tuner stabilizes at 2 temperature bands (175, 275F), applies a heater step, records the open-loop response, fits a first-order-plus-dead-time model, and computes SIMC PID gains. Auto-validation runs after cooling.</p>
-        <div class="status-grid">
-          <div class="metric"><div class="metric-label">Phase</div><div class="metric-value" id="autotunePhase">--</div></div>
-          <div class="metric"><div class="metric-label">Progress</div><div class="metric-value" id="autotuneProgress">--</div></div>
-          <div class="metric"><div class="metric-label">Setpoint</div><div class="metric-value" id="autotuneSetpoint">--</div></div>
-          <div class="metric"><div class="metric-label">Best PID</div><div class="metric-value small" id="autotunePid">--</div></div>
-          <div class="metric"><div class="metric-label" id="autotuneBestLabel">Best Cycle</div><div class="metric-value" id="autotuneBest">--</div></div>
-          <div class="metric"><div class="metric-label">Outcome</div><div class="metric-value" id="autotuneOutcome">--</div></div>
-        </div>
-        <div class="note" id="autotuneSummary">No tuning run recorded yet.</div>
-        <div class="chart">
-          <canvas id="autotuneChart" width="760" height="260"></canvas>
-          <div class="legend">
-            <span class="actual">Actual Temp</span>
-            <span class="setpoint">Setpoint</span>
-          </div>
-        </div>
-        <table>
-          <thead id="cycleTableHeader">
-            <tr><th>Cycle</th><th>MAE</th><th>Overshoot</th><th>Oscillations</th><th>Score</th><th>PID</th></tr>
-          </thead>
-          <tbody id="cycleTableBody">
-            <tr><td colspan="6" class="small">No data yet.</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
+  )rawliteral" ROASTER_WEB_NAV("", "", ROASTER_WEB_CURRENT, "", "", "") R"rawliteral(
+  <main class="web-shell">
+    <header class="web-heading"><h1>PID Tuning</h1></header>
+    <noscript>Enable JavaScript to tune or change gains.</noscript>
+    <section aria-labelledby="tune-title">
+      <h2 id="tune-title">Autotune</h2>
+      <p>Load the roaster with <strong>&frac12; cup of coffee beans</strong>. Run autotune on mains power with the roaster idle and below 140&deg;F. Autotune uses full fan speed and heats for up to five minutes. Stay with the roaster.</p>
+      <p id="tune-status" role="status">Connecting to roaster&hellip;</p>
+      <button id="start" type="button" disabled>Start autotune</button>
+      <button id="cancel" type="button" hidden>Cancel autotune</button>
+      <button id="apply" type="button" hidden>Apply verified gains</button>
+      <p id="tune-message" role="status"></p>
+    </section>
+    <section aria-labelledby="manual-title">
+      <h2 id="manual-title">Manual override</h2>
+      <p>Edit the saved gains. Manual changes are not verified and keep the existing thermal model.</p>
+      <form id="manual">
+        <fieldset id="gains" disabled>
+          <label>Kp <input id="kp" type="number" step="any" min="0" max="200" required></label>
+          <label>Ki <input id="ki" type="number" step="any" min="0" max="20" required></label>
+          <label>Kd <input id="kd" type="number" step="any" min="0" max="500" required></label>
+        </fieldset>
+        <button id="save" type="submit" disabled>Save manual gains</button>
+      </form>
+      <p id="manual-message" role="status"></p>
+    </section>
+  </main>
   <script>
-    const chartCanvas = document.getElementById('autotuneChart');
-    const chartCtx = chartCanvas.getContext('2d');
-    const pidInputIds = ['kp', 'ki', 'kd'];
-    let latestTraceSamples = [];
-    let pidInputsDirty = false;
-    let suppressPidDirty = false;
+    const el = id => document.getElementById(id);
+    const inputs = ['kp', 'ki', 'kd'].map(el);
+    const phases = { PREFLIGHT: 'Checking sensors', IDENTIFY: 'Measuring heater response',
+      FIT_MODEL: 'Calculating gains', VERIFY_RAMP_HOLD: 'Verifying gains' };
+    let tune, connected = false, loaded = false, busy = false, poll;
 
-    function formatNumber(value, digits = 2) {
-      return Number.isFinite(value) ? value.toFixed(digits) : '--';
+    async function api(path, options) {
+      const res = await fetch(path, { cache: 'no-store', signal: AbortSignal.timeout(6000), ...options });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      return res.json();
     }
 
-    function bindPidInputs() {
-      pidInputIds.forEach(id => {
-        const input = document.getElementById(id);
-        input.addEventListener('input', () => {
-          if (!suppressPidDirty) {
-            pidInputsDirty = true;
-          }
-        });
-      });
+    function showGains(pid) {
+      inputs.forEach(input => { input.value = pid[input.id]; });
+      loaded = true;
     }
 
-    function setPidInputs(nextKp, nextKi, nextKd) {
-      suppressPidDirty = true;
-      document.getElementById('kp').value = Number.isFinite(nextKp) ? Number(nextKp).toFixed(2) : '';
-      document.getElementById('ki').value = Number.isFinite(nextKi) ? Number(nextKi).toFixed(3) : '';
-      document.getElementById('kd').value = Number.isFinite(nextKd) ? Number(nextKd).toFixed(2) : '';
-      suppressPidDirty = false;
-      pidInputsDirty = false;
+    function controls() {
+      const running = tune?.running;
+      const candidate = connected && tune?.outcome === 'verified' && Number.isInteger(tune.runId);
+      el('start').hidden = !!running;
+      el('start').disabled = busy || !connected || tune?.cooling;
+      el('cancel').hidden = !running;
+      el('cancel').disabled = busy;
+      el('apply').hidden = !candidate;
+      el('apply').disabled = busy;
+      el('gains').disabled = busy || !loaded || !!running;
+      el('save').disabled = busy || !connected || !loaded || !!running;
     }
 
-    function drawTracePlaceholder(message) {
-      chartCtx.clearRect(0, 0, chartCanvas.width, chartCanvas.height);
-      chartCtx.fillStyle = '#0d1117';
-      chartCtx.fillRect(0, 0, chartCanvas.width, chartCanvas.height);
-      chartCtx.fillStyle = '#8b949e';
-      chartCtx.font = '14px Arial';
-      chartCtx.textAlign = 'center';
-      chartCtx.fillText(message, chartCanvas.width / 2, chartCanvas.height / 2);
+    async function refresh() {
+      try {
+        tune = await api('/api/calibrate-pid/status');
+        connected = true;
+        const { model, elapsedSeconds, lastError, outcome, phase, running, cooling } = tune;
+        let text = 'Ready to autotune when the roaster is idle and cool.';
+        if (running) text = `${phases[phase] || 'Tuning'} (${Math.floor(elapsedSeconds)} s)`;
+        else if (outcome === 'verified') text = `Verified in ${Math.round(elapsedSeconds)} s. Proposed: Kp ${model.recommendedKp.toFixed(3)}, Ki ${model.recommendedKi.toFixed(4)}, Kd ${model.recommendedKd.toFixed(3)}.`;
+        else if (outcome === 'applied') text = 'Verified gains applied.';
+        else if (lastError === 'cancelled') text = 'Autotune cancelled.';
+        else if (lastError && lastError !== 'none') text = `Autotune did not pass: ${lastError}.`;
+        if (cooling) text += ' Roaster cooling.';
+        if (el('tune-status').textContent !== text) el('tune-status').textContent = text;
+      } catch (error) {
+        connected = false;
+        el('tune-status').textContent = `Autotune status unavailable: ${error.message}`;
+      }
+      if (!loaded) {
+        try {
+          showGains(await api('/api/pid'));
+          el('manual-message').textContent = '';
+        } catch (error) {
+          el('manual-message').textContent = `Could not read saved gains: ${error.message}`;
+        }
+      }
+      controls();
     }
 
-    function renderTrace(samples) {
-      latestTraceSamples = Array.isArray(samples) ? samples : [];
+    async function submit(messageId, path, success, body) {
+      if (busy) return;
+      busy = true;
+      controls();
+      const message = el(messageId);
+      message.textContent = 'Sending request...';
+      await poll;
+      try {
+        const result = await api(path, { method: 'POST', ...(body && {
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        }) });
+        message.textContent = success;
+        if (body) showGains(result);
+        else if (path.startsWith('/api/pid/apply?')) loaded = false;
+      } catch (error) {
+        message.textContent = `Request failed: ${error.message}. Check roaster status before retrying.`;
+      } finally {
+        await refresh();
+        busy = false;
+        controls();
+      }
+    }
 
-      const width = chartCanvas.width;
-      const height = chartCanvas.height;
-      const padLeft = 52;
-      const padRight = 18;
-      const padTop = 18;
-      const padBottom = 34;
-
-      chartCtx.clearRect(0, 0, width, height);
-      chartCtx.fillStyle = '#0d1117';
-      chartCtx.fillRect(0, 0, width, height);
-
-      if (!latestTraceSamples.length) {
-        drawTracePlaceholder('No trace data yet.');
+    // ponytail: one preset; advanced parameters remain available through the API.
+    el('start').onclick = () => submit('tune-message', '/api/calibrate-pid?load=0.5%20cups%20of%20beans', 'Autotune started.');
+    el('cancel').onclick = () => submit('tune-message', '/api/calibrate-pid/cancel', 'Cancellation requested.');
+    el('apply').onclick = () => submit('tune-message', `/api/pid/apply?id=${tune.runId}`, 'Verified gains saved.');
+    el('manual').onsubmit = event => {
+      event.preventDefault();
+      if (el('save').disabled) return;
+      const [kp, ki, kd] = inputs.map(input => input.valueAsNumber);
+      if (!inputs.every(input => input.validity.valid && Number.isFinite(input.valueAsNumber)) || kp <= 0) {
+        el('manual-message').textContent = 'Enter valid gains. Kp must be greater than zero.';
         return;
       }
+      submit('manual-message', '/api/pid', 'Manual gains saved (unverified).', { kp, ki, kd });
+    };
 
-      const maxTime = latestTraceSamples.reduce((maxValue, sample) => Math.max(maxValue, Number(sample.elapsedSeconds) || 0), 0);
-      const temperatureValues = latestTraceSamples.flatMap(sample => [Number(sample.actualTempF), Number(sample.setpointTempF)]).filter(Number.isFinite);
-
-      if (!temperatureValues.length) {
-        drawTracePlaceholder('Trace data unavailable.');
-        return;
-      }
-
-      let minTemp = Math.min(...temperatureValues);
-      let maxTemp = Math.max(...temperatureValues);
-      minTemp = Math.floor((minTemp - 5) / 5) * 5;
-      maxTemp = Math.ceil((maxTemp + 5) / 5) * 5;
-
-      if (maxTemp <= minTemp) {
-        maxTemp = minTemp + 10;
-      }
-
-      const plotWidth = width - padLeft - padRight;
-      const plotHeight = height - padTop - padBottom;
-      const xFor = time => padLeft + ((Number(time) || 0) / Math.max(maxTime, 1)) * plotWidth;
-      const yFor = temp => padTop + (1 - ((Number(temp) - minTemp) / (maxTemp - minTemp))) * plotHeight;
-
-      chartCtx.strokeStyle = '#21262d';
-      chartCtx.lineWidth = 1;
-      for (let row = 0; row <= 4; row++) {
-        const y = padTop + (plotHeight / 4) * row;
-        chartCtx.beginPath();
-        chartCtx.moveTo(padLeft, y);
-        chartCtx.lineTo(width - padRight, y);
-        chartCtx.stroke();
-      }
-
-      chartCtx.fillStyle = '#8b949e';
-      chartCtx.font = '11px Arial';
-      chartCtx.textAlign = 'right';
-      for (let row = 0; row <= 4; row++) {
-        const ratio = 1 - row / 4;
-        const labelTemp = minTemp + (maxTemp - minTemp) * ratio;
-        const y = padTop + (plotHeight / 4) * row + 4;
-        chartCtx.fillText(`${formatNumber(labelTemp, 0)}F`, padLeft - 8, y);
-      }
-
-      chartCtx.textAlign = 'center';
-      for (let column = 0; column <= 4; column++) {
-        const timeValue = (Math.max(maxTime, 1) / 4) * column;
-        const x = padLeft + (plotWidth / 4) * column;
-        chartCtx.fillText(`${formatNumber(timeValue, 0)}s`, x, height - 10);
-      }
-
-      function drawSeries(color, accessor) {
-        chartCtx.beginPath();
-        chartCtx.strokeStyle = color;
-        chartCtx.lineWidth = 2;
-        let started = false;
-        latestTraceSamples.forEach(sample => {
-          const value = Number(accessor(sample));
-          if (!Number.isFinite(value)) {
-            return;
-          }
-          const x = xFor(sample.elapsedSeconds);
-          const y = yFor(value);
-          if (!started) {
-            chartCtx.moveTo(x, y);
-            started = true;
-          } else {
-            chartCtx.lineTo(x, y);
-          }
-        });
-        if (started) {
-          chartCtx.stroke();
-        }
-      }
-
-      drawSeries('#58a6ff', sample => sample.actualTempF);
-      drawSeries('#f2cc60', sample => sample.setpointTempF);
+    function pollStatus() {
+      if (!busy && !poll) poll = refresh().finally(() => { poll = undefined; });
     }
-
-    async function loadPid() {
-      try {
-        const res = await fetch('/api/pid');
-        const data = await res.json();
-        setPidInputs(data.kp, data.ki, data.kd);
-        document.getElementById('status').textContent = 'Current PID loaded.';
-      } catch (e) {
-        document.getElementById('status').textContent = 'Failed to load PID values.';
-      }
-    }
-
-    async function applyPid() {
-      const kp = parseFloat(document.getElementById('kp').value);
-      const ki = parseFloat(document.getElementById('ki').value);
-      const kd = parseFloat(document.getElementById('kd').value);
-      if (!Number.isFinite(kp) || !Number.isFinite(ki) || !Number.isFinite(kd)) {
-        document.getElementById('status').textContent = 'Enter valid numeric PID values before applying.';
-        return;
-      }
-      document.getElementById('status').textContent = 'Applying PID...';
-      try {
-        const res = await fetch('/api/pid', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kp, ki, kd }) });
-        const data = await res.json();
-        if (data.ok) {
-          setPidInputs(data.kp, data.ki, data.kd);
-          document.getElementById('status').textContent = 'PID applied and saved.';
-        } else {
-          document.getElementById('status').textContent = 'Failed to apply PID.';
-        }
-      } catch (e) {
-        document.getElementById('status').textContent = 'Failed to apply PID.';
-      }
-    }
-
-    let activeMethod = 'step_response';
-
-    async function startAutotune() {
-      const fan = parseInt(document.getElementById('fan').value) || 255;
-      const tauC = parseFloat(document.getElementById('tauC').value) || 0.5;
-      let url = `/api/calibrate-pid?fan=${fan}&method=step_response&tau_c=${tauC}`;
-      document.getElementById('status').textContent = 'Starting step-response tuning...';
-      try {
-        const res = await fetch(url, { method: 'POST' });
-        if (res.ok) {
-          document.getElementById('status').textContent = 'Step-response tuning started.';
-          document.getElementById('autotuneSummary').textContent = 'Step-response tuning running...';
-          updateTableHeader('step_response');
-          loadAutotuneStatus();
-          loadAutotuneTrace();
-        } else {
-          const txt = await res.text();
-          document.getElementById('status').textContent = 'Failed to start tuning: ' + txt;
-        }
-      } catch (e) {
-        document.getElementById('status').textContent = 'Failed to start tuning.';
-      }
-    }
-
-    async function cancelAutotune() {
-      document.getElementById('status').textContent = 'Cancelling tuning...';
-      try {
-        const res = await fetch('/api/calibrate-pid/cancel', { method: 'POST' });
-        const txt = await res.text();
-        document.getElementById('status').textContent = res.ok ? 'Tuning cancelled.' : 'Failed to cancel tuning.';
-        if (!res.ok && txt) {
-          document.getElementById('status').textContent += ' ' + txt;
-        }
-        loadAutotuneStatus();
-        loadAutotuneTrace();
-      } catch (e) {
-        document.getElementById('status').textContent = 'Failed to cancel tuning.';
-      }
-    }
-
-    async function loadAutotuneTrace() {
-      try {
-        const res = await fetch('/api/calibrate-pid/trace');
-        const data = await res.json();
-        renderTrace(data.samples || []);
-      } catch (e) {
-        if (!latestTraceSamples.length) {
-          drawTracePlaceholder('Trace unavailable.');
-        }
-      }
-    }
-
-    function updateTableHeader() {
-      const thead = document.getElementById('cycleTableHeader');
-      thead.innerHTML = '<tr><th>Band</th><th>Temp</th><th>Kp (process)</th><th>&tau; (s)</th><th>&theta; (s)</th><th>RMSE</th><th>PID</th></tr>';
-      document.getElementById('autotuneBestLabel').textContent = 'Bands';
-    }
-
-    async function loadAutotuneStatus() {
-      try {
-        const res = await fetch('/api/calibrate-pid/status');
-        const data = await res.json();
-        const model = data.model || {};
-
-        document.getElementById('startAutotuneButton').disabled = !!data.running;
-        document.getElementById('cancelAutotuneButton').disabled = !data.running;
-        document.getElementById('autotunePhase').textContent = data.phase || '--';
-        document.getElementById('autotuneProgress').textContent = `${formatNumber(data.progressPercent, 0)}%`;
-        document.getElementById('autotuneSetpoint').textContent = Number.isFinite(model.currentSetpoint) ? `${formatNumber(model.currentSetpoint, 1)}F` : '--';
-        document.getElementById('autotunePid').textContent = Number.isFinite(model.recommendedKp) ? `Kp ${formatNumber(model.recommendedKp, 2)} Ki ${formatNumber(model.recommendedKi, 3)} Kd ${formatNumber(model.recommendedKd, 2)}` : '--';
-
-        updateTableHeader();
-        document.getElementById('autotuneBest').textContent = `${model.completedBands || 0} / ${model.totalBands || 2}`;
-
-        if (data.running) {
-          document.getElementById('autotuneOutcome').textContent = 'running';
-          document.getElementById('autotuneSummary').textContent = `Step-response tuning in progress. Completed ${model.completedBands || 0} of ${model.totalBands || 2} bands. \u03C4c factor: ${formatNumber(model.tauCFactor, 1)}.`;
-        } else if (data.complete) {
-          document.getElementById('autotuneOutcome').textContent = model.passed ? 'passed' : 'best found';
-          document.getElementById('autotuneSummary').textContent = `Step-response tuning ${model.passed ? 'passed' : 'completed'}: PID Kp ${formatNumber(model.recommendedKp, 2)} Ki ${formatNumber(model.recommendedKi, 3)} Kd ${formatNumber(model.recommendedKd, 2)}, mean RMSE ${formatNumber(model.meanFitRmse, 2)}F.`;
-          if (Number.isFinite(model.recommendedKp) && !pidInputsDirty) {
-            setPidInputs(model.recommendedKp, model.recommendedKi, model.recommendedKd);
-          }
-        } else if (data.lastError === 'cancelled') {
-          document.getElementById('autotuneOutcome').textContent = 'cancelled';
-          document.getElementById('autotuneSummary').textContent = 'Step-response tuning cancelled. Recovery cooling is active.';
-        } else if (data.lastError && data.lastError !== 'none') {
-          document.getElementById('autotuneOutcome').textContent = 'failed';
-          document.getElementById('autotuneSummary').textContent = `Step-response tuning failed: ${data.lastError}.`;
-        } else {
-          document.getElementById('autotuneOutcome').textContent = 'idle';
-        }
-
-        const bands = (model.bands || []).filter(b => b.valid);
-        const rows = bands.map(b => {
-          return `<tr><td>${b.index}</td><td>${formatNumber(b.targetTemp, 0)}F</td><td>${formatNumber(b.processGain, 4)}</td><td>${formatNumber(b.timeConstant, 1)}</td><td>${formatNumber(b.deadTime, 1)}</td><td>${formatNumber(b.fitRmse, 2)}F</td><td class="small">Kp ${formatNumber(b.kp, 2)} Ki ${formatNumber(b.ki, 3)} Kd ${formatNumber(b.kd, 2)}</td></tr>`;
-        });
-        document.getElementById('cycleTableBody').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="7" class="small">No band data yet.</td></tr>';
-      } catch (e) {
-        document.getElementById('autotunePhase').textContent = 'offline';
-        document.getElementById('autotuneOutcome').textContent = 'offline';
-        document.getElementById('startAutotuneButton').disabled = false;
-        document.getElementById('cancelAutotuneButton').disabled = true;
-      }
-    }
-
-    drawTracePlaceholder('Loading trace...');
-  bindPidInputs();
-    loadPid();
-    loadAutotuneStatus();
-    loadAutotuneTrace();
-    setInterval(() => {
-      loadAutotuneStatus();
-      loadAutotuneTrace();
-    }, 1500);
+    pollStatus();
+    setInterval(pollStatus, 2000);
   </script>
 </body>
 </html>
 )rawliteral");
   });
 
-  // Profile Editor UI
   server.on("/profile", HTTP_GET, [](AsyncWebServerRequest *request) {
     LOG_INFO("Profile Editor UI accessed");
     request->send_P(200, "text/html", PROFILE_EDITOR_HTML);
@@ -2702,10 +2839,21 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     request->send_P(200, "text/html", SYSTEMLINK_CONFIG_HTML);
   });
 
-  server.addHandler(&otaStateGuardHandler);
+  server.on("/server", HTTP_GET, [](AsyncWebServerRequest *request) {
+    AsyncWebServerResponse *response = request->beginResponse(200, "text/html", SERVER_CONFIG_HTML);
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+  });
+
+  // ponytail: frame ElegantOTA's existing upload form; do not duplicate the OTA protocol.
+  server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send_P(200, "text/html", ROASTER_WEB_UPDATE_HTML);
+  }).setFilter([](AsyncWebServerRequest *request) {
+    return request->url() == "/update" && !request->hasParam("embedded");
+  });
 
   // Start ElegantOTA for over-the-air updates
-  ElegantOTA.begin(&server, "admin", webAuthenticationPassword.c_str());  // Start ElegantOTA in async mode
+  ElegantOTA.begin(&server);
   ElegantOTA.setAutoReboot(false);
   // ElegantOTA callbacks
   ElegantOTA.onStart(onOTAStart);
@@ -2791,5 +2939,3 @@ void checkWiFiConnection(const WifiCredentials& wifiCredentials) {
 }
 
 #endif // NETWORK_HPP
-
-

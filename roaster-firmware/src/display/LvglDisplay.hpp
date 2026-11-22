@@ -45,6 +45,8 @@ inline uint32_t drawBufferPixelCount = 0;
 inline DisplayScreen activeScreen = DisplayScreen::Start;
 inline RoasterState currentRoasterState = IDLE;
 inline DisplayWifiFormState wifiFormState;
+inline String webAccessHostname = "roaster-dev.local";
+inline bool networkAccessQrVisible = false;
 inline constexpr uint16_t ProfileWaveformCapacity = 480;
 inline constexpr uint8_t ActionQueueCapacity = 8;
 
@@ -59,7 +61,6 @@ inline int fanTempValue = -1;
 inline int heaterOutputValue = -1;
 inline int bdcFanMicrosValue = -1;
 inline String wifiStatusText = "No network";
-inline String webLoginPasswordText;
 inline String activeProfileText = "No profile";
 inline String profileBrowserFocusText;
 inline String revisionText;
@@ -108,7 +109,6 @@ inline lv_obj_t *progressLabel = nullptr;
 inline lv_obj_t *heaterLabel = nullptr;
 inline lv_obj_t *bdcFanLabel = nullptr;
 inline lv_obj_t *wifiLabel = nullptr;
-inline lv_obj_t *webLoginPasswordLabel = nullptr;
 inline lv_obj_t *profileLabel = nullptr;
 inline lv_obj_t *errorLabel = nullptr;
 inline lv_obj_t *revisionLabel = nullptr;
@@ -134,6 +134,11 @@ inline lv_obj_t *finalTargetDownButton = nullptr;
 inline lv_obj_t *finalTargetUpButton = nullptr;
 inline lv_obj_t *ssidTextArea = nullptr;
 inline lv_obj_t *passwordTextArea = nullptr;
+inline lv_obj_t *webAccessQrCode = nullptr;
+inline lv_obj_t *webPairButton = nullptr;
+inline lv_obj_t *webAccessInfoLabel = nullptr;
+inline lv_obj_t *webAccessButton = nullptr;
+inline lv_obj_t *webAccessBackButton = nullptr;
 inline lv_obj_t *profileNameModal = nullptr;
 inline lv_obj_t *profileNameTitleLabel = nullptr;
 inline lv_obj_t *profileNameTextArea = nullptr;
@@ -510,14 +515,29 @@ inline void showKeyboardFor(lv_obj_t *textArea)
 inline void layoutNetworkWidgets()
 {
   if (ssidCaptionLabel == nullptr || passwordCaptionLabel == nullptr || wifiLabel == nullptr || revisionLabel == nullptr ||
-  webLoginPasswordLabel == nullptr || ssidTextArea == nullptr || passwordTextArea == nullptr || wifiApplyButton == nullptr ||
-  networkBackButton == nullptr)
+      ssidTextArea == nullptr || passwordTextArea == nullptr || wifiApplyButton == nullptr || networkBackButton == nullptr ||
+      webAccessInfoLabel == nullptr || webAccessButton == nullptr ||
+      webAccessBackButton == nullptr)
   {
     return;
   }
 
   if (activeScreen != DisplayScreen::Network)
   {
+    return;
+  }
+
+  if (networkAccessQrVisible && activeTextArea == nullptr)
+  {
+    if (webAccessQrCode != nullptr)
+    {
+      lv_obj_align(webAccessQrCode, LV_ALIGN_TOP_LEFT, 22, 48);
+    }
+    lv_obj_set_size(webAccessInfoLabel, 270, 138);
+    lv_obj_align(webAccessInfoLabel, LV_ALIGN_TOP_LEFT, 198, 66);
+    lv_obj_set_size(webAccessBackButton, 116, 34);
+    lv_obj_align(webAccessBackButton, LV_ALIGN_BOTTOM_RIGHT, -12, -16);
+    lv_obj_align(webPairButton, LV_ALIGN_BOTTOM_LEFT, 12, -16);
     return;
   }
 
@@ -544,10 +564,10 @@ inline void layoutNetworkWidgets()
   lv_obj_align(wifiApplyButton, LV_ALIGN_TOP_RIGHT, -12, 62);
   lv_obj_set_size(networkBackButton, 116, 52);
   lv_obj_align(networkBackButton, LV_ALIGN_TOP_RIGHT, -12, 144);
+  lv_obj_set_size(webAccessButton, 116, 32);
+  lv_obj_align(webAccessButton, LV_ALIGN_BOTTOM_RIGHT, -12, -36);
   lv_obj_align(wifiLabel, LV_ALIGN_BOTTOM_LEFT, 12, -34);
   lv_obj_align(revisionLabel, LV_ALIGN_BOTTOM_LEFT, 12, -14);
-  lv_obj_set_width(webLoginPasswordLabel, BoardConfig::DisplayWidth - 24);
-  lv_obj_align(webLoginPasswordLabel, LV_ALIGN_TOP_LEFT, 12, 198);
 }
 
 inline void setFinalTargetValue(int value)
@@ -911,7 +931,8 @@ inline void refreshScreenLayout()
   const bool showProfileControls = showProfileListControls || showProfileGraphControls;
   const bool showMainCard = showStartControls || showRoastControls || showCoolingControls || showErrorControls || showProfileControls;
   const bool showFooterCard = showStartControls || showRoastControls;
-  const bool showNetworkFields = showNetworkControls;
+  const bool showNetworkQr = showNetworkControls && networkAccessQrVisible && activeTextArea == nullptr;
+  const bool showNetworkFields = showNetworkControls && !networkAccessQrVisible;
   const bool showNetworkButtons = showNetworkFields && activeTextArea == nullptr;
   const bool showKeyboard = activeTextArea != nullptr && (showNetworkFields || profileNameModalVisible);
 
@@ -946,8 +967,12 @@ inline void refreshScreenLayout()
   setWidgetHidden(profileListContainer, !showProfileListControls);
   setWidgetHidden(profileLabel, !(showStartControls || showProfileGraphControls));
   setWidgetHidden(wifiLabel, !showNetworkControls);
-  setWidgetHidden(webLoginPasswordLabel, !showNetworkControls || activeTextArea != nullptr);
   setWidgetHidden(revisionLabel, !showNetworkControls);
+  setWidgetHidden(webAccessQrCode, !showNetworkQr);
+  setWidgetHidden(webAccessInfoLabel, !showNetworkQr);
+  setWidgetHidden(webAccessButton, !showNetworkButtons);
+  setWidgetHidden(webAccessBackButton, !showNetworkQr);
+  setWidgetHidden(webPairButton, !showNetworkQr);
   setWidgetHidden(ssidCaptionLabel, !showNetworkFields);
   setWidgetHidden(passwordCaptionLabel, !showNetworkFields);
   setWidgetHidden(profileNameModal, !profileNameModalVisible);
@@ -1211,6 +1236,8 @@ inline void updateDerivedLabels()
   setButtonText(networkProfileButton, "Wi-Fi");
   setButtonText(wifiApplyButton, "Apply");
   setButtonText(networkBackButton, "Back");
+  setButtonText(webAccessButton, "Web access");
+  setButtonText(webAccessBackButton, "Back");
   setButtonText(roastStopButton, activeScreen == DisplayScreen::Error ? "Safe idle" : "STOP");
   setButtonText(coolingStopButton, "Stop cooling");
   setButtonText(profilePrevButton, "Use");
@@ -1225,6 +1252,8 @@ inline void updateDerivedLabels()
   styleButton(networkProfileButton, ColorPanelMuted, ColorAccentOutline);
   styleButton(wifiApplyButton, ColorAccentReady, ColorAccentReady);
   styleButton(networkBackButton, ColorPanelMuted, ColorAccentOutline);
+  styleButton(webAccessButton, ColorPanelMuted, ColorAccentOutline);
+  styleButton(webAccessBackButton, ColorPanelMuted, ColorAccentOutline);
   styleButton(roastStopButton,
               activeScreen == DisplayScreen::Error ? ColorAccentFault : ColorAccentFault,
               activeScreen == DisplayScreen::Error ? ColorAccentFault : ColorAccentFault);
@@ -1259,7 +1288,6 @@ inline void updateDerivedLabels()
   lv_obj_set_style_text_color(mainSupportLabel, lv_color_hex(ColorTextMuted), 0);
   lv_obj_set_style_text_color(profileLabel, lv_color_hex(ColorTextPrimary), 0);
   lv_obj_set_style_text_color(wifiLabel, lv_color_hex(ColorTextMuted), 0);
-  lv_obj_set_style_text_color(webLoginPasswordLabel, lv_color_hex(ColorTextPrimary), 0);
   lv_obj_set_style_text_color(revisionLabel, lv_color_hex(ColorTextMuted), 0);
 
   if (activeScreen == DisplayScreen::Start)
@@ -1277,7 +1305,6 @@ inline void updateDerivedLabels()
   {
     lv_label_set_text(ssidCaptionLabel, "SSID");
     lv_label_set_text(passwordCaptionLabel, "Password");
-    lv_label_set_text_fmt(webLoginPasswordLabel, "Web login (admin): %s", webLoginPasswordText.c_str());
     lv_label_set_text_fmt(wifiLabel, "%s", wifiStatusText.c_str());
     lv_label_set_text_fmt(revisionLabel, "Firmware %s", revisionText.c_str());
   }
@@ -1434,6 +1461,20 @@ inline void buildScreen()
   lv_obj_set_style_text_font(fanLabel, &lv_font_montserrat_14, 0);
   bdcFanLabel = makeValueLabel(screenRoot, LV_ALIGN_BOTTOM_RIGHT, -16, -92);
   wifiLabel = makeValueLabel(screenRoot, LV_ALIGN_BOTTOM_LEFT, 16, -66);
+
+  webAccessQrCode = lv_qrcode_create(screenRoot);
+  if (webAccessQrCode != nullptr)
+  {
+    lv_qrcode_set_size(webAccessQrCode, 160);
+    lv_qrcode_set_dark_color(webAccessQrCode, lv_color_black());
+    lv_qrcode_set_light_color(webAccessQrCode, lv_color_white());
+    lv_qrcode_set_quiet_zone(webAccessQrCode, true);
+  }
+
+  webAccessInfoLabel = lv_label_create(screenRoot);
+  lv_obj_set_style_text_color(webAccessInfoLabel, lv_color_hex(ColorTextPrimary), 0);
+  lv_obj_set_style_text_font(webAccessInfoLabel, &lv_font_montserrat_16, 0);
+  lv_label_set_long_mode(webAccessInfoLabel, LV_LABEL_LONG_MODE_WRAP);
   lv_obj_set_style_text_font(wifiLabel, &lv_font_montserrat_14, 0);
   profileLabel = makeValueLabel(screenRoot, LV_ALIGN_BOTTOM_RIGHT, -16, -66);
   lv_obj_set_style_text_font(profileLabel, &lv_font_montserrat_14, 0);
@@ -1501,9 +1542,6 @@ inline void buildScreen()
   lv_obj_set_style_text_color(passwordCaptionLabel, lv_color_hex(ColorTextMuted), 0);
   lv_obj_set_style_text_font(passwordCaptionLabel, &lv_font_montserrat_14, 0);
 
-  webLoginPasswordLabel = lv_label_create(screenRoot);
-  lv_obj_set_style_text_font(webLoginPasswordLabel, &lv_font_montserrat_14, 0);
-  lv_label_set_long_mode(webLoginPasswordLabel, LV_LABEL_LONG_DOT);
 
   ssidTextArea = lv_textarea_create(screenRoot);
   lv_obj_set_size(ssidTextArea, BoardConfig::DisplayWidth - 32, 34);
@@ -1538,6 +1576,24 @@ inline void buildScreen()
 
   networkBackButton = makeButton(screenRoot, "Done", LV_ALIGN_BOTTOM_RIGHT, -16, -28, 104, 34, ColorPanel);
   lv_obj_add_event_cb(networkBackButton, actionButtonEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(DisplayAction::ReturnToStateScreen)));
+
+  webAccessButton = makeButton(screenRoot, "Web access", LV_ALIGN_BOTTOM_RIGHT, -12, -36, 116, 32, ColorPanel);
+  lv_obj_add_event_cb(webAccessButton, [](lv_event_t *event) {
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    hideKeyboard();
+    networkAccessQrVisible = true;
+    refreshScreenLayout();
+  }, LV_EVENT_CLICKED, nullptr);
+
+  webAccessBackButton = makeButton(screenRoot, "Back", LV_ALIGN_BOTTOM_RIGHT, -12, -16, 116, 34, ColorPanel);
+  lv_obj_add_event_cb(webAccessBackButton, [](lv_event_t *event) {
+    if (lv_event_get_code(event) != LV_EVENT_CLICKED) return;
+    queueAction(DisplayAction::CloseWebPairing);
+    networkAccessQrVisible = false;
+    refreshScreenLayout();
+  }, LV_EVENT_CLICKED, nullptr);
+  webPairButton = makeButton(screenRoot, "Pair browser/CLI", LV_ALIGN_BOTTOM_LEFT, 12, -16, 180, 34, ColorAccentReady);
+  lv_obj_add_event_cb(webPairButton, actionButtonEvent, LV_EVENT_CLICKED, reinterpret_cast<void *>(static_cast<intptr_t>(DisplayAction::PairWebClient)));
 
   keyboard = lv_keyboard_create(screenRoot);
   lv_obj_set_size(keyboard, BoardConfig::DisplayWidth, 108);
@@ -1787,11 +1843,31 @@ inline void setWifiStatusText(const String &value)
   updateDerivedLabels();
 }
 
-inline void setWebLoginPassword(const String &value)
+inline void setPairingPrompt(bool open, int code)
+{
+  if (!webPairButton || !webAccessInfoLabel) return;
+  char text[155];
+  if (code >= 0)
+    snprintf(text, sizeof(text), "%s\nCode: %04d\nApprove only if it matches.", webAccessHostname.c_str(), code);
+  else
+    snprintf(text, sizeof(text), "%s\n%s", webAccessHostname.c_str(), open ? "Waiting for pairing..." : "Use the QR to open the web UI.");
+  if (strcmp(lv_label_get_text(webAccessInfoLabel), text) != 0) {
+    lv_label_set_text(webAccessInfoLabel, text);
+    lv_label_set_text(lv_obj_get_child(webPairButton, 0), code >= 0 ? "Approve" : "Pair browser/CLI");
+  }
+}
+
+inline void setWebAccessInfo(const String &hostname)
 {
   ensureUiBuilt();
-  webLoginPasswordText = value;
-  updateDerivedLabels();
+  webAccessHostname = hostname;
+  String qrUrl = String("http://") + webAccessHostname + "/console";
+  if (webAccessQrCode) lv_qrcode_update(webAccessQrCode, qrUrl.c_str(), qrUrl.length());
+  setPairingPrompt(false, -1);
+  if (activeScreen == DisplayScreen::Network)
+  {
+    refreshScreenLayout();
+  }
 }
 
 inline void setWifiFormState(const DisplayWifiFormState &value)

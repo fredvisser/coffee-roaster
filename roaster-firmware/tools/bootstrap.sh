@@ -94,7 +94,7 @@ if [ -f "$LVGL_CONFIG_SOURCE" ]; then
     if [ -d "$ARDUINO_LIB_DIR/lvgl" ]; then
         cp "$LVGL_CONFIG_SOURCE" "$LVGL_CONFIG_LIBRARY"
         for config in "$LVGL_CONFIG_ROOT" "$LVGL_CONFIG_LIBRARY"; do
-            perl -0pi -e 's/^#if 0 /#if 1 /m; s/^#define LV_FONT_MONTSERRAT_16 0$/#define LV_FONT_MONTSERRAT_16 1/m; s/^#define LV_FONT_MONTSERRAT_22 0$/#define LV_FONT_MONTSERRAT_22 1/m; s/^#define LV_FONT_MONTSERRAT_48 0$/#define LV_FONT_MONTSERRAT_48 1/m' "$config"
+            perl -0pi -e 's/^#if 0 /#if 1 /m; s/^#define LV_FONT_MONTSERRAT_16 0$/#define LV_FONT_MONTSERRAT_16 1/m; s/^#define LV_FONT_MONTSERRAT_22 0$/#define LV_FONT_MONTSERRAT_22 1/m; s/^#define LV_FONT_MONTSERRAT_48 0$/#define LV_FONT_MONTSERRAT_48 1/m; s/^#define LV_USE_QRCODE 0$/#define LV_USE_QRCODE 1/m' "$config"
         done
         echo "✓ LVGL configuration staged"
     else
@@ -113,7 +113,7 @@ echo "Note: These libraries must be installed manually from GitHub"
 if [ ! -d "$ARDUINO_LIB_DIR/Async_TCP" ] && [ ! -d "$ARDUINO_LIB_DIR/AsyncTCP" ]; then
     echo "Downloading AsyncTCP from GitHub..."
     cd "$ARDUINO_LIB_DIR"
-    git clone https://github.com/ESP32Async/AsyncTCP.git Async_TCP
+    git clone --branch v3.4.9 --depth 1 https://github.com/ESP32Async/AsyncTCP.git Async_TCP
     echo "✓ AsyncTCP installed"
 else
     echo "✓ AsyncTCP already installed"
@@ -122,7 +122,7 @@ fi
 if [ ! -d "$ARDUINO_LIB_DIR/ESP_Async_WebServer" ] && [ ! -d "$ARDUINO_LIB_DIR/ESPAsyncWebServer" ]; then
     echo "Downloading ESPAsyncWebServer from GitHub..."
     cd "$ARDUINO_LIB_DIR"
-    git clone https://github.com/ESP32Async/ESPAsyncWebServer.git ESP_Async_WebServer
+    git clone --branch v3.9.3 --depth 1 https://github.com/ESP32Async/ESPAsyncWebServer.git ESP_Async_WebServer
     echo "✓ ESPAsyncWebServer installed"
 else
     echo "✓ ESPAsyncWebServer already installed"

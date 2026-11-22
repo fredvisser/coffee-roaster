@@ -22,6 +22,10 @@ inline constexpr int TouchIntPin = 3;
 inline constexpr int TouchResetPin = 38;
 inline constexpr bool TouchInvertX = true;
 inline constexpr bool TouchInvertY = true;
+inline constexpr int TfCsPin = 10;
+inline constexpr int TfMosiPin = 11;
+inline constexpr int TfSckPin = 12;
+inline constexpr int TfMisoPin = 13;
 #elif ROASTER_TARGET_BOARD == ROASTER_BOARD_JC4827W543R
 inline constexpr bool DisplayInvert = true;
 inline constexpr int TouchSpiSckPin = 12;

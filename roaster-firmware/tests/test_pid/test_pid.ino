@@ -8,9 +8,9 @@
  * - Stability testing
  */
 
-#include <AUnit.h>
 #include "../../src/control/PIDController.hpp"
 #include "../../src/control/PIDRuntimeController.hpp"
+#include <AUnit.h>
 
 using namespace aunit;
 
@@ -550,7 +550,8 @@ test(PID_RuntimeScheduler_SelectsBandsAndComputesFeedforward)
   summary.bands[0].minTemp = 180.0;
   summary.bands[0].maxTemp = 250.0;
   summary.bands[0].drift = -0.08;
-  summary.bands[0].coolingCoeff = -0.010;
+  summary.bands[0].coolingCoeff = 0.010;
+  summary.bands[0].timeConstant = 60;
   summary.bands[0].heaterCoeff = 0.005;
   summary.bands[0].deadTime = 6.0;
   summary.bands[0].kp = 7.0;
@@ -561,7 +562,8 @@ test(PID_RuntimeScheduler_SelectsBandsAndComputesFeedforward)
   summary.bands[1].minTemp = 250.0;
   summary.bands[1].maxTemp = 330.0;
   summary.bands[1].drift = -0.10;
-  summary.bands[1].coolingCoeff = -0.012;
+  summary.bands[1].coolingCoeff = 0.012;
+  summary.bands[1].timeConstant = 70;
   summary.bands[1].heaterCoeff = 0.0045;
   summary.bands[1].deadTime = 8.0;
   summary.bands[1].kp = 11.0;

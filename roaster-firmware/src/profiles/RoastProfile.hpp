@@ -28,6 +28,8 @@ public:
 
     // Calculate targetTemp based on current time
     uint32_t getTargetTemp(uint32_t tickTime) const;
+    double getControlTarget(uint32_t tickTime) const;
+    double getTargetRate(uint32_t tickTime) const;
 
     // Calculate targetTemp at absolute time (no start offset)
     uint32_t getTargetTempAtTime(uint32_t timeMs) const;
@@ -79,6 +81,23 @@ void RoastProfile::startProfile(uint32_t currentTemp, uint32_t tickTime)
 
 uint32_t RoastProfile::getTargetTemp(uint32_t tickTime) const
 {
+    return static_cast<uint32_t>(lround(getControlTarget(tickTime)));
+}
+
+double RoastProfile::getTargetRate(uint32_t tickTime) const
+{
+    uint32_t elapsed = tickTime - _startTime;
+    for (int i = 1; i < _setpointCount; ++i) {
+        if (elapsed < _setpoints[i].time && _setpoints[i].time > _setpoints[i - 1].time) {
+            return (static_cast<double>(_setpoints[i].temp) - _setpoints[i - 1].temp) *
+                   1000.0 / (_setpoints[i].time - _setpoints[i - 1].time);
+        }
+    }
+    return 0.0;
+}
+
+double RoastProfile::getControlTarget(uint32_t tickTime) const
+{
     uint32_t currentTime = tickTime - _startTime;
     for (int i = 0; i < _setpointCount; i++)
     {
@@ -101,9 +120,7 @@ uint32_t RoastProfile::getTargetTemp(uint32_t tickTime) const
 
                 double timeRatio = (double)(currentTime - prevTime) / (double)(nextTime - prevTime);
                 double result = (double)prevTemp + ((double)nextTemp - (double)prevTemp) * timeRatio;
-                int32_t out = (int32_t)lround(result);
-                if (out < 0) out = 0; if (out > MAX_ROAST_TEMP) out = MAX_ROAST_TEMP;
-                return (uint32_t)out;
+                return constrain(result, 0.0, static_cast<double>(MAX_ROAST_TEMP));
             }
         }
     }
@@ -135,7 +152,8 @@ uint32_t RoastProfile::getTargetTempAtTime(uint32_t timeMs) const
                 double timeRatio = (double)(currentTime - prevTime) / (double)(nextTime - prevTime);
                 double result = (double)prevTemp + ((double)nextTemp - (double)prevTemp) * timeRatio;
                 int32_t out = (int32_t)lround(result);
-                if (out < 0) out = 0; if (out > MAX_ROAST_TEMP) out = MAX_ROAST_TEMP;
+                if (out < 0) out = 0;
+                if (out > MAX_ROAST_TEMP) out = MAX_ROAST_TEMP;
                 return (uint32_t)out;
             }
         }
@@ -182,7 +200,8 @@ uint32_t RoastProfile::getTargetFanSpeed(uint32_t tickTime) const
                 double timeRatio = (double)(currentTime - prevTime) / (double)(nextTime - prevTime);
                 double pct = (double)prevFanSpeed + ((double)nextFanSpeed - (double)prevFanSpeed) * timeRatio;
                 int32_t pctInt = (int32_t)lround(pct);
-                if (pctInt < 0) pctInt = 0; if (pctInt > 100) pctInt = 100;
+                if (pctInt < 0) pctInt = 0;
+                if (pctInt > 100) pctInt = 100;
                 uint32_t pwm = ((uint64_t)pctInt * 255ULL) / 100ULL;
                 if (pwm > 255U) pwm = 255U;
                 return pwm;

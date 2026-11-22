@@ -40,6 +40,133 @@ tags:
     description: Web user interfaces
 
 paths:
+  /api/calibrate-pid:
+    post:
+      tags: [System]
+      summary: Start bounded PID identification and candidate verification
+      description: Requires IDLE, valid sensors and temperature below 140F. The 295-second deadline includes fan startup, fitting and ramp/hold verification, but not subsequent cooling. Current settings are never automatically overwritten.
+      parameters:
+        - {name: fan, in: query, schema: {type: integer, minimum: 80, maximum: 255, default: 255}}
+        - {name: tau_c, in: query, schema: {type: number, minimum: 0.3, maximum: 3, default: 1}}
+        - {name: load, in: query, schema: {type: string, maxLength: 31}}
+      responses:
+        '200': {description: Experiment started}
+        '400': {description: Invalid conditions or persistent storage failure}
+  /api/calibrate-pid/status:
+    get:
+      tags: [System]
+      summary: Read phase, deadline, model confidence and candidate tracking metrics
+      description: A valid model is not a passed verification. Complete means verified candidate, not applied. Includes elapsedSeconds, deadlineSeconds, cooling, storageError, model and verification.
+      responses:
+        '200': {description: Current in-memory tuning status}
+  /api/calibrate-pid/cancel:
+    post:
+      tags: [System]
+      summary: Request cancellation and safe cooling without applying gains
+      responses:
+        '200': {description: Cancellation requested}
+        '400': {description: No active tuning}
+  /api/calibrate-pid/trace:
+    get:
+      tags: [System]
+      summary: Download complete current-run samples as JSON
+      description: Includes runId, lastError and heaterOutputKind. Samples contain run-relative timestamps, measured/fractional target temperatures, requested heater PWM (not measured electrical power), feedforward, PID terms, inlet temperature, fan, target slope, gains and phase. RAM trace is replaced by the next run or reboot.
+      responses:
+        '200': {description: Trace samples}
+  /api/pid/trace.csv:
+    get:
+      tags: [System]
+      summary: Download the current trace and model summary as CSV
+      responses:
+        '200': {description: CSV trace}
+  /api/pid:
+    get:
+      tags: [System]
+      summary: Get current gains, thermal bands, feedforward and applied controller
+      responses:
+        '200': {description: Complete current configuration and runtime status}
+    post:
+      tags: [System]
+      summary: Apply an explicitly unverified manual adjustment
+      description: Allowed only while IDLE or COOLING. Preserves thermal models and scales scheduled gains. Persists the previous complete controller for Undo. Body is limited to 256 bytes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                kp: {type: number, exclusiveMinimum: true, minimum: 0, maximum: 200}
+                ki: {type: number, minimum: 0, maximum: 20}
+                kd: {type: number, minimum: 0, maximum: 500}
+                rampScale: {type: number, minimum: 0.5, maximum: 1.5}
+      responses:
+        '200': {description: Adjustment saved; verification still required}
+        '409': {description: Invalid gains, active operation or storage failure}
+        '413': {description: Body too large}
+  /api/pid/history:
+    get:
+      tags: [System]
+      summary: List ten durable run summaries or export one complete record
+      parameters:
+        - {name: id, in: query, schema: {type: integer, minimum: 1}}
+        - {name: format, in: query, schema: {type: string, enum: [json, csv], default: json}}
+      responses:
+        '200': {description: History list or selected record; includes before/proposed configurations and verification metrics}
+        '404': {description: Record unavailable or rotated out}
+  /api/pid/apply:
+    post:
+      tags: [System]
+      summary: Apply a verified candidate including its model and feedforward
+      parameters:
+        - {name: id, in: query, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        '200': {description: Candidate applied and saved}
+        '409': {description: Candidate not verified, unsafe state or storage failure}
+  /api/pid/discard:
+    post:
+      tags: [System]
+      summary: Reject a verified proposal and keep the current controller
+      parameters:
+        - {name: id, in: query, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        '200': {description: Proposal rejected}
+        '409': {description: No eligible proposal or storage failure}
+  /api/pid/restore:
+    post:
+      tags: [System]
+      summary: Restore the entire previous controller or an eligible history record
+      parameters:
+        - {name: id, in: query, description: Omit or use zero for Undo, schema: {type: integer, minimum: 0}}
+        - {name: good, in: query, description: Use 1 instead of id to restore the separately retained last-verified controller, schema: {type: integer, enum: [1]}}
+      responses:
+        '200': {description: Configuration restored}
+        '409': {description: Unsafe state, unavailable record or storage failure}
+  /api/pid/recalculate:
+    post:
+      tags: [System]
+      summary: Recalculate and explicitly apply unverified gains from the saved model
+      parameters:
+        - {name: tau_c, in: query, required: true, schema: {type: number, minimum: 0.3, maximum: 3}}
+      responses:
+        '200': {description: Gains recalculated without a heater experiment; verification required}
+        '409': {description: No valid model, unsafe state, invalid factor or storage failure}
+  /api/pid/validate:
+    post:
+      tags: [System]
+      summary: Start the separate 120-200F current-controller verification
+      description: Records the outcome in local history. A pass updates the last-verified snapshot; it does not qualify higher temperatures.
+      parameters:
+        - {name: fanPercent, in: query, schema: {type: integer, minimum: 20, maximum: 100, default: 70}}
+      responses:
+        '200': {description: Validation started}
+        '400': {description: Must be IDLE and below 180F}
+  /api/pid/validate/status:
+    get:
+      tags: [System]
+      summary: Read current-controller validation metrics
+      responses:
+        '200': {description: Ramp and hold metrics, pass status and cancellation reason}
   /api/state:
     get:
       tags: [System]

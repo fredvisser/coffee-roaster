@@ -15,6 +15,7 @@
 #include "../platform/BoardConfig.hpp"
 #include "../profiles/ProfileManager.hpp"
 #include "../control/StepResponseTuner.hpp"
+#include "../control/PIDTuningStore.hpp"
 #include "../platform/RoasterTypes.hpp"
 
 extern Preferences preferences;
@@ -76,6 +77,9 @@ static const size_t SYSTEMLINK_MAX_TRACE_SAMPLES = 900;
 static const size_t SYSTEMLINK_MAX_TRACE_SAMPLES = 1800;
 #endif
 static const int SYSTEMLINK_STATUS_TAG_RETENTION_DAYS = 30;
+static const uint32_t SYSTEMLINK_ACTIVE_TAG_INTERVAL_MS = 500UL;
+static const uint32_t SYSTEMLINK_IDLE_TAG_INTERVAL_MS = 2000UL;
+static const uint32_t SYSTEMLINK_IDLE_CHAMBER_INTERVAL_MS = 900000UL;
 
 static const char *SYSTEMLINK_PROP_RETENTION = "nitagRetention";
 static const char *SYSTEMLINK_PROP_HISTORY_TTL_DAYS = "nitagHistoryTTLDays";
@@ -170,6 +174,8 @@ static bool systemLinkQueuedPublishPending = false;
 static portMUX_TYPE systemLinkCalibrationLock = portMUX_INITIALIZER_UNLOCKED;
 static bool systemLinkCalibrationPublishPending = false;
 static StepResponseTuner::Summary systemLinkPendingCalibrationSummary = {};
+static PIDTuningStore::Record systemLinkPendingCalibrationRecord = {};
+static bool systemLinkPendingCalibrationHasRecord = false;
 static char *systemLinkPendingCalibrationCsv = nullptr;
 static size_t systemLinkPendingCalibrationCsvLength = 0;
 static char systemLinkPendingCalibrationFileId[80] = {};
@@ -313,7 +319,12 @@ static bool systemLinkShouldPublishChamberTemp(const SystemLinkTelemetrySnapshot
   }
 
   uint32_t now = millis();
-  return !systemLinkLastTelemetrySentValid || now - systemLinkLastIdleChamberPublishMs >= 300000UL;
+  if (!systemLinkLastTelemetrySentValid || now - systemLinkLastIdleChamberPublishMs >= SYSTEMLINK_IDLE_CHAMBER_INTERVAL_MS) {
+    systemLinkLastIdleChamberPublishMs = now;
+    return true;
+  }
+
+  return false;
 }
 
 static const char *systemLinkOutcomePhaseForCoolingStart(const SystemLinkRoastSession &session,
@@ -1309,7 +1320,9 @@ static void systemLinkWorkerTask(void *parameter) {
     }
 
     uint32_t now = millis();
-    if (systemLinkHasRequiredConfig() && (lastTagPublishMs == 0 || (now - lastTagPublishMs) >= 1000UL)) {
+    bool roasting = systemLinkIsTrackedRoastState(roasterState);
+    uint32_t tagIntervalMs = roasting ? SYSTEMLINK_ACTIVE_TAG_INTERVAL_MS : SYSTEMLINK_IDLE_TAG_INTERVAL_MS;
+    if (systemLinkHasRequiredConfig() && (lastTagPublishMs == 0 || (now - lastTagPublishMs) >= tagIntervalMs)) {
       systemLinkPublishRealtimeTags();
       lastTagPublishMs = now;
     }
@@ -1894,16 +1907,20 @@ static String systemLinkBuildCalibrationCsv(const StepResponseTuner &tuner) {
   csv.reserve(256 + sampleCount * 50 + 512);
 
   // Trace data header
-  csv += "elapsedMs,actualTempF,setpointTempF,heaterOutput,phaseId\n";
+  csv += "elapsedMs,actualTempF,setpointTempF,heaterOutput,feedforward,P,I,D,inletTempF,fanPWM,targetRateFps,kp,ki,kd,phaseId\n";
 
   for (uint16_t i = 0; i < sampleCount; i++) {
     StepResponseTuner::TraceSample s = tuner.getTraceSample(i);
-    char row[80];
-    snprintf(row, sizeof(row), "%u,%.1f,%.1f,%.1f,%u\n",
+    char row[240];
+    snprintf(row, sizeof(row), "%u,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.0f,%.3f,%.5f,%.6f,%.5f,%u\n",
              static_cast<unsigned>(s.elapsedMs),
              static_cast<double>(s.actualTempF),
              static_cast<double>(s.setpointTempF),
              static_cast<double>(s.heaterOutput),
+             static_cast<double>(s.feedforward), static_cast<double>(s.proportional),
+             static_cast<double>(s.integral), static_cast<double>(s.derivative),
+             static_cast<double>(s.ambientTempF), static_cast<double>(s.fan), static_cast<double>(s.targetRate),
+             static_cast<double>(s.kp), static_cast<double>(s.ki), static_cast<double>(s.kd),
              static_cast<unsigned>(s.phaseId));
     csv += row;
   }
@@ -2059,7 +2076,8 @@ static bool systemLinkUploadCalibrationCsv(const String &filename,
 // Create a test result for a calibration run.
 static bool systemLinkCreateCalibrationResult(const StepResponseTuner::Summary &summary,
                                                const String &fileId,
-                                               String &resultId) {
+                                               String &resultId,
+                                               const PIDTuningStore::Record *record) {
   SystemLinkConfig config = systemLinkGetConfigSnapshot();
 
   DynamicJsonDocument doc(4096);
@@ -2092,6 +2110,20 @@ static bool systemLinkCreateCalibrationResult(const StepResponseTuner::Summary &
   properties["worstFitRmseF"] = String(summary.worstFitRmse, 3);
   properties["maxTempF"] = String(summary.maxTemp, 1);
   properties["totalSamples"] = String(summary.totalSamples);
+  properties["durationSeconds"] = String(summary.elapsedSeconds, 2);
+  properties["rampMaeF"] = String(summary.verification.rampMeanAbsError, 3);
+  properties["holdMaeF"] = String(summary.verification.holdMeanAbsError, 3);
+  properties["overshootF"] = String(summary.verification.maxOvershoot, 3);
+  properties["saturatedPercent"] = String(summary.verification.saturatedPercent, 2);
+  if (record) {
+    properties["localRunId"] = String(record->id);
+    properties["bootId"] = String(record->bootId);
+    properties["fanPWM"] = String(record->fan);
+    properties["loadCondition"] = record->load;
+    properties["outcome"] = record->outcome;
+    properties["reason"] = record->reason;
+    properties["firmware"] = record->firmware;
+  }
 
   // Recommended PID gains
   properties["recommendedKp"] = String(summary.recommendedKp, 4);
@@ -2148,7 +2180,7 @@ static bool systemLinkCreateCalibrationResult(const StepResponseTuner::Summary &
 
 // Top-level function: build CSV, upload file, create test result.
 // Called from the main .ino when step-response tuning completes.
-static void systemLinkPublishCalibration(const StepResponseTuner &tuner) {
+static void systemLinkPublishCalibration(const StepResponseTuner &tuner, const PIDTuningStore::Record *record) {
   if (!systemLinkHasRequiredConfig()) {
     LOG_INFO("SystemLink: Skipping calibration publish (not configured)");
     return;
@@ -2178,6 +2210,10 @@ static void systemLinkPublishCalibration(const StepResponseTuner &tuner) {
     return;
   }
   systemLinkPendingCalibrationSummary = summary;
+  systemLinkPendingCalibrationHasRecord = record != nullptr;
+  if (record != nullptr) {
+    systemLinkPendingCalibrationRecord = *record;
+  }
   systemLinkPendingCalibrationCsv = csvCopy;
   systemLinkPendingCalibrationCsvLength = csvContent.length();
   systemLinkCalibrationPublishPending = true;
@@ -2197,11 +2233,15 @@ static void processPendingSystemLinkCalibration() {
   char *csvContent = nullptr;
   size_t csvLength = 0;
   StepResponseTuner::Summary summary;
+  PIDTuningStore::Record record = {};
+  bool hasRecord = false;
   portENTER_CRITICAL(&systemLinkCalibrationLock);
   if (systemLinkCalibrationPublishPending) {
     csvContent = systemLinkPendingCalibrationCsv;
     csvLength = systemLinkPendingCalibrationCsvLength;
     summary = systemLinkPendingCalibrationSummary;
+    record = systemLinkPendingCalibrationRecord;
+    hasRecord = systemLinkPendingCalibrationHasRecord;
   }
   portEXIT_CRITICAL(&systemLinkCalibrationLock);
   if (csvContent == nullptr) {
@@ -2212,7 +2252,10 @@ static void processPendingSystemLinkCalibration() {
   String uploadUri;
   String fileId(systemLinkPendingCalibrationFileId);
   if (fileId.length() == 0) {
-    if (!systemLinkUploadCalibrationCsv("calibration-step-response.csv", csvContent, csvLength, uploadUri)) {
+    String filename = hasRecord
+      ? "calibration-" + String(record.bootId) + "-" + String(record.id) + ".csv"
+      : "calibration-step-response.csv";
+    if (!systemLinkUploadCalibrationCsv(filename, csvContent, csvLength, uploadUri)) {
       return;
     }
     fileId = systemLinkExtractIdFromUri(uploadUri);
@@ -2220,10 +2263,12 @@ static void processPendingSystemLinkCalibration() {
   }
 
   String resultId;
-  if (systemLinkCreateCalibrationResult(summary, fileId, resultId)) {
+  if (systemLinkCreateCalibrationResult(summary, fileId, resultId, hasRecord ? &record : nullptr)) {
     portENTER_CRITICAL(&systemLinkCalibrationLock);
     systemLinkPendingCalibrationCsv = nullptr;
     systemLinkPendingCalibrationCsvLength = 0;
+    systemLinkPendingCalibrationRecord = PIDTuningStore::Record{};
+    systemLinkPendingCalibrationHasRecord = false;
     systemLinkCalibrationPublishPending = false;
     systemLinkPendingCalibrationFileId[0] = '\0';
     portEXIT_CRITICAL(&systemLinkCalibrationLock);

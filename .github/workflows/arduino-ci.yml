@@ -15,7 +15,9 @@ jobs:
       uses: actions/checkout@v3
     
     - name: Setup Arduino CLI
-      uses: arduino/setup-arduino-cli@v1
+      uses: arduino/setup-arduino-cli@v2
+      with:
+        version: '1.5.1'
 
     - name: Cache Arduino dependencies
       uses: actions/cache@v4
@@ -32,7 +34,7 @@ jobs:
         arduino-cli config init --overwrite
         arduino-cli config add board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
         arduino-cli core update-index
-        arduino-cli core install esp32:esp32
+        arduino-cli core install esp32:esp32@3.3.11
         
     - name: Install required libraries
       run: |
@@ -54,7 +56,7 @@ jobs:
         cp "$HOME/Arduino/libraries/lvgl/lv_conf_template.h" "$HOME/Arduino/libraries/lv_conf.h"
         cp "$HOME/Arduino/libraries/lvgl/lv_conf_template.h" "$HOME/Arduino/libraries/lvgl/lv_conf.h"
         for config in "$HOME/Arduino/libraries/lv_conf.h" "$HOME/Arduino/libraries/lvgl/lv_conf.h"; do
-          perl -0pi -e 's/^#if 0 /#if 1 /m; s/^#define LV_FONT_MONTSERRAT_16 0$/#define LV_FONT_MONTSERRAT_16 1/m; s/^#define LV_FONT_MONTSERRAT_22 0$/#define LV_FONT_MONTSERRAT_22 1/m; s/^#define LV_FONT_MONTSERRAT_48 0$/#define LV_FONT_MONTSERRAT_48 1/m' "$config"
+          perl -0pi -e 's/^#if 0 /#if 1 /m; s/^#define LV_FONT_MONTSERRAT_16 0$/#define LV_FONT_MONTSERRAT_16 1/m; s/^#define LV_FONT_MONTSERRAT_22 0$/#define LV_FONT_MONTSERRAT_22 1/m; s/^#define LV_FONT_MONTSERRAT_48 0$/#define LV_FONT_MONTSERRAT_48 1/m; s/^#define LV_USE_QRCODE 0$/#define LV_USE_QRCODE 1/m' "$config"
         done
         
     - name: Install async libraries from GitHub
@@ -62,8 +64,15 @@ jobs:
         cd $HOME
         mkdir -p Arduino/libraries
         cd Arduino/libraries
-        git clone https://github.com/ESP32Async/AsyncTCP.git Async_TCP || true
-        git clone https://github.com/ESP32Async/ESPAsyncWebServer.git ESP_Async_WebServer || true
+        for library in "AsyncTCP v3.4.9 Async_TCP" "ESPAsyncWebServer v3.9.3 ESP_Async_WebServer"; do
+          read -r repo version directory <<< "$library"
+          if [ ! -d "$directory" ]; then
+            git clone --branch "$version" --depth 1 "https://github.com/ESP32Async/$repo.git" "$directory"
+          else
+            git -C "$directory" fetch --depth 1 origin tag "$version"
+            git -C "$directory" checkout --detach "$version"
+          fi
+        done
         
     - name: Configure ElegantOTA for async mode
       run: |

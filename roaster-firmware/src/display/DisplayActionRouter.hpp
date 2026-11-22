@@ -19,6 +19,7 @@ void handleStartRoastCommand();
 void handleStopRoastCommand();
 void handleStopCoolingCommand();
 void handleApplyWifiCommand();
+void handlePairingDisplayAction(bool cancel);
 
 inline std::vector<String> profileBrowserIds;
 inline std::vector<DisplayProfileSummary> profileBrowserEntries;
@@ -326,6 +327,10 @@ inline void handleDisplayAction(DisplayAction action)
   case DisplayAction::ReturnToStateScreen:
     syncActiveProfileDisplay(true);
     displayShowScreen(displayScreenForCurrentState());
+    break;
+  case DisplayAction::PairWebClient:
+  case DisplayAction::CloseWebPairing:
+    handlePairingDisplayAction(action == DisplayAction::CloseWebPairing);
     break;
   case DisplayAction::None:
   default:
