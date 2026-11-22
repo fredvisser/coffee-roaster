@@ -159,6 +159,28 @@ The firmware revision defaults to the current Git commit. Override it with
 
 ## Over-The-Air (OTA) Updates
 
+### Download a prebuilt release
+
+Successful `main` CI builds publish a versioned
+[GitHub Release](https://github.com/fredvisser/coffee-roaster/releases/latest)
+after lint and all firmware/test-sketch compilations pass. Builds superseded by
+newer commits on `main` are not published. Release tags identify the CI run and
+attempt; the release notes identify the source commit, which is also the
+firmware's displayed revision. Hardware tests are not automatically executed.
+
+1. Download the latest
+   [`roaster-firmware.bin`](https://github.com/fredvisser/coffee-roaster/releases/latest/download/roaster-firmware.bin).
+2. Let the roaster cool and confirm it is idle with the heater off.
+3. Open `http://<roaster-hostname>/update` on the same network, pair your browser
+   if prompted, and upload the downloaded file with **Firmware** selected.
+4. Keep power and Wi-Fi connected until the roaster reboots, then verify its
+   displayed revision matches the release.
+
+This binary is the OTA **application** for an already-flashed **JC4827W543C**
+controller. It is not a bootloader, filesystem image, or initial USB flash bundle.
+
+### Build and upload locally
+
 After the initial USB flash, run from `roaster-firmware/` on the same network
 as the roaster. Confirm the roaster is idle with the heater off before uploading.
 
