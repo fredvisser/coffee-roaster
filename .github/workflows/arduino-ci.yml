@@ -47,7 +47,7 @@ jobs:
         arduino-cli lib install "ArduinoJson"
         arduino-cli lib install "ElegantOTA@3.1.7"
         arduino-cli lib install "lvgl"
-        arduino-cli lib install "GFX Library for Arduino"
+        arduino-cli lib install "GFX Library for Arduino@1.6.8"
         arduino-cli lib install "Dev Device Pins"
         arduino-cli lib install "TAMC_GT911"
 
@@ -64,8 +64,15 @@ jobs:
         cd $HOME
         mkdir -p Arduino/libraries
         cd Arduino/libraries
-        git clone https://github.com/ESP32Async/AsyncTCP.git Async_TCP || true
-        git clone https://github.com/ESP32Async/ESPAsyncWebServer.git ESP_Async_WebServer || true
+        for library in "AsyncTCP v3.4.9 Async_TCP" "ESPAsyncWebServer v3.9.3 ESP_Async_WebServer"; do
+          read -r repo version directory <<< "$library"
+          if [ ! -d "$directory" ]; then
+            git clone --branch "$version" --depth 1 "https://github.com/ESP32Async/$repo.git" "$directory"
+          else
+            git -C "$directory" fetch --depth 1 origin tag "$version"
+            git -C "$directory" checkout --detach "$version"
+          fi
+        done
         
     - name: Configure ElegantOTA for async mode
       run: |

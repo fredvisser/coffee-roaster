@@ -78,6 +78,9 @@ cd roaster-firmware
 Use Arduino CLI 1.5.1 (also pinned in CI); the workflow scripts require
 the `compile --jobs` option, which is unavailable in the action's default 0.x CLI.
 CI also pins ESP32 core 3.3.11, matching bootstrap and the manual setup below.
+The validated networking/graphics versions are AsyncTCP 3.4.9,
+ESPAsyncWebServer 3.9.3, and GFX Library for Arduino 1.6.8; newer versions can
+exceed the controller's OTA application slot.
 
 ```bash
 brew install arduino-cli  # macOS
@@ -97,15 +100,16 @@ arduino-cli core install esp32:esp32@3.3.11
 
 ```bash
 arduino-cli lib install "MAX6675 library" "SimpleTimer" \
-  "AutoPID" "ESP32Servo" "ElegantOTA@3.1.7" "ArduinoJson"
+  "AutoPID" "ESP32Servo" "ElegantOTA@3.1.7" "ArduinoJson" \
+  "GFX Library for Arduino@1.6.8"
 ```
 
 #### 4. Install AsyncWebServer Libraries (manual)
 
 ```bash
 cd ~/Documents/Arduino/libraries
-git clone https://github.com/ESP32Async/AsyncTCP.git
-git clone https://github.com/ESP32Async/ESPAsyncWebServer.git
+git clone --branch v3.4.9 --depth 1 https://github.com/ESP32Async/AsyncTCP.git
+git clone --branch v3.9.3 --depth 1 https://github.com/ESP32Async/ESPAsyncWebServer.git
 ```
 
 #### 5. Configure ElegantOTA for Async Mode ⚠️ IMPORTANT

@@ -72,7 +72,7 @@ LIBRARIES=(
     "PWMrelay"
     "ArduinoJson"
     "lvgl"
-    "GFX Library for Arduino"
+    "GFX Library for Arduino@1.6.8"
     "Dev Device Pins"
     "TAMC_GT911"
 )
@@ -113,7 +113,7 @@ echo "Note: These libraries must be installed manually from GitHub"
 if [ ! -d "$ARDUINO_LIB_DIR/Async_TCP" ] && [ ! -d "$ARDUINO_LIB_DIR/AsyncTCP" ]; then
     echo "Downloading AsyncTCP from GitHub..."
     cd "$ARDUINO_LIB_DIR"
-    git clone https://github.com/ESP32Async/AsyncTCP.git Async_TCP
+    git clone --branch v3.4.9 --depth 1 https://github.com/ESP32Async/AsyncTCP.git Async_TCP
     echo "✓ AsyncTCP installed"
 else
     echo "✓ AsyncTCP already installed"
@@ -122,7 +122,7 @@ fi
 if [ ! -d "$ARDUINO_LIB_DIR/ESP_Async_WebServer" ] && [ ! -d "$ARDUINO_LIB_DIR/ESPAsyncWebServer" ]; then
     echo "Downloading ESPAsyncWebServer from GitHub..."
     cd "$ARDUINO_LIB_DIR"
-    git clone https://github.com/ESP32Async/ESPAsyncWebServer.git ESP_Async_WebServer
+    git clone --branch v3.9.3 --depth 1 https://github.com/ESP32Async/ESPAsyncWebServer.git ESP_Async_WebServer
     echo "✓ ESPAsyncWebServer installed"
 else
     echo "✓ ESPAsyncWebServer already installed"
