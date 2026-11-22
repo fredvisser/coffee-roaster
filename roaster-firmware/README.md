@@ -156,22 +156,21 @@ After the initial USB flash, run from `roaster-firmware/` on the same network
 as the roaster. Confirm the roaster is idle with the heater off before uploading.
 
 ```bash
-# Point to your roaster.
-export OTA_HOST=roaster-fred.local
-
 # Once per Mac: open Wi-Fi > Web access on the roaster and tap Pair browser/CLI.
-./tools/firmware.sh pair
+./tools/firmware.sh pair --host roaster-fred.local
 # Match the displayed code and tap Approve. The token is saved in macOS Keychain.
 
 # Upload the last matching build without recompiling (`ota` is an alias).
-./tools/firmware.sh ota-upload --board jc4827w543c
+./tools/firmware.sh ota-upload --host roaster-fred.local --board jc4827w543c
 
 # If you've edited the source and haven't built it yet, use this instead:
-./tools/firmware.sh ota-upload --board jc4827w543c --rebuild
+./tools/firmware.sh ota-upload --host roaster-fred.local --board jc4827w543c --rebuild
 
 ```
 
-Use the same `OTA_HOST` for pairing and uploading. OTA uses IPv4 for `.local`
+Use the same `--host` for pairing and uploading (hostname or IP address).
+The default is `roaster-dev.local`; `OTA_HOST` is no longer read by this entrypoint.
+OTA uses IPv4 for `.local`
 names to avoid mDNS lookup timeouts on macOS. If the name still doesn't resolve,
 use the roaster's IP address for both commands and pair again under that address.
 If the roaster still runs older firmware without pairing, install this version
@@ -189,6 +188,10 @@ change on the device. If needed, use the roaster's `/update` page and select
 
 ### Helper Scripts
 
+`tools/workflow-runner.sh` is the shared runner behind the firmware and test
+entrypoints, not a user-facing CLI. Its former numeric targets and `all`
+action are no longer supported; use the entrypoints below.
+
 - **`tools/bootstrap.sh`**: Automated dependency installation (arduino-cli required)
 - **`tools/firmware.sh`**: Main firmware build, upload, OTA, and monitor entrypoint
   - `./tools/firmware.sh build` - Compile main firmware
@@ -199,6 +202,52 @@ change on the device. If needed, use the roaster's `/update` page and select
 - **`tools/tests.sh`**: Named test-suite entrypoint
   - `./tools/tests.sh compile safety` - Compile the safety suite
   - `./tools/tests.sh run pid` - Compile, upload, and monitor the PID suite
+
+### Roaster Settings and Logs
+
+Use `tools/roaster.py` with Python 3 and curl to access a particular roaster.
+It reuses the macOS Keychain session created by `firmware.sh pair --host`, or
+an explicitly supplied `OTA_TOKEN`. Hostnames and IPv4 addresses are supported;
+requests use the firmware's plain HTTP service on port 80.
+
+```bash
+./tools/firmware.sh pair --host roaster-fred.local
+python3 tools/roaster.py --host roaster-fred.local get state
+python3 tools/roaster.py --host roaster-fred.local get pid
+python3 tools/roaster.py --host roaster-fred.local get server
+python3 tools/roaster.py --host roaster-fred.local get systemlink
+python3 tools/roaster.py --host roaster-fred.local get profiles
+python3 tools/roaster.py --host roaster-fred.local get profile --id PROFILE_ID
+
+# Settings files contain only the fields to change.
+printf '{"kp":8,"ki":0.46,"kd":0}\n' |
+  python3 tools/roaster.py --host roaster-fred.local set pid --file -
+python3 tools/roaster.py --host roaster-fred.local set server --file server.json
+python3 tools/roaster.py --host roaster-fred.local set systemlink --file systemlink.json
+python3 tools/roaster.py --host roaster-fred.local set profile --id PROFILE_ID --file profile.json
+
+# Recent RAM logs, or all retained card logs in oldest-to-newest file order.
+python3 tools/roaster.py --host roaster-fred.local logs
+python3 tools/roaster.py --host roaster-fred.local logs --card > roast-logs.jsonl
+python3 tools/roaster.py --host roaster-fred.local logs --card --file 0
+```
+
+Writable PID fields are `kp`, `ki`, `kd`, and `rampScale`. PID writes remain
+subject to firmware safety checks and are unverified manual adjustments.
+Server settings accept `hostname` (without `.local`). SystemLink settings accept
+`enabled`, `apiUrl`, `workspaceId`, `systemId`, `apiKey`, and `clearApiKey`.
+Keep credential files private and out of Git; send sensitive JSON through a file
+or stdin, not command-line arguments.
+
+Profile files contain `name` and 1-9 `setpoints`, each with integer `time`
+(seconds), `temp` (0-500F), and `fanSpeed` (0-100%). The firmware reserves the
+tenth slot. Omit `--id` to create a profile rather than update one; exported
+`id` and `active` metadata are ignored with a warning and do not activate profiles.
+
+Changing the hostname may require reconnecting and pairing under the new address.
+Logs are JSONL with the timestamps recorded by the firmware; card timestamps
+are boot-relative, not wall-clock time. API/network errors exit nonzero.
+This script does not start roasts, tuning, or heater experiments.
 
 ## PID tuning
 
@@ -288,6 +337,11 @@ a session and use it until revoked. Keep the roaster on a trusted, isolated LAN;
 do not expose it directly to the internet.
 
 ## Configuration
+
+Sensor faults and other emergency errors latch the controller in ERROR with
+the heater off, PWM fan at 100%, and BDC fan at 2000µs throughout lockout.
+Cooling does not stop automatically in ERROR; manual reset requires valid
+sensor readings and safe temperatures.
 
 Key parameters in `roaster-firmware.ino`:
 - `KP`, `KI`, `KD`: PID tuning constants

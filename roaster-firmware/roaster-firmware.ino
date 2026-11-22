@@ -1189,22 +1189,20 @@ void loop()
     {
       finalizeValidationIfRunning(false, "error_state");
       // ERROR state: Keep system in safe mode until manual reset
-      // Heater must stay OFF, cooling fan at safe speed
       digitalWrite(HEATER, LOW);
       heaterRelay.setPWM(0);
       resetRoastControllerState();
 
-      // Run cooling fan at safe speed (not maximum to avoid mechanical stress)
-      setpointFanSpeed = 200;
-      fanRelay.setPWM(200);           // ~78% speed for sustained cooling
-      bdcFan.writeMicroseconds(1500); // Mid-range for BDC fan
-      bdcFanMs = 1500;
+      setpointFanSpeed = 255;
+      fanRelay.setPWM(setpointFanSpeed);
+      bdcFan.writeMicroseconds(2000);
+      bdcFanMs = 2000;
 
       // Update display with current temperature
       DisplayTelemetry telemetry;
       telemetry.roasterState = roasterState;
       telemetry.currentTempF = (int)currentTemp;
-      telemetry.fanPercent = (int)round(200.0 * 100.0 / 255.0);
+      telemetry.fanPercent = 100;
       telemetry.bdcFanMicros = bdcFanMs;
       displayUpdateTelemetry(telemetry);
 

@@ -84,6 +84,19 @@ the production relay's switched GPIO rather than an ideal average-power input.
 Run `./tools/tests.sh run host-json` with ArduinoJson installed by bootstrap to
 check that history text remains attached to its own record after buffers are reused.
 
+Run `python3 tests/host/firmware_lockout_test.py` to check the firmware's actual
+fault-entry and ERROR-loop code with stubbed hardware. It verifies that sensor
+lockout keeps the heater off and both fans at maximum, reports 100% fan telemetry,
+and stays latched as temperatures fall.
+
+Run `python3 tests/host/firmware_upload_test.py` to check firmware uploads,
+named test-suite dispatch, and rejection of the removed numeric runner interface
+using stubbed tools without contacting a device.
+
+Run `python3 tests/host/roaster_cli_test.py` to check settings/profile requests,
+authentication, HTTP errors, redirect rejection, input validation, and card-log
+pagination. Only a local HTTP test server is contacted; no roaster is modified.
+
 ### Running Individual Test Suites
 
 #### Profile Management Tests

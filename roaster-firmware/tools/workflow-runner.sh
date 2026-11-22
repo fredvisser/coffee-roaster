@@ -1,5 +1,5 @@
 #!/bin/bash
-# Coffee Roaster - Shared compile/upload runner
+# Coffee Roaster - Shared firmware/test workflow runner
 # Canonical entrypoints are tools/firmware.sh and tools/tests.sh.
 
 set -euo pipefail
@@ -17,7 +17,6 @@ TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FIRMWARE_DIR="$(cd "$TOOLS_DIR/.." && pwd)"
 FIRMWARE_BUILD_DIR="$FIRMWARE_DIR/build"
 TESTS_DIR="$FIRMWARE_DIR/tests"
-CLI_NAME="${ROASTER_CLI_NAME:-$0}"
 BUILD_JOBS="${ROASTER_BUILD_JOBS:-}"
 
 if [[ -z "$BUILD_JOBS" ]]; then
@@ -330,7 +329,7 @@ ota_upload_firmware() {
         token=$(security find-generic-password -s coffee-roaster -a "${OTA_SCHEME}://${OTA_HOST}:${OTA_PORT}" -w 2>/dev/null) || token=""
     fi
     if [[ -z "$token" ]]; then
-        print_error "No OTA session for $OTA_HOST. Run ./tools/firmware.sh pair with the same OTA_HOST first."
+        print_error "No OTA session for $OTA_HOST. Run ./tools/firmware.sh pair --host $OTA_HOST first."
         return 1
     fi
     if [[ ! "$token" =~ ^[0-9a-f]{64}$ ]]; then
@@ -431,93 +430,70 @@ show_port_status() {
     fi
 }
 
-list_tests() {
-    print_header "Available Targets"
-    echo "Canonical entrypoints:"
-    echo "  ./tools/firmware.sh build --board jc4827w543c"
-    echo "  ./tools/tests.sh compile safety --board jc4827w543c"
-    echo "  ./tools/firmware.sh port --board jc4827w543c"
-    echo ""
-    echo "Legacy numeric targets:"
-    echo "  1. main          - Main roaster firmware"
-    echo "  2. pid           - PID controller tests"
-    echo "  3. profiles      - Profile management tests"
-    echo "  4. state         - State machine tests"
-    echo "  5. safety        - Safety system tests"
-    echo "  6. unit          - AUnit framework demo tests"
-    echo "  7. hardware      - Hardware validation"
-    echo "  8. step_response - Step response tuner tests"
-    echo ""
-    echo "Legacy usage: $CLI_NAME [1-8] [compile|upload|monitor|ota|port|all]"
-    echo "Example: $CLI_NAME 2 all"
-    echo "Example: OTA_HOST=roaster-dev.local $CLI_NAME 1 ota"
-}
-
 get_sketch_path() {
     case "$1" in
-        1|main)
+        main)
             echo "$FIRMWARE_DIR/roaster-firmware.ino"
             echo "main"
             ;;
-        2|pid)
+        pid)
             echo "$TESTS_DIR/test_pid/test_pid.ino"
             echo "PID"
             ;;
-        3|profiles)
+        profiles)
             echo "$TESTS_DIR/test_profiles/test_profiles.ino"
             echo "Profiles"
             ;;
-        4|state|state_machine)
+        state)
             echo "$TESTS_DIR/test_state_machine/test_state_machine.ino"
             echo "State Machine"
             ;;
-        5|safety)
+        safety)
             echo "$TESTS_DIR/test_safety/test_safety.ino"
             echo "Safety"
             ;;
-        6|unit)
+        unit)
             echo "$TESTS_DIR/unit_tests/unit_tests.ino"
             echo "Unit Tests"
             ;;
-        7|hardware)
+        hardware)
             echo "$TESTS_DIR/hardware_validation/hardware_validation.ino"
             echo "Hardware Validation"
             ;;
-        8|step_response)
+        step-response)
             echo "$TESTS_DIR/test_step_response/test_step_response.ino"
             echo "Step Response"
             ;;
         *)
-            echo "INVALID"
-            echo "Invalid test"
+            return 1
             ;;
     esac
 }
 
 main() {
+    if [[ $# -ne 2 ]]; then
+        print_error "Use ./tools/firmware.sh or ./tools/tests.sh."
+        exit 1
+    fi
+
+    local target="$1" action="$2"
+    case "$action" in
+        compile|upload|monitor|pair|ota|port|run) ;;
+        *) print_error "Invalid action: $action"; exit 1 ;;
+    esac
+
     if ! command -v arduino-cli &> /dev/null; then
         print_error "arduino-cli not found. Install with: brew install arduino-cli"
         exit 1
     fi
 
-    if [ $# -eq 0 ]; then
-        list_tests
-        exit 0
-    fi
-
-    test_num="$1"
-    action="${2:-all}"
-
-    local output
-    output=$(get_sketch_path "$test_num")
+    local output sketch_path test_name
+    output=$(get_sketch_path "$target") || {
+        print_error "Unknown target: $target"
+        exit 1
+    }
     sketch_path=$(echo "$output" | head -n1)
     test_name=$(echo "$output" | tail -n1)
-
-    if [ "$sketch_path" = "INVALID" ]; then
-        print_error "Invalid test selection: $test_num"
-        list_tests
-        exit 1
-    fi
 
     if [ ! -f "$sketch_path" ]; then
         print_error "Sketch file not found: $sketch_path"
@@ -551,22 +527,18 @@ main() {
             show_port_status
             ;;
         ota)
-            if [[ "$test_num" != 1 && "$test_num" != main ]]; then
+            if [[ "$target" != main ]]; then
                 print_error "OTA upload is only supported for the main firmware"
                 exit 1
             fi
             print_header "OTA Uploading $test_name"
             ota_upload_firmware "$sketch_path"
             ;;
-        all)
+        run)
             print_header "Building & Running $test_name"
             compile_sketch "$sketch_path" && \
             upload_sketch "$sketch_path" && \
             monitor_serial 300 "$test_name"
-            ;;
-        *)
-            print_error "Invalid action: $action. Use: compile, upload, ota, monitor, port, or all"
-            exit 1
             ;;
     esac
 }
