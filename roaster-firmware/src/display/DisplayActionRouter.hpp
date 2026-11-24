@@ -200,7 +200,7 @@ inline bool openSelectedProfileGraph()
 
 inline bool activateSelectedProfile()
 {
-  if (roasterState != IDLE)
+  if (getRoasterStateSnapshot() != IDLE)
   {
     LOG_WARN("Ignoring profile activation while roaster is not idle");
     return false;

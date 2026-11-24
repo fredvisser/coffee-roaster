@@ -1,6 +1,5 @@
 #include "Arduino.h"
 #include <max6675.h>
-#include <SimpleTimer.h>
 #include <PWMrelay.h>
 #include <SPI.h>
 #include <Preferences.h>
@@ -34,6 +33,7 @@
 #include "src/display/DisplayAdapter.hpp"
 #include "src/display/DisplayActionRouter.hpp"
 #include "src/control/PIDController.hpp"
+#include "src/control/ThermocoupleSafety.hpp"
 #include "src/profiles/RoastProfile.hpp"
 #include "src/profiles/ProfileManager.hpp"
 #include "src/profiles/ProfileEditor.hpp"
@@ -44,6 +44,8 @@
 #include "src/control/RoastControlLoop.hpp"
 #include "src/control/RoastSessionLifecycle.hpp"
 #include "src/integrations/SystemLink.hpp"
+
+std::atomic<bool> roastDisplayRefreshRequested{false};
 
 extern char activeFaultCode[32];
 extern char activeFaultMessage[96];
@@ -76,12 +78,29 @@ double kd = 0;
 #endif
 
 // Use timers for simple multitasking
-SimpleTimer checkTempTimer(125);
-SimpleTimer tickTimer(5);
-SimpleTimer controlLoopTimer(250);
-SimpleTimer stateMachineTimer(500);
-SimpleTimer wsBroadcastTimer(1000);  // WebSocket broadcast every 1 second
-SimpleTimer roastTraceTimer(1000);   // Roast trace capture every 1 second
+class RolloverTimer {
+public:
+  explicit RolloverTimer(uint32_t intervalMs) : intervalMs(intervalMs), startedAtMs(millis()) {}
+
+  bool isReady() const {
+    return static_cast<uint32_t>(millis() - startedAtMs) >= intervalMs;
+  }
+
+  void reset() {
+    startedAtMs = millis();
+  }
+
+private:
+  uint32_t intervalMs;
+  uint32_t startedAtMs;
+};
+
+RolloverTimer checkTempTimer(125);
+RolloverTimer tickTimer(5);
+RolloverTimer controlLoopTimer(250);
+RolloverTimer stateMachineTimer(500);
+RolloverTimer wsBroadcastTimer(1000);
+RolloverTimer roastTraceTimer(1000);
 
 // PWM is used to control fan and heater outputs
 HeaterRelay heaterRelay(HEATER);
@@ -118,6 +137,9 @@ int setpointProgress = 0;   // Roast time in seconds
 int bdcFanMs = 800;         // BDC fan servo pulse width (800-2000 µs)
 double fanTemp = 0;         // Inlet/fan temperature sensor (°F)
 int badReadingCount = 0;    // Track consecutive bad thermocouple readings
+int badFanReadingCount = 0;
+bool beanSensorHasValidReading = false;
+bool fanSensorHasValidReading = false;
 char lastRejectedBeanReadReason[16] = "none";
 char activeFaultCode[32] = "none";
 char activeFaultMessage[96] = "";
@@ -138,24 +160,88 @@ WifiCredentials wifiCredentials;
 
 // Roaster state variable (enum defined in RoasterTypes.hpp)
 RoasterState roasterState = IDLE;
+static portMUX_TYPE roasterStateLock = portMUX_INITIALIZER_UNLOCKED;
+static bool idleMutationInProgress = false;
+
+RoasterState getRoasterStateSnapshot()
+{
+  portENTER_CRITICAL(&roasterStateLock);
+  RoasterState state = roasterState;
+  portEXIT_CRITICAL(&roasterStateLock);
+  return state;
+}
+
+void setRoasterState(RoasterState state)
+{
+  portENTER_CRITICAL(&roasterStateLock);
+  roasterState = state;
+  portEXIT_CRITICAL(&roasterStateLock);
+}
+
+bool trySetRoasterState(RoasterState expected, RoasterState next)
+{
+  portENTER_CRITICAL(&roasterStateLock);
+  bool changed = roasterState == expected && !idleMutationInProgress;
+  if (changed)
+  {
+    roasterState = next;
+  }
+  portEXIT_CRITICAL(&roasterStateLock);
+  return changed;
+}
+
+bool beginIdleMutation()
+{
+  portENTER_CRITICAL(&roasterStateLock);
+  bool acquired = roasterState == IDLE && !idleMutationInProgress;
+  if (acquired)
+  {
+    idleMutationInProgress = true;
+  }
+  portEXIT_CRITICAL(&roasterStateLock);
+  return acquired;
+}
+
+bool transitionIdleMutationTo(RoasterState next)
+{
+  portENTER_CRITICAL(&roasterStateLock);
+  bool transitioned = roasterState == IDLE && idleMutationInProgress;
+  if (transitioned)
+  {
+    roasterState = next;
+    idleMutationInProgress = false;
+  }
+  portEXIT_CRITICAL(&roasterStateLock);
+  return transitioned;
+}
+
+void endIdleMutation()
+{
+  portENTER_CRITICAL(&roasterStateLock);
+  idleMutationInProgress = false;
+  portEXIT_CRITICAL(&roasterStateLock);
+}
 
 inline bool shouldFilterBeanTempSpikes()
 {
-  return roasterState == START_ROAST || roasterState == ROASTING || roasterState == COOLING || roasterState == CALIBRATING;
+  RoasterState state = getRoasterStateSnapshot();
+  return state == START_ROAST || state == ROASTING || state == COOLING || state == CALIBRATING;
 }
 
 inline bool shouldFilterFanTempSpikes()
 {
-  return roasterState == START_ROAST || roasterState == ROASTING || roasterState == COOLING || roasterState == CALIBRATING;
+  RoasterState state = getRoasterStateSnapshot();
+  return state == START_ROAST || state == ROASTING || state == COOLING || state == CALIBRATING;
 }
 
 inline bool shouldEnforceFanTempSafety()
 {
-  if (roasterState == COOLING || roasterState == CALIBRATING) {
+  RoasterState state = getRoasterStateSnapshot();
+  if (state == COOLING || state == CALIBRATING) {
     return true;
   }
 
-  if (roasterState != ROASTING) {
+  if (state != ROASTING) {
     return false;
   }
 
@@ -184,7 +270,8 @@ inline void setLastRejectedBeanReadReason(const char *reason)
 
 inline bool isRoastActiveState()
 {
-  return roasterState == START_ROAST || roasterState == ROASTING;
+  RoasterState state = getRoasterStateSnapshot();
+  return state == START_ROAST || state == ROASTING;
 }
 
 inline void setActiveFault(const char *faultCode, const char *displayMessage)
@@ -203,7 +290,9 @@ inline String formatBeanSensorFaultMessage(double reading)
 
 inline bool canClearErrorState()
 {
-  return badReadingCount == 0 && currentTemp < COOLING_TARGET_TEMP && fanTemp < MAX_SAFE_FAN_TEMP;
+  return beanSensorHasValidReading && fanSensorHasValidReading &&
+         badReadingCount == 0 && badFanReadingCount == 0 &&
+         currentTemp < COOLING_TARGET_TEMP && fanTemp < MAX_SAFE_FAN_TEMP;
 }
 
 inline String formatErrorRecoveryBlockedMessage()
@@ -234,7 +323,7 @@ inline void clearEmergencyErrorState()
 {
   LOG_INFOF("Clearing error state: fault=%s bean=%.1fF fan=%.1fF", activeFaultCode, currentTemp, fanTemp);
 
-  roasterState = IDLE;
+  setRoasterState(IDLE);
   coolingStartTime = 0;
   roastStartedAtMs = 0;
   setpointTemp = 0;
@@ -243,7 +332,9 @@ inline void clearEmergencyErrorState()
   heaterPidTrimVal = 0;
   heaterFeedforwardVal = 0;
   badReadingCount = 0;
+  badFanReadingCount = 0;
   setActiveFault("none", "");
+  preferences.putBool("roast_active", false);
 
   digitalWrite(HEATER, LOW);
   resetRoastControllerState();
@@ -258,9 +349,14 @@ inline void clearEmergencyErrorState()
 
 inline void enterEmergencyErrorState(const char *faultCode, const char *displayMessage)
 {
-  bool interruptedTuning = roasterState == CALIBRATING;
+  if (getRoasterStateSnapshot() == ERROR)
+  {
+    return;
+  }
+
+  bool interruptedTuning = getRoasterStateSnapshot() == CALIBRATING;
   setActiveFault(faultCode, displayMessage);
-  roasterState = ERROR;
+  setRoasterState(ERROR);
   digitalWrite(HEATER, LOW);
   resetRoastControllerState();
   heaterRelay.setPWM(0);
@@ -275,6 +371,38 @@ inline void enterEmergencyErrorState(const char *faultCode, const char *displayM
   systemLinkUpdateLastFault(faultCode);
   systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, faultCode);
   displayShowErrorMessage(activeFaultMessage);
+}
+
+static unsigned long heaterRiseWindowStartMs = 0;
+static double heaterRiseWindowStartTemp = 0.0;
+
+void monitorRoastHeatingResponse(unsigned long now)
+{
+  if (getRoasterStateSnapshot() != ROASTING || heaterOutputVal < 200.0 || setpointTemp - currentTemp < 15.0)
+  {
+    heaterRiseWindowStartMs = 0;
+    return;
+  }
+
+  if (heaterRiseWindowStartMs == 0)
+  {
+    heaterRiseWindowStartMs = now;
+    heaterRiseWindowStartTemp = currentTemp;
+    return;
+  }
+
+  if (currentTemp - heaterRiseWindowStartTemp >= 5.0)
+  {
+    heaterRiseWindowStartMs = now;
+    heaterRiseWindowStartTemp = currentTemp;
+    return;
+  }
+
+  if (heaterRiseTimeoutElapsed(now - heaterRiseWindowStartMs))
+  {
+    enterEmergencyErrorState("no_temperature_rise", "Bean temperature did not rise while heating");
+    heaterRiseWindowStartMs = 0;
+  }
 }
 
 MAX6675 thermocouple(THERMOCOUPLE_SCK, TC1_CS, THERMOCOUPLE_MISO);
@@ -427,7 +555,6 @@ bool startPIDTuning(int fanPwm, double factor, const char *load)
     finishPIDTuningRecord();
     return false;
   }
-  roasterState = CALIBRATING;
   return true;
 }
 
@@ -529,14 +656,14 @@ uint32_t getEffectiveFinalTargetTemp()
   // Use the UI override if set; otherwise fall back to the profile final target.
   if (finalTempOverride > 0)
   {
-    return constrain(finalTempOverride, 0, 500);
+    return constrain(finalTempOverride, 0, static_cast<int>(MAX_ROAST_TEMP));
   }
-  return profile.getFinalTargetTemp();
+  return min(profile.getFinalTargetTemp(), static_cast<uint32_t>(MAX_ROAST_TEMP));
 }
 
 void updateCalibrationControl(unsigned long now)
 {
-  if (roasterState != CALIBRATING || fanRampStep < 2000)
+  if (getRoasterStateSnapshot() != CALIBRATING || fanRampStep < 2000)
   {
     return;
   }
@@ -568,6 +695,8 @@ void updateStepResponseCalibration(unsigned long now)
     resetRoastControllerState();
     heaterRelay.setPWM(0);
     enterCoolingState();
+
+    // Keep heating disabled and cooling active before any network operation.
     sendWsMessage("{ \"pushMessage\": \"pidTuningComplete\" }");
     return;
   }
@@ -644,6 +773,7 @@ void setup()
 
   // Explicitly enable the pinMode for the SPI pins because the library doesn't appear to do this correctly when running on an ESP32
   pinMode(TC1_CS, OUTPUT);
+  pinMode(TC2_CS, OUTPUT);
   pinMode(THERMOCOUPLE_SCK, OUTPUT);
   pinMode(THERMOCOUPLE_MISO, INPUT);
 
@@ -654,6 +784,24 @@ void setup()
   fanRelay.setPeriod(10);
 
   bdcFan.writeMicroseconds(800);
+
+  double bootBeanTemp = thermocouple.readFarenheit();
+  double bootFanTemp = thermocoupleFan.readFarenheit();
+  beanSensorHasValidReading = thermocoupleReadingIsValid(bootBeanTemp, 0.0, SENSOR_FAULT_TEMP);
+  fanSensorHasValidReading = thermocoupleReadingIsValid(bootFanTemp, 0.0, SENSOR_FAULT_TEMP);
+  if (beanSensorHasValidReading)
+  {
+    currentTemp = bootBeanTemp;
+  }
+  if (fanSensorHasValidReading)
+  {
+    fanTemp = bootFanTemp;
+  }
+  if (beanSensorHasValidReading && currentTemp > COOLING_TARGET_TEMP)
+  {
+    LOG_WARNF("Boot detected hot beans at %.1fF; starting cooling", currentTemp);
+    enterCoolingState();
+  }
 
   if (debugLogger.beginCard()) {
     LOG_INFO("TF card logging enabled");
@@ -699,6 +847,16 @@ void setup()
   {
     LOG_ERROR("Preferences initialization failed - using defaults");
     // Continue with defaults - don't halt system
+  }
+
+  if (preferences.getBool("roast_active", false) && getRoasterStateSnapshot() != COOLING)
+  {
+    LOG_WARN("Interrupted roast marker found; starting cooling");
+    enterCoolingState();
+  }
+  if (getRoasterStateSnapshot() == COOLING)
+  {
+    preferences.putBool("roast_active", true);
   }
 
   // Load PID values
@@ -797,7 +955,7 @@ void setup()
   displaySetWebAccessInfo(serverSecurityGetHostname() + ".local");
   displaySetRevision(VERSION);
 
-  displayShowScreen(DisplayScreen::Start);
+  displayShowScreen(displayScreenForCurrentState());
   initSystemLinkTagTask();
   initSystemLinkPublishTask();
   LOG_INFO("Setup complete - entering main loop");
@@ -820,6 +978,20 @@ void loop()
   // Check WiFi connection and auto-reconnect if needed
   checkWiFiConnection(wifiCredentials);
   serviceServerSettings();
+
+  if (getRoasterStateSnapshot() == IDLE && profileDisplayRefreshRequested.exchange(false, std::memory_order_acq_rel))
+  {
+    refreshActiveProfileDisplay();
+  }
+  if (roastDisplayRefreshRequested.exchange(false, std::memory_order_acq_rel))
+  {
+    RoasterState state = getRoasterStateSnapshot();
+    if (state == START_ROAST || state == ROASTING)
+    {
+      displaySetTargetTemp((int)lround(setpointTemp));
+      displayShowScreen(DisplayScreen::Roasting);
+    }
+  }
 
   if (tickTimer.isReady())
   {
@@ -860,7 +1032,7 @@ void loop()
 
       // 1. Range Check: MAX6675 returns ~2048°F when disconnected
       // We also check for negative values which are invalid for this application
-      bool isRangeError = (!isfinite(reading) || reading < 0 || reading > SENSOR_FAULT_TEMP);
+      bool isRangeError = !thermocoupleReadingIsValid(reading, 0.0, SENSOR_FAULT_TEMP);
       if (isRangeError)
       {
         setLastRejectedBeanReadReason("range");
@@ -877,6 +1049,7 @@ void loop()
 
       if (isRangeError || isSpike)
       {
+        beanSensorHasValidReading = false;
         badReadingCount++;
         if (badReadingCount >= MAX_BAD_READINGS)
         {
@@ -889,6 +1062,7 @@ void loop()
       else
       {
         currentTemp = reading;
+        beanSensorHasValidReading = true;
         lastValidTemp = reading;
         firstReading = false;
         badReadingCount = 0; // Reset counter on good reading
@@ -897,18 +1071,18 @@ void loop()
           bool suspiciousLowLatch = reading <= 40.0 && previousAcceptedTemp >= 80.0;
           bool largeAcceptedDrop = abs(reading - previousAcceptedTemp) >= 20.0;
           if (suspiciousLowLatch || largeAcceptedDrop) {
-            LOG_WARNF("Bean temp accepted: prev=%.1fF raw=%.1fF new=%.1fF lastValid=%.1fF state=%d heater=%.1f", previousAcceptedTemp, reading, currentTemp, lastValidTemp, roasterState, heaterOutputVal);
+            LOG_WARNF("Bean temp accepted: prev=%.1fF raw=%.1fF new=%.1fF lastValid=%.1fF state=%d heater=%.1f", previousAcceptedTemp, reading, currentTemp, lastValidTemp, getRoasterStateSnapshot(), heaterOutputVal);
           }
         }
 
-        if (isRoastActiveState() && currentTemp > MAX_ROAST_TEMP)
+        if (roastTemperatureLimitExceeded(currentTemp, isRoastActiveState()))
         {
           DEBUG_PRINTLN("EMERGENCY: Roast temperature limit exceeded!");
           enterEmergencyErrorState("roast_over_temperature", "Roast Over Temp");
         }
 
         // THERMAL RUNAWAY PROTECTION
-        if (roasterState != ERROR && currentTemp > MAX_SAFE_TEMP)
+        if (getRoasterStateSnapshot() != ERROR && absoluteTemperatureLimitExceeded(currentTemp))
         {
           // EMERGENCY SHUTDOWN
           DEBUG_PRINTLN("EMERGENCY: Thermal runaway detected!");
@@ -921,9 +1095,16 @@ void loop()
     {
       double fReading = thermocoupleFan.readFarenheit();
       const bool fanTempSafetyArmed = shouldEnforceFanTempSafety();
-      bool isFanRangeError = (!isfinite(fReading) || fReading <= 0 || fReading > SENSOR_FAULT_TEMP);
+      bool isFanRangeError = !thermocoupleReadingIsValid(fReading, 0.0, SENSOR_FAULT_TEMP);
       if (isFanRangeError) {
+        fanSensorHasValidReading = false;
         fanOverTempCount = 0;
+        if (isRoastActiveState() || getRoasterStateSnapshot() == COOLING) {
+          badFanReadingCount++;
+          if (badFanReadingCount >= MAX_BAD_READINGS) {
+            enterEmergencyErrorState("fan_sensor_failed", "Fan sensor fault");
+          }
+        }
         LOG_WARNF("Fan temp range error ignored: %.1f", fReading);
       }
 
@@ -950,10 +1131,12 @@ void loop()
       }
       if (!isFanRangeError && !isFanSpike && !isImplausibleFanReading) {
         fanTemp = fReading;
+        fanSensorHasValidReading = true;
+        badFanReadingCount = 0;
         lastValidFanTemp = fReading;
         firstFanReading = false;
 
-        if (roasterState == ROASTING && !fanTempSafetyArmed) {
+        if (getRoasterStateSnapshot() == ROASTING && !fanTempSafetyArmed) {
           if (roastStartedAtMs > 0 && !fanTempSafetyDelayLogged) {
             unsigned long warmupRemainingMs = FAN_TEMP_SAFETY_ARM_DELAY_MS;
             unsigned long elapsedRoastMs = millis() - roastStartedAtMs;
@@ -1017,17 +1200,19 @@ void loop()
     unsigned long now = millis();
     updateRoastControl(now);
     updateCalibrationControl(now);
+    monitorRoastHeatingResponse(now);
     controlLoopTimer.reset();
   }
 
   if (stateMachineTimer.isReady())
   {
     static RoasterState lastState = IDLE;
-    if (roasterState != lastState) {
-        LOG_INFOF("State transition: %d -> %d", lastState, roasterState);
+    RoasterState state = getRoasterStateSnapshot();
+    if (state != lastState) {
+      LOG_INFOF("State transition: %d -> %d", lastState, state);
         
         // Handle state entry logic
-        if (roasterState == CALIBRATING) {
+        if (state == CALIBRATING) {
              // Stop PID to prevent interference
              resetRoastControllerState();
              
@@ -1037,14 +1222,16 @@ void loop()
              LOG_INFO("Calibration: Starting fan ramp sequence");
         }
         
-        lastState = roasterState;
+        lastState = state;
     }
 
-    switch (roasterState)
+      switch (state)
     {
     case IDLE:
       heaterRelay.setPWM(0);
       digitalWrite(FAN, LOW);
+      heaterRelay.setPWM(0);
+      fanRelay.setPWM(0);
       bdcFan.writeMicroseconds(800); // Ensure BDC stays at low speed
       bdcFanMs = 800;
       resetRoastControllerState();
@@ -1077,7 +1264,7 @@ void loop()
         fanRampStep = 0;
 
         // Start roasting with current active profile
-        roasterState = ROASTING;
+        setRoasterState(ROASTING);
         roastStartedAtMs = millis();
         profile.startProfile((int)currentTemp, millis());
         systemLinkMarkRoastingPhaseStarted();
@@ -1105,6 +1292,13 @@ void loop()
 
     case ROASTING:
     {
+      if (roastStartedAtMs > 0 && millis() - roastStartedAtMs >= MAX_ROAST_DURATION_MS)
+      {
+        systemLinkMarkCoolingPhaseStarted(SYSTEMLINK_OUTCOME_ERRORED, "roast_timeout");
+        enterEmergencyErrorState("roast_timeout", "Maximum roast duration exceeded");
+        break;
+      }
+
       if (roastShouldCompleteNow())
       {
         bool validationRun = currentRoastUsesValidationProfile();
@@ -1125,7 +1319,7 @@ void loop()
       }
 
       DisplayTelemetry telemetry;
-      telemetry.roasterState = roasterState;
+      telemetry.roasterState = getRoasterStateSnapshot();
       telemetry.currentTempF = (int)currentTemp;
       telemetry.targetTempF = (int)lround(setpointTemp);
       telemetry.fanPercent = (int)round(setpointFanSpeed * 100 / 255);
@@ -1143,31 +1337,27 @@ void loop()
       heaterRelay.setPWM(0);
 
       DisplayTelemetry telemetry;
-      telemetry.roasterState = roasterState;
+      telemetry.roasterState = getRoasterStateSnapshot();
       telemetry.currentTempF = (int)currentTemp;
       telemetry.targetTempF = COOLING_TARGET_TEMP;
       telemetry.fanPercent = 100;
       telemetry.bdcFanMicros = bdcFanMs;
       displayUpdateTelemetry(telemetry);
 
-      // Check for cooling timeout (30 minutes max)
+      // Check for cooling timeout.
       unsigned long coolingDuration = millis() - coolingStartTime;
       if (coolingDuration > MAX_COOLING_TIME)
       {
         finalizeValidationIfRunning(false, "cooling_timeout");
-        LOG_WARNF("Cooling timeout after %lu minutes - forcing IDLE", coolingDuration / 60000);
-        systemLinkFinishRoast(SYSTEMLINK_OUTCOME_TERMINATED, "cooling_timeout");
-        setpointFanSpeed = 0;
-        fanRelay.setPWM(0);
-        bdcFan.writeMicroseconds(800);
-        digitalWrite(FAN, LOW);
-        roasterState = IDLE;
+        LOG_ERRORF("Cooling timeout after %lu minutes; keeping cooling active", coolingDuration / 60000);
+        systemLinkFinishRoast(SYSTEMLINK_OUTCOME_ERRORED, "cooling_timeout");
+        enterEmergencyErrorState("cooling_timeout", "Cooling timeout; manual inspection required");
         sendWsMessage("{ \"pushMessage\": \"endRoasting\" }");
-        displayShowScreen(DisplayScreen::Start);
         break;
       }
 
-      if (currentTemp <= COOLING_TARGET_TEMP)
+        if (beanSensorHasValidReading && fanSensorHasValidReading &&
+          currentTemp <= COOLING_TARGET_TEMP && fanTemp < MAX_SAFE_FAN_TEMP)
       {
         restoreValidationProfileIfNeeded();
         systemLinkFinishRoast(SYSTEMLINK_OUTCOME_NONE, "cooling_complete");
@@ -1175,7 +1365,8 @@ void loop()
         fanRelay.setPWM(0);
         bdcFan.writeMicroseconds(800);
         digitalWrite(FAN, LOW);
-        roasterState = IDLE;
+        setRoasterState(IDLE);
+        preferences.putBool("roast_active", false);
 
         LOG_INFOF("Cooling complete at %.1fF - returning to IDLE", currentTemp);
         sendWsMessage("{ \"pushMessage\": \"endRoasting\" }");
@@ -1200,7 +1391,7 @@ void loop()
 
       // Update display with current temperature
       DisplayTelemetry telemetry;
-      telemetry.roasterState = roasterState;
+      telemetry.roasterState = getRoasterStateSnapshot();
       telemetry.currentTempF = (int)currentTemp;
       telemetry.fanPercent = 100;
       telemetry.bdcFanMicros = bdcFanMs;
@@ -1254,7 +1445,7 @@ void loop()
       // Update UI
       double calSetpoint = stepTuner.getSetpoint();
       DisplayTelemetry telemetry;
-      telemetry.roasterState = roasterState;
+      telemetry.roasterState = getRoasterStateSnapshot();
       telemetry.currentTempF = (int)currentTemp;
       telemetry.targetTempF = (int)round(calSetpoint);
       telemetry.fanPercent = (int)round(setpointFanSpeed * 100.0 / 255.0);
@@ -1264,8 +1455,8 @@ void loop()
     }
 
     default:
-      LOG_WARNF("Unknown state: %d - returning to IDLE", roasterState);
-      roasterState = IDLE;
+      LOG_WARNF("Unknown state: %d - returning to IDLE", state);
+      setRoasterState(IDLE);
       break;
     }
     stateMachineTimer.reset();
@@ -1289,7 +1480,7 @@ void loop()
 
   if (!otaUpdateInProgress && roastTraceTimer.isReady())
   {
-    if (roasterState == ROASTING && pidValidation.isActive())
+    if (getRoasterStateSnapshot() == ROASTING && pidValidation.isActive())
     {
       pidValidation.recordSample(currentTemp, setpointTemp, profile.getTargetRate(millis()), heaterOutputVal);
     }
@@ -1313,8 +1504,19 @@ void loop()
 void handleStartRoastCommand()
 {
   LOG_INFO("Start roast command received");
-  if (roasterState != IDLE) {
-    LOG_WARN("Start roast refused while another operation or fault is active");
+  RoasterState state = getRoasterStateSnapshot();
+  if (state != IDLE)
+  {
+    LOG_WARNF("Ignoring start command while state=%d", state);
+    return;
+  }
+
+  if (!beanSensorHasValidReading || !fanSensorHasValidReading ||
+      badReadingCount > 0 || badFanReadingCount > 0 ||
+      currentTemp > COOLING_TARGET_TEMP || fanTemp >= MAX_SAFE_FAN_TEMP)
+  {
+    LOG_WARN("Ignoring start command until sensors and temperatures are safe");
+    displayShowErrorMessage("Roaster not cool or sensor fault");
     return;
   }
   
@@ -1330,7 +1532,7 @@ void handleStartRoastCommand()
   
   int uiFinalTemp = readDisplayFinalTargetTempWithRetry();
   if (uiFinalTemp != DISPLAY_READ_ERROR && uiFinalTemp > 0) {
-    finalTempOverride = constrain(uiFinalTemp, 0, 500);
+    finalTempOverride = constrain(uiFinalTemp, 0, static_cast<int>(MAX_ROAST_TEMP));
     LOG_INFOF("Using display final target override: %dF", finalTempOverride);
     // Also update the active profile's final setpoint so heater control uses the override
     profile.setFinalTargetTemp(finalTempOverride);
@@ -1339,13 +1541,17 @@ void handleStartRoastCommand()
     LOG_WARN("Display final target not available - using profile final temp");
   }
   
-  startRoastSession();
+  if (!startRoastSession())
+  {
+    LOG_WARN("Roast start rejected by state or sensor interlock");
+    return;
+  }
   LOG_INFO("Start roast command complete - state set to START_ROAST");
 }
 
 void handleStopRoastCommand()
 {
-  if (roasterState == ERROR)
+  if (getRoasterStateSnapshot() == ERROR)
   {
     if (canClearErrorState())
     {
@@ -1361,14 +1567,25 @@ void handleStopRoastCommand()
     return;
   }
 
+  RoasterState state = getRoasterStateSnapshot();
+  if (state != START_ROAST && state != ROASTING && state != CALIBRATING)
+  {
+    return;
+  }
+
+  if (state == CALIBRATING)
+  {
+    stepTuner.cancel();
+  }
+
   finalizeValidationIfRunning(false, "user_stop");
   systemLinkMarkCoolingPhaseStarted(SYSTEMLINK_OUTCOME_TERMINATED, "user_stop");
 
   resetRoastControllerState();
-  heaterRelay.setPWM(heaterOutputVal);
+  heaterRelay.setPWM(0);
   digitalWrite(HEATER, LOW);
 
-  if (roasterState == CALIBRATING) {
+  if (state == CALIBRATING) {
     stepTuner.abort("cancelled");
     finishPIDTuningRecord();
   }
@@ -1377,18 +1594,40 @@ void handleStopRoastCommand()
 
 void handleStopCoolingCommand()
 {
-  if (roasterState != COOLING) {
+  if (getRoasterStateSnapshot() != COOLING)
+  {
     LOG_WARN("Stop cooling refused outside cooling state");
+    return;
+  }
+
+  if (!beanSensorHasValidReading || !fanSensorHasValidReading ||
+      currentTemp > COOLING_TARGET_TEMP || fanTemp >= MAX_SAFE_FAN_TEMP)
+  {
+    LOG_WARNF("Cooling stop rejected: bean=%.1fF fan=%.1fF beanValid=%d fanValid=%d",
+              currentTemp, fanTemp, beanSensorHasValidReading, fanSensorHasValidReading);
+    displayShowErrorMessage("Cooling still required");
     return;
   }
   finalizeValidationIfRunning(false, "cooling_skipped");
   restoreValidationProfileIfNeeded();
-  roasterState = IDLE;
+  systemLinkFinishRoast(SYSTEMLINK_OUTCOME_TERMINATED, "cooling_skipped");
+  fanRelay.setPWM(0);
+  bdcFan.writeMicroseconds(800);
+  digitalWrite(FAN, LOW);
+  setRoasterState(IDLE);
+  preferences.putBool("roast_active", false);
   displayShowScreen(DisplayScreen::Start);
 }
 
 void handleApplyWifiCommand()
 {
+  IdleMutationGuard idleGuard;
+  if (!idleGuard)
+  {
+    displaySetWifiIp("Wait until idle to change WiFi");
+    return;
+  }
+
   // Update global WiFi credentials
   DisplayWifiFormState form = displayReadWifiFormState();
   WifiCredentials requestedCredentials;
@@ -1396,14 +1635,14 @@ void handleApplyWifiCommand()
   requestedCredentials.password = form.password;
   wifiCredentials = normalizeWifiCredentials(requestedCredentials);
   displaySetWifiFormState(DisplayWifiFormState{wifiCredentials.ssid, wifiCredentials.password});
-  displaySetWifiIp("Connecting...");
-  String ip = initializeWifi(wifiCredentials);
-  displaySetWifiIp(ip);
-  if (WiFi.status() == WL_CONNECTED)
+  if (wifiCredentials.ssid.length() == 0)
   {
-    preferences.putString("ssid", wifiCredentials.ssid);
-    preferences.putString("password", wifiCredentials.password);
+    displaySetWifiIp("WiFi name required");
+    return;
   }
+
+  displaySetWifiIp("Connecting...");
+  beginWifiConnection(wifiCredentials, true);
 }
 
 void handleOpenActiveProfileCommand()

@@ -516,7 +516,8 @@ inline void layoutNetworkWidgets()
 {
   if (ssidCaptionLabel == nullptr || passwordCaptionLabel == nullptr || wifiLabel == nullptr || revisionLabel == nullptr ||
       ssidTextArea == nullptr || passwordTextArea == nullptr || wifiApplyButton == nullptr || networkBackButton == nullptr ||
-      webAccessInfoLabel == nullptr || webAccessButton == nullptr || webAccessBackButton == nullptr)
+      webAccessInfoLabel == nullptr || webAccessButton == nullptr ||
+      webAccessBackButton == nullptr)
   {
     return;
   }
@@ -571,7 +572,7 @@ inline void layoutNetworkWidgets()
 
 inline void setFinalTargetValue(int value)
 {
-  finalTargetTempValue = constrain(value, 0, 500);
+  finalTargetTempValue = constrain(value, 0, static_cast<int>(MAX_ROAST_TEMP));
   updateDerivedLabels();
   if (activeScreen == DisplayScreen::Start)
   {
@@ -965,8 +966,8 @@ inline void refreshScreenLayout()
   setWidgetHidden(profileGraphXAxisEndLabel, !showProfileGraphControls);
   setWidgetHidden(profileListContainer, !showProfileListControls);
   setWidgetHidden(profileLabel, !(showStartControls || showProfileGraphControls));
-  setWidgetHidden(wifiLabel, !showNetworkControls || showNetworkQr);
-  setWidgetHidden(revisionLabel, !showNetworkControls || showNetworkQr);
+  setWidgetHidden(wifiLabel, !showNetworkControls);
+  setWidgetHidden(revisionLabel, !showNetworkControls);
   setWidgetHidden(webAccessQrCode, !showNetworkQr);
   setWidgetHidden(webAccessInfoLabel, !showNetworkQr);
   setWidgetHidden(webAccessButton, !showNetworkButtons);
@@ -1540,6 +1541,7 @@ inline void buildScreen()
   passwordCaptionLabel = lv_label_create(screenRoot);
   lv_obj_set_style_text_color(passwordCaptionLabel, lv_color_hex(ColorTextMuted), 0);
   lv_obj_set_style_text_font(passwordCaptionLabel, &lv_font_montserrat_14, 0);
+
 
   ssidTextArea = lv_textarea_create(screenRoot);
   lv_obj_set_size(ssidTextArea, BoardConfig::DisplayWidth - 32, 34);

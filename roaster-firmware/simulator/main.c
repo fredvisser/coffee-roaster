@@ -368,8 +368,17 @@ static void build_network_screen(lv_obj_t *root)
   lv_obj_set_size(done_button, 116, 52);
   lv_obj_align(done_button, LV_ALIGN_TOP_RIGHT, -12, 144);
 
-  make_label(root, "IP: 10.0.4.22", &lv_font_montserrat_14, kColorTextMuted, LV_ALIGN_TOP_LEFT, 12, 172, 0, LV_TEXT_ALIGN_LEFT);
-  make_label(root, "Firmware: 2.7.14", &lv_font_montserrat_14, kColorTextMuted, LV_ALIGN_TOP_LEFT, 12, 192, 0, LV_TEXT_ALIGN_LEFT);
+  make_label(root,
+             "Web login (admin): a1b2c3d4",
+             &lv_font_montserrat_14,
+             kColorTextPrimary,
+             LV_ALIGN_TOP_LEFT,
+             12,
+             198,
+             456,
+             LV_TEXT_ALIGN_LEFT);
+  make_label(root, "IP: 10.0.4.22", &lv_font_montserrat_14, kColorTextMuted, LV_ALIGN_TOP_LEFT, 12, 220, 0, LV_TEXT_ALIGN_LEFT);
+  make_label(root, "Firmware: 2.7.14", &lv_font_montserrat_14, kColorTextMuted, LV_ALIGN_TOP_LEFT, 12, 240, 0, LV_TEXT_ALIGN_LEFT);
 }
 
 static void build_error_screen(lv_obj_t *root)

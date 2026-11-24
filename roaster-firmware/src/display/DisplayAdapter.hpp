@@ -146,7 +146,7 @@ inline void displaySetWifiIp(const String &ipAddress)
 #endif
 }
 
-inline void displaySetWebAccessInfo(const String &hostname)
+ inline void displaySetWebAccessInfo(const String &hostname)
 {
 #if ROASTER_DISPLAY_BACKEND == ROASTER_DISPLAY_BACKEND_LVGL
   LvglDisplay::setWebAccessInfo(hostname);

@@ -2,14 +2,18 @@
 #define ROAST_SESSION_LIFECYCLE_HPP
 
 #include <Arduino.h>
+#include <atomic>
+#include <Preferences.h>
 #include <PWMrelay.h>
 #include <ESP32Servo.h>
 
 #include "../display/DisplayAdapter.hpp"
 #include "../platform/RoasterTypes.hpp"
 #include "../profiles/RoastProfile.hpp"
+#include "HeaterRelay.hpp"
 #include "PIDValidation.hpp"
 
+extern Preferences preferences;
 extern double currentTemp;
 extern double setpointTemp;
 extern byte setpointFanSpeed;
@@ -19,10 +23,13 @@ extern unsigned long coolingStartTime;
 extern unsigned long roastStartedAtMs;
 
 extern bool validationProfileLoaded;
+extern bool beanSensorHasValidReading;
+extern bool fanSensorHasValidReading;
 
-extern RoasterState roasterState;
+extern std::atomic<bool> roastDisplayRefreshRequested;
 
 extern PWMrelay fanRelay;
+extern HeaterRelay heaterRelay;
 extern Servo bdcFan;
 
 extern RoastProfile profile;
@@ -33,9 +40,9 @@ extern int savedValidationFinalTempOverride;
 
 uint32_t getEffectiveFinalTargetTemp();
 void resetRoastControllerState();
+static void systemLinkMarkRoastStarted(bool validationRun);
 bool beginPIDValidationRecord(uint32_t fanPercent);
 void finishPIDValidationRecord();
-static void systemLinkMarkRoastStarted();
 
 inline bool currentRoastUsesValidationProfile()
 {
@@ -82,18 +89,27 @@ inline bool roastShouldCompleteNow()
   return currentTemp >= getEffectiveFinalTargetTemp();
 }
 
-inline void startRoastSession()
+static bool systemLinkCanStartRoast();
+
+inline bool startRoastSession(bool idleMutationReserved = false)
 {
+  if (!systemLinkCanStartRoast() ||
+      !beanSensorHasValidReading || !fanSensorHasValidReading ||
+  !(idleMutationReserved ? transitionIdleMutationTo(START_ROAST) : trySetRoasterState(IDLE, START_ROAST)))
+  {
+    return false;
+  }
+
   roastStartedAtMs = 0;
-  roasterState = START_ROAST;
-  systemLinkMarkRoastStarted();
-  displaySetTargetTemp((int)lround(setpointTemp));
-  displayShowScreen(DisplayScreen::Roasting);
+  preferences.putBool("roast_active", true);
+  systemLinkMarkRoastStarted(pidValidation.isActive());
+  roastDisplayRefreshRequested.store(true, std::memory_order_release);
+  return true;
 }
 
-inline bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent)
+inline bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent, bool idleMutationReserved = false)
 {
-  if (roasterState != IDLE)
+  if (getRoasterStateSnapshot() != IDLE)
   {
     return false;
   }
@@ -102,21 +118,36 @@ inline bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent)
   {
     return false;
   }
-  if (!beginPIDValidationRecord(fanPercent)) return false;
+  if (!beanSensorHasValidReading || !fanSensorHasValidReading)
+  {
+    return false;
+  }
+
+  if (!beginPIDValidationRecord(fanPercent))
+  {
+    return false;
+  }
 
   validationSavedProfile = profile;
   savedValidationFinalTempOverride = finalTempOverride;
   pidValidation.start(profile, currentTemp, finalTargetTemp, fanPercent);
   validationProfileLoaded = true;
   finalTempOverride = constrain((int)lround(finalTargetTemp), 0, 500);
-  startRoastSession();
+  if (!startRoastSession(idleMutationReserved))
+  {
+    restoreValidationProfileIfNeeded();
+    pidValidation.finish(false, 0.0, "start_rejected");
+    finishPIDValidationRecord();
+    return false;
+  }
   return true;
 }
 
 inline void enterCoolingState()
 {
+  heaterRelay.setPWM(0);
   setpointTemp = COOLING_TARGET_TEMP;
-  roasterState = COOLING;
+  setRoasterState(COOLING);
   coolingStartTime = millis();
   resetRoastControllerState();
 
@@ -131,7 +162,7 @@ inline void enterCoolingState()
 
 inline DisplayScreen displayScreenForCurrentState()
 {
-  switch (roasterState)
+  switch (getRoasterStateSnapshot())
   {
   case START_ROAST:
   case ROASTING:

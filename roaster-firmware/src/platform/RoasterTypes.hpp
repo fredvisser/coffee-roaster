@@ -28,6 +28,9 @@ enum RoasterState
 #define COOLING_TARGET_TEMP 140   // Target temperature for cooling (°F)
 #define MAX_SAFE_FAN_TEMP 165.0   // Maximum safe inlet/fan temperature (°F)
 #define FAN_TEMP_SAFETY_ARM_DELAY_MS 5000UL  // Delay exhaust-temp shutdown briefly after roast entry
+#define MAX_ROAST_DURATION_MS 2700000UL
+#define MAX_HEATER_NO_RISE_MS 120000UL
+#define MIN_HEATING_FAN_PWM 80
 
 // Sensor failure detection
 #define MAX_BAD_READINGS 5        // Consecutive bad readings before sensor failure
@@ -36,6 +39,13 @@ enum RoasterState
 
 // Timing limits
 #define MAX_COOLING_TIME 300000  // 5 minutes in milliseconds
+
+void setRoasterState(RoasterState state);
+RoasterState getRoasterStateSnapshot();
+bool trySetRoasterState(RoasterState expected, RoasterState next);
+bool beginIdleMutation();
+bool transitionIdleMutationTo(RoasterState next);
+void endIdleMutation();
 
 // ============================================================================
 // HARDWARE CONFIGURATION

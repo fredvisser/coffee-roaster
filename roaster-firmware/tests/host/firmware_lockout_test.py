@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 firmware = Path(__file__).resolve().parents[2]
 source = (firmware / "roaster-firmware.ino").read_text()
-entry = source.split("inline void enterEmergencyErrorState(", 1)[1].split("\nMAX6675 ", 1)[0]
+entry = source.split("inline void enterEmergencyErrorState(", 1)[1].split("\nstatic unsigned long heaterRiseWindowStartMs", 1)[0]
 error_case = source.split("    case ERROR:\n", 1)[1].split("    case CALIBRATING:\n", 1)[0]
 
 program = r"""
@@ -34,6 +34,8 @@ struct DisplayTelemetry {
     int roasterState, currentTempF, fanPercent, bdcFanMicros;
 } displayed;
 void digitalWrite(int, int value) { heaterPin = value; }
+int getRoasterStateSnapshot() { return roasterState; }
+void setRoasterState(int state) { roasterState = state; }
 void resetRoastControllerState() { heaterOutputVal = 0; }
 void setActiveFault(const char* code, const char*) { activeFaultCode = code; }
 void finishPIDTuningRecord() {}

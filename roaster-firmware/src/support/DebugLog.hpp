@@ -418,16 +418,16 @@ public:
   // Get logs as JSON array
   String getLogsJSON(int maxEntries = 50, bool wrapInObject = false) const {
     String json = wrapInObject ? "{\"logs\":[" : "[";
-
-    portENTER_CRITICAL(&logsMux);
-    int entriesToReturn = min(maxEntries, count);
-    int startIndex = (writeIndex - entriesToReturn + MAX_LOGS) % MAX_LOGS;
-    portEXIT_CRITICAL(&logsMux);
+    int entriesToReturn;
+    int startIndex;
+    portENTER_CRITICAL(const_cast<portMUX_TYPE *>(&logsMux));
+    entriesToReturn = min(maxEntries, count);
+    startIndex = (writeIndex - entriesToReturn + MAX_LOGS) % MAX_LOGS;
+    portEXIT_CRITICAL(const_cast<portMUX_TYPE *>(&logsMux));
 
     for (int i = 0; i < entriesToReturn; i++) {
       int index = (startIndex + i) % MAX_LOGS;
       LogEntry entry;
-
       portENTER_CRITICAL(&logsMux);
       entry = logs[index];
       portEXIT_CRITICAL(&logsMux);

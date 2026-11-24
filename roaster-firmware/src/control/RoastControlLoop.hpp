@@ -74,7 +74,7 @@ bool setManualPIDGains(double newKp, double newKi, double newKd, double rampScal
 
 inline void updateRoastControl(unsigned long now)
 {
-  if (roasterState != ROASTING)
+  if (getRoasterStateSnapshot() != ROASTING)
   {
     return;
   }
@@ -93,6 +93,10 @@ inline void updateRoastControl(unsigned long now)
   heaterPID.setOutputRange(-heaterFeedforwardVal, 255.0 - heaterFeedforwardVal);
   heaterPID.run(heaterFeedforwardVal);
   heaterOutputVal = constrain(heaterPidTrimVal + heaterFeedforwardVal, 0.0, 255.0);
+  if (heaterOutputVal > 0.0 && setpointFanSpeed < MIN_HEATING_FAN_PWM)
+  {
+    setpointFanSpeed = MIN_HEATING_FAN_PWM;
+  }
   fanRelay.setPWM(setpointFanSpeed);
 
   int bdcValue = constrain(5 * setpointFanSpeed + 700, 800, 2000);

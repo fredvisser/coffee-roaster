@@ -11,6 +11,7 @@
 #include "PIDTuningJson.hpp"
 #include <ESPmDNS.h>
 #include <ElegantOTA.h>  // v3.1.7+ with async mode enabled for ESPAsyncWebServer compatibility
+#include <atomic>
 #include "../support/DebugLog.hpp"
 #include "../display/DisplayAdapter.hpp"
 #include "../control/PIDController.hpp"
@@ -32,8 +33,12 @@ String json;
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
 AsyncWebSocket ws("/WebSocket");
+AsyncAuthenticationMiddleware webAuthentication;
+String webAuthenticationPassword;
+bool webAuthenticationInitialized = false;
 bool webSocketInitialized = false;
 bool networkServicesInitialized = false;
+std::atomic<bool> profileDisplayRefreshRequested{false};
 bool mdnsInitialized = false;
 unsigned long mdnsRetryAtMs = 0;
 bool wifiConnectAttemptActive = false;
@@ -46,6 +51,75 @@ bool wifiEventLoggingInitialized = false;
 bool wifiTargetResolved = false;
 uint8_t wifiTargetBssid[6] = {0, 0, 0, 0, 0, 0};
 int32_t wifiTargetChannel = 0;
+
+void initializeWebAuthentication()
+{
+  constexpr size_t WebLoginPasswordLength = 8;
+
+  if (webAuthenticationInitialized)
+  {
+    return;
+  }
+
+  webAuthenticationPassword = preferences.getString("web_pw", "");
+  if (webAuthenticationPassword.length() != WebLoginPasswordLength)
+  {
+    char generatedPassword[WebLoginPasswordLength + 1] = {};
+    for (size_t index = 0; index < WebLoginPasswordLength / 2; index++)
+    {
+      snprintf(generatedPassword + index * 2, 3, "%02x", static_cast<unsigned>(esp_random() & 0xff));
+    }
+    webAuthenticationPassword = generatedPassword;
+    preferences.putString("web_pw", webAuthenticationPassword);
+    Serial.printf("Web login password reset: username=admin password=%s\n", generatedPassword);
+  }
+
+  webAuthentication.setUsername("admin");
+  webAuthentication.setPassword(webAuthenticationPassword.c_str());
+  webAuthentication.setAuthType(AsyncAuthType::AUTH_BASIC);
+  webAuthentication.setRealm("Coffee Roaster");
+  webAuthentication.setAuthFailureMessage("Authentication required");
+  webAuthentication.generateHash();
+  server.addMiddleware(&webAuthentication);
+  webAuthenticationInitialized = true;
+}
+
+bool requireWebAuthentication(AsyncWebServerRequest *request)
+{
+  if (request->authenticate("admin", webAuthenticationPassword.c_str()))
+  {
+    return true;
+  }
+
+  request->requestAuthentication(AsyncAuthType::AUTH_BASIC, "Coffee Roaster");
+  return false;
+}
+
+class IdleMutationGuard
+{
+public:
+  IdleMutationGuard() : acquired(beginIdleMutation()) {}
+  ~IdleMutationGuard()
+  {
+    if (acquired)
+    {
+      endIdleMutation();
+    }
+  }
+  explicit operator bool() const { return acquired; }
+  bool transitionTo(RoasterState next)
+  {
+    if (!acquired || !transitionIdleMutationTo(next))
+    {
+      return false;
+    }
+    acquired = false;
+    return true;
+  }
+
+private:
+  bool acquired;
+};
 
 constexpr size_t MdnsMinInternalFreeHeap = 16 * 1024;
 constexpr unsigned long MdnsStartupDelayMs = 3000;
@@ -252,7 +326,6 @@ extern char lastRejectedBeanReadReason[16];
 extern double kp;
 extern double ki;
 extern double kd;
-extern RoasterState roasterState;  // Defined in RoasterTypes.hpp
 extern WifiCredentials wifiCredentials;
 extern RoastProfile profile;  // Profile configuration
 extern ProfileManager profileManager;
@@ -267,7 +340,7 @@ extern unsigned long restartAt;
 
 // Helper to refresh the active profile view after profile changes
 void plotProfileOnWaveform();
-bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent);
+bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent, bool idleMutationReserved);
 extern PIDTuningStore pidTuningStore;
 bool setManualPIDGains(double newKp, double newKi, double newKd, double rampScale);
 PIDTuningStore::Configuration capturePIDConfiguration();
@@ -314,12 +387,13 @@ bool otaUpdateInProgress = false;
 const char* getStateName(byte state);
 
 bool otaAllowedWhileCurrentState() {
-  return roasterState == IDLE;
+  return getRoasterStateSnapshot() == IDLE;
 }
 
 String otaBusyMessage() {
+  RoasterState state = getRoasterStateSnapshot();
   String message = "OTA updates are only allowed while idle. Current state: ";
-  message += getStateName(roasterState);
+  message += getStateName(state);
   return message;
 }
 
@@ -380,7 +454,7 @@ inline OtaStateGuardHandler otaStateGuardHandler;
 
 void onOTAStart() {
   if (!otaAllowedWhileCurrentState()) {
-    LOG_ERRORF("OTA start should have been blocked while state=%s", getStateName(roasterState));
+    LOG_ERRORF("OTA start should have been blocked while state=%s", getStateName(getRoasterStateSnapshot()));
   }
   otaUpdateInProgress = true;
   ws.closeAll(1012, "OTA update in progress");
@@ -508,7 +582,7 @@ String getSystemStateJSON() {
   DynamicJsonDocument doc(1408);
   
   doc["timestamp"] = millis();
-  doc["state"] = getStateName(roasterState);
+  doc["state"] = getStateName(getRoasterStateSnapshot());
   doc["uptime"] = millis() / 1000;
   
   JsonObject temps = doc.createNestedObject("temps");
@@ -857,6 +931,15 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       }
 
       LOG_DEBUG("POST /api/profiles: Calling saveProfile...");
+      DynamicJsonDocument requestDoc(128);
+      bool activateAfterSave = !deserializeJson(requestDoc, *body) && (requestDoc["activate"] | false);
+      IdleMutationGuard idleGuard;
+      if (!idleGuard) {
+        delete body;
+        request->_tempObject = nullptr;
+        request->send(409, "application/json", "{\"error\":\"roaster_not_idle\"}");
+        return;
+      }
       ProfileOperationResult result = profileManager.saveProfile(*body);
       LOG_DEBUG("POST /api/profiles: saveProfile returned");
       delete body;
@@ -864,6 +947,9 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       LOG_DEBUG("POST /api/profiles: body deleted");
       
       if (result.success) {
+          if (activateAfterSave) {
+            profileDisplayRefreshRequested.store(true, std::memory_order_release);
+          }
           LOG_DEBUG("POST /api/profiles: sending success response");
           String out = "{\"ok\":true,\"id\":\"" + result.id + "\"}";
           request->send(201, "application/json", out);
@@ -913,10 +999,16 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       return;
     }
     LOG_DEBUGF("POST /api/profile/%s/activate", id.c_str());
-    
+
+    IdleMutationGuard idleGuard;
+    if (!idleGuard) {
+      request->send(409, "application/json", "{\"ok\":false,\"error\":\"roaster_not_idle\"}");
+      return;
+    }
+
     bool success = profileManager.activateProfile(id);
     if (success) {
-        refreshActiveProfileDisplay();
+        profileDisplayRefreshRequested.store(true, std::memory_order_release);
         request->send(200, "application/json", "{\"ok\":true}");
     } else {
         request->send(404, "application/json", "{\"ok\":false,\"error\":\"not_found\"}");
@@ -979,6 +1071,11 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       delete body;
       request->_tempObject = nullptr;
 
+        IdleMutationGuard idleGuard;
+        if (!idleGuard) {
+          request->send(409, "application/json", "{\"ok\":false,\"error\":\"roaster_not_idle\"}");
+          return;
+        }
       ProfileOperationResult result = profileManager.saveProfile(updatedBody, id);
       
       if (result.success) {
@@ -1001,7 +1098,13 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       return;
     }
     LOG_DEBUGF("DELETE /api/profile/%s", id.c_str());
-    
+
+    IdleMutationGuard idleGuard;
+    if (!idleGuard) {
+      request->send(409, "application/json", "{\"ok\":false,\"error\":\"roaster_not_idle\"}");
+      return;
+    }
+
     ProfileOperationResult result = profileManager.deleteProfile(id);
     
     if (result.success) {
@@ -1312,7 +1415,8 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   // ponytail: must be registered before "/api/calibrate-pid"; AsyncWebServer
   // prefix-matches "/api/calibrate-pid/..." to the start handler otherwise.
   server.on("/api/calibrate-pid/cancel", HTTP_POST, [](AsyncWebServerRequest *request) {
-    if (roasterState != CALIBRATING) {
+    if (!serverSecurityIsAuthenticated(request)) return;
+    if (getRoasterStateSnapshot() != CALIBRATING) {
       request->send(400, "application/json", "{\"error\":\"No calibration is currently running\"}");
       return;
     }
@@ -1323,9 +1427,10 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
 
   server.on("/api/calibrate-pid", HTTP_POST, [](AsyncWebServerRequest *request) {
     LOG_INFO("API: /api/calibrate-pid requested");
-    
-    if (roasterState != IDLE) {
-        request->send(400, "application/json", "{\"error\":\"Roaster must be IDLE to start calibration\"}");
+
+    IdleMutationGuard idleGuard;
+    if (!idleGuard) {
+      request->send(409, "application/json", "{\"error\":\"roaster_not_idle\"}");
         return;
     }
 
@@ -1344,6 +1449,12 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
     String load = request->hasParam("load") ? request->getParam("load")->value() : "unspecified";
     if (load.length() > 31 || !startPIDTuning(static_cast<int>(fanSpeed), tauCFactor, load.c_str())) {
       request->send(400, "application/json", "{\"error\":\"start_refused_check_conditions_or_storage\"}");
+      return;
+    }
+    if (!idleGuard.transitionTo(CALIBRATING)) {
+      stepTuner.abort("start_state_race");
+      finishPIDTuningRecord();
+      request->send(409, "application/json", "{\"error\":\"roaster_state_changed\"}");
       return;
     }
     char msg[192];
@@ -1475,8 +1586,9 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
   });
 
   server.on("/api/pid/validate", HTTP_POST, [](AsyncWebServerRequest *request) {
-    if (roasterState != IDLE) {
-      request->send(400, "application/json", "{\"error\":\"Roaster must be IDLE to start validation\"}");
+    IdleMutationGuard idleGuard;
+    if (!idleGuard) {
+      request->send(409, "application/json", "{\"error\":\"roaster_not_idle\"}");
       return;
     }
 
@@ -1494,8 +1606,8 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       return;
     }
 
-    if (!startValidationRoast(target, static_cast<uint32_t>(fanPercent))) {
-      request->send(500, "application/json", "{\"error\":\"failed_to_start_validation\"}");
+    if (!startValidationRoast(target, static_cast<uint32_t>(fanPercent), true)) {
+      request->send(409, "application/json", "{\"error\":\"failed_to_start_validation\"}");
       return;
     }
 
@@ -1564,6 +1676,12 @@ String initializeWifi(const WifiCredentials& wifiCredentials) {
       double newKi = doc.containsKey("ki") ? doc["ki"].as<double>() : ki;
       double newKd = doc.containsKey("kd") ? doc["kd"].as<double>() : kd;
       double rampScale = doc.containsKey("rampScale") ? doc["rampScale"].as<double>() : pidRuntimeController.getRampScale();
+
+      IdleMutationGuard idleGuard;
+      if (!idleGuard) {
+        request->send(409, "application/json", "{\"error\":\"roaster_not_idle\"}");
+        return;
+      }
 
       if ((doc.containsKey("kp") && !doc["kp"].is<double>()) ||
           (doc.containsKey("ki") && !doc["ki"].is<double>()) ||
@@ -2821,4 +2939,3 @@ void checkWiFiConnection(const WifiCredentials& wifiCredentials) {
 }
 
 #endif // NETWORK_HPP
-

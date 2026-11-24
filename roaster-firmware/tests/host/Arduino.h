@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
+using String = std::string;
 using std::max;
 using std::min;
 extern unsigned long testMillis;
