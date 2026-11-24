@@ -340,7 +340,7 @@ extern unsigned long restartAt;
 
 // Helper to refresh the active profile view after profile changes
 void plotProfileOnWaveform();
-bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent, bool idleMutationReserved = false);
+bool startValidationRoast(double finalTargetTemp, uint32_t fanPercent, bool idleMutationReserved);
 extern PIDTuningStore pidTuningStore;
 bool setManualPIDGains(double newKp, double newKi, double newKd, double rampScale);
 PIDTuningStore::Configuration capturePIDConfiguration();
