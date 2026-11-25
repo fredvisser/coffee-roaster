@@ -157,6 +157,20 @@ ROASTER_BUILD_JOBS=4 ./tools/firmware.sh build --board jc4827w543c
 The firmware revision defaults to the current Git commit. Override it with
 `ROASTER_BUILD_VERSION` when a release label or date is required.
 
+### Display Calibration Build Options
+
+Display color inversion and touch-axis orientation can be selected without
+editing the board configuration:
+
+```bash
+./tools/firmware.sh build --board jc4827w543c \
+  --display-invert 1 --touch-invert-x 0 --touch-invert-y 0
+```
+
+The same settings are available as `ROASTER_DISPLAY_INVERT`,
+`ROASTER_TOUCH_INVERT_X`, and `ROASTER_TOUCH_INVERT_Y` environment variables
+for scripted builds. Omit an option to use the board's default.
+
 ## Over-The-Air (OTA) Updates
 
 ### Download a prebuilt release

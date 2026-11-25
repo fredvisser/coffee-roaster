@@ -195,6 +195,47 @@ Before continuing, confirm that the internal components clear the enclosure wall
 
 Wire the system carefully and deliberately.
 
+### Firmware GPIO Mapping
+
+The numeric GPIO assignments used by the current firmware are below. GPIO
+numbers refer to the ESP32-S3 on the JC4827W543C/R controller board.
+
+| Function | GPIO | Notes |
+| --- | ---: | --- |
+| Bean thermocouple CS | 9 | MAX6675 chip select |
+| Exhaust/fan thermocouple CS | 14 | MAX6675 chip select |
+| Thermocouple clock | 5 | Shared MAX6675 SCK |
+| Thermocouple data | 46 | Shared MAX6675 MISO |
+| microSD chip select | 10 | JC4827W543C variant |
+| microSD MOSI | 11 | JC4827W543C variant |
+| microSD clock | 12 | JC4827W543C variant |
+| microSD MISO | 13 | JC4827W543C variant |
+| Heater control | 6 | PWM/SSR output |
+| Fan control | 7 | PWM output |
+| BDC fan control | 15 | Servo output |
+| Service UART TX | 17 | Debug/service serial output |
+| Service UART RX | 18 | Debug/service serial input |
+| Auxiliary input | 16 | Reserved auxiliary input |
+
+Touch connections depend on the display variant:
+
+| Display variant | Signal | GPIO |
+| --- | --- | ---: |
+| JC4827W543C capacitive | I2C SDA | 8 |
+| JC4827W543C capacitive | I2C SCL | 4 |
+| JC4827W543C capacitive | Interrupt | 3 |
+| JC4827W543C capacitive | Reset | 38 |
+| JC4827W543R resistive | SPI SCK | 12 |
+| JC4827W543R resistive | SPI MISO | 13 |
+| JC4827W543R resistive | SPI MOSI | 11 |
+| JC4827W543R resistive | Chip select | 38 |
+| JC4827W543R resistive | Interrupt | 3 |
+
+The integrated LCD data bus and backlight pin are supplied by the
+`PINS_JC4827W543` board library and are not duplicated in this project table.
+The breakout PCB files label the external signals; use the connector
+silkscreen and schematic together with this GPIO mapping.
+
 1. Run mains wiring for the inlet, switch, heater SSR, and power supply.
 2. Run low-voltage wiring for the controller, thermocouple modules, and fan-control hardware.
 3. Connect the heater through the AC SSR.

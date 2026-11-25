@@ -286,6 +286,19 @@ inline uint32_t millisCallback()
   return millis();
 }
 
+inline void applyTouchTransform(int32_t &touchX, int32_t &touchY)
+{
+  if (BoardConfig::TouchInvertX)
+  {
+    touchX = (BoardConfig::DisplayWidth - 1) - touchX;
+  }
+
+  if (BoardConfig::TouchInvertY)
+  {
+    touchY = (BoardConfig::DisplayHeight - 1) - touchY;
+  }
+}
+
 inline void flush(lv_display_t *display, const lv_area_t *area, uint8_t *pixelMap)
 {
   uint32_t width = lv_area_get_width(area);
@@ -305,15 +318,7 @@ inline void touchRead(lv_indev_t *indev, lv_indev_data_t *data)
     int32_t touchX = touchController.points[0].x;
     int32_t touchY = touchController.points[0].y;
 
-    if (BoardConfig::TouchInvertX)
-    {
-      touchX = (BoardConfig::DisplayWidth - 1) - touchX;
-    }
-
-    if (BoardConfig::TouchInvertY)
-    {
-      touchY = (BoardConfig::DisplayHeight - 1) - touchY;
-    }
+    applyTouchTransform(touchX, touchY);
 
     data->point.x = constrain(touchX, 0, BoardConfig::DisplayWidth - 1);
     data->point.y = constrain(touchY, 0, BoardConfig::DisplayHeight - 1);
@@ -321,12 +326,15 @@ inline void touchRead(lv_indev_t *indev, lv_indev_data_t *data)
     return;
   }
 #elif ROASTER_TARGET_BOARD == ROASTER_BOARD_JC4827W543R
-  uint16_t touchX = 0;
-  uint16_t touchY = 0;
-  if (touchController.read(touchX, touchY))
+  uint16_t rawTouchX = 0;
+  uint16_t rawTouchY = 0;
+  if (touchController.read(rawTouchX, rawTouchY))
   {
-    data->point.x = touchX;
-    data->point.y = touchY;
+    int32_t touchX = rawTouchX;
+    int32_t touchY = rawTouchY;
+    applyTouchTransform(touchX, touchY);
+    data->point.x = constrain(touchX, 0, BoardConfig::DisplayWidth - 1);
+    data->point.y = constrain(touchY, 0, BoardConfig::DisplayHeight - 1);
     data->state = LV_INDEV_STATE_PRESSED;
     return;
   }

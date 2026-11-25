@@ -34,6 +34,19 @@ if ! [[ "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
     exit 1
 fi
 
+validate_binary_build_option() {
+    local option_name="$1"
+    local option_value="${2:-}"
+    if [[ -n "$option_value" && "$option_value" != "0" && "$option_value" != "1" ]]; then
+        echo "Invalid $option_name value: $option_value (expected 0 or 1)" >&2
+        exit 1
+    fi
+}
+
+validate_binary_build_option ROASTER_DISPLAY_INVERT "${ROASTER_DISPLAY_INVERT:-}"
+validate_binary_build_option ROASTER_TOUCH_INVERT_X "${ROASTER_TOUCH_INVERT_X:-}"
+validate_binary_build_option ROASTER_TOUCH_INVERT_Y "${ROASTER_TOUCH_INVERT_Y:-}"
+
 BUILD_EXTRA_FLAGS="-DROASTER_TARGET_BOARD=ROASTER_BOARD_JC4827W543C -DROASTER_DISPLAY_BACKEND=ROASTER_DISPLAY_BACKEND_LVGL"
 
 case "$TARGET_BOARD" in
@@ -48,6 +61,16 @@ case "$TARGET_BOARD" in
         exit 1
         ;;
 esac
+
+if [[ -n "${ROASTER_DISPLAY_INVERT:-}" ]]; then
+    BUILD_EXTRA_FLAGS="$BUILD_EXTRA_FLAGS -DROASTER_DISPLAY_INVERT=$ROASTER_DISPLAY_INVERT"
+fi
+if [[ -n "${ROASTER_TOUCH_INVERT_X:-}" ]]; then
+    BUILD_EXTRA_FLAGS="$BUILD_EXTRA_FLAGS -DROASTER_TOUCH_INVERT_X=$ROASTER_TOUCH_INVERT_X"
+fi
+if [[ -n "${ROASTER_TOUCH_INVERT_Y:-}" ]]; then
+    BUILD_EXTRA_FLAGS="$BUILD_EXTRA_FLAGS -DROASTER_TOUCH_INVERT_Y=$ROASTER_TOUCH_INVERT_Y"
+fi
 
 # Colors for output
 RED='\033[0;31m'
